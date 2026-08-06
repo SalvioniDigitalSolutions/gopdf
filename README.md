@@ -42,8 +42,8 @@ go get github.com/salvionidigital/gopdf
 - Multi-page documents, standard sizes (A3–A5, Letter, Legal) or custom, in
   either orientation, with Unicode metadata
 - The standard 14 fonts with accurate metrics, plus **TrueType and
-  OpenType embedding** — `.ttf`/`.ttc` subset automatically, `.otf` (CFF)
-  embedded whole — with pair kerning and ToUnicode maps for full Unicode
+  OpenType embedding** — `.ttf`, `.ttc` and `.otf` are all subset to the
+  glyphs you use — with pair kerning and ToUnicode maps for full Unicode
   text that stays searchable
 - Vector graphics: lines, rectangles, rounded rectangles, circles,
   ellipses, polygons, Bézier paths, dash patterns, caps and joins,
@@ -190,7 +190,7 @@ go run ./examples/edit -in report.pdf -out final.pdf -replace "DRAFT=FINAL"
 Coordinates are in points (1/72 inch) with the origin at the **top-left**
 of the page; `Mm`, `Cm` and `Inch` convert other units.
 
-- **98 tests** covering the writer, the parser, the font subsetter, the
+- **99 tests** covering the writer, the parser, the font subsetter, the
   filters, encryption, editing, reflow and forms
 - **Fuzz targets** for the PDF reader and the TrueType parser, with a
   checked-in regression corpus of 600+ inputs. Fuzzing has found and fixed
@@ -211,14 +211,15 @@ Stated plainly, because they matter when choosing a library:
 - Reflow re-wraps a paragraph within the lines it already occupies. It
   cannot push later content down the page.
 - `FillForm` flattens; `FillFormInteractive` keeps fields editable.
-- OpenType (`.otf`) fonts are embedded whole rather than subset, so they
-  produce larger files than TrueType. TrueType is subset per document.
+- OpenType subsetting reduces the outlines but keeps glyph names and
+  subroutines, so `.otf` embeds are larger than the equivalent TrueType.
+  CID-keyed CFF fonts are embedded whole.
 - Permission flags on encrypted documents are advisory, as the PDF
   specification defines them — they are not a security boundary.
 
 ## Roadmap
 
-- CFF charstring subsetting, so OpenType files shrink like TrueType ones
+- Subsetting CFF subroutines and glyph names, for smaller `.otf` embeds
 - Cascading reflow that pushes later content down the page
 - Public-key (certificate) security handlers
 - PDF/A conformance

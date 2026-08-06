@@ -100,28 +100,107 @@ func TestOpenTypeCFF(t *testing.T) {
 	}
 }
 
-// TestOpenTypeCFFNotSubset documents the current trade-off: CFF programs
-// are embedded whole, because there is no charstring subsetter yet.
-func TestOpenTypeCFFNotSubset(t *testing.T) {
+// TestOpenTypeCFFSubset checks that CFF outlines are actually reduced and
+// that the result is still a usable font.
+func TestOpenTypeCFFSubset(t *testing.T) {
 	font, err := LoadFont(testOTFPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	sub, err := font.ttf.subset(map[uint16]bool{font.ttf.cmap['A']: true})
+	used := map[uint16]bool{}
+	for _, r := range "Handgloves" {
+		used[font.ttf.cmap[r]] = true
+	}
+	sub, err := font.ttf.subset(used)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sub) != len(font.ttf.program) {
-		t.Errorf("CFF subset is %d bytes, expected the whole %d-byte program",
+	if len(sub) >= len(font.ttf.program)/2 {
+		t.Errorf("CFF subset is %d bytes, barely smaller than the %d-byte original",
 			len(sub), len(font.ttf.program))
 	}
-	// The embedded program must still parse as the same font.
+
+	// The subset must parse as the same font, with glyph IDs preserved so
+	// Identity-H addressing still works.
 	again, err := parseTTF(sub)
 	if err != nil {
-		t.Fatalf("embedded CFF program does not reparse: %v", err)
+		t.Fatalf("CFF subset does not reparse: %v", err)
+	}
+	if !again.cff {
+		t.Error("subset lost its CFF outlines")
 	}
 	if again.numGlyphs != font.ttf.numGlyphs {
-		t.Error("reparsed CFF font has a different glyph count")
+		t.Errorf("subset has %d glyphs, original had %d", again.numGlyphs, font.ttf.numGlyphs)
+	}
+	for _, r := range "Handgloves" {
+		if again.cmap[r] != font.ttf.cmap[r] {
+			t.Errorf("glyph id for %q moved: %d -> %d", r, font.ttf.cmap[r], again.cmap[r])
+		}
+		if again.advances[again.cmap[r]] != font.ttf.advances[font.ttf.cmap[r]] {
+			t.Errorf("advance width for %q changed", r)
+		}
+	}
+
+	// The kept charstrings must be byte-identical, and a dropped one must
+	// have become an empty outline.
+	origCS := charStringsOf(t, font.ttf.tables["CFF "], font.ttf.numGlyphs)
+	subCS := charStringsOf(t, again.tables["CFF "], again.numGlyphs)
+	for gid := range used {
+		if string(origCS[gid]) != string(subCS[gid]) {
+			t.Errorf("charstring for glyph %d was altered", gid)
+		}
+	}
+	dropped := font.ttf.cmap['Q']
+	if used[dropped] {
+		t.Skip("test assumption broken: Q is in the used set")
+	}
+	if len(subCS[dropped]) != 1 || subCS[dropped][0] != 14 {
+		t.Errorf("unused glyph %d is %d bytes, want a single endchar",
+			dropped, len(subCS[dropped]))
+	}
+}
+
+// charStringsOf pulls the CharStrings INDEX out of a CFF table.
+func charStringsOf(t *testing.T, cff []byte, nGlyphs int) [][]byte {
+	t.Helper()
+	name, err := parseCFFIndex(cff, int(cff[2]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	top, err := parseCFFIndex(cff, name.end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := parseCFFDict(top.items[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := dictEntry(entries, cffOpCharStrings)
+	if cs == nil || len(cs.values) != 1 {
+		t.Fatal("no CharStrings offset in the top dictionary")
+	}
+	idx, err := parseCFFIndex(cff, cs.values[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return idx.items
+}
+
+// TestCFFSubsetFallsBackSafely checks the guard: anything the subsetter
+// cannot handle must yield the original program rather than a broken one.
+func TestCFFSubsetFallsBackSafely(t *testing.T) {
+	font, err := LoadFont(testOTFPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A CID-keyed font is out of scope and must be reported as such.
+	cff := append([]byte(nil), font.ttf.tables["CFF "]...)
+	broken := &ttfFont{
+		cff: true, program: font.ttf.program, numGlyphs: font.ttf.numGlyphs,
+		tables: map[string][]byte{"CFF ": cff[:8]}, // truncated beyond repair
+	}
+	if got := broken.subsetCFFProgram(map[uint16]bool{1: true}); len(got) != len(font.ttf.program) {
+		t.Error("a CFF the subsetter cannot parse should fall back to the whole program")
 	}
 }
 

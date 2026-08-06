@@ -483,9 +483,7 @@ func (f *ttfFont) addComponents(glyphs map[uint16]bool) {
 // the subset works directly with Identity-H encoded text.
 func (f *ttfFont) subset(used map[uint16]bool) ([]byte, error) {
 	if f.cff {
-		// No charstring subsetter yet: embed the font program whole,
-		// which is correct, just larger.
-		return f.program, nil
+		return f.subsetCFFProgram(used), nil
 	}
 	glyphs := make(map[uint16]bool, len(used)+1)
 	glyphs[0] = true
@@ -540,6 +538,46 @@ func (f *ttfFont) subset(used map[uint16]bool) ([]byte, error) {
 		return include[i][0].(string) < include[j][0].(string)
 	})
 
+	return buildSfnt(0x00010000, include), nil
+}
+
+// subsetCFFProgram rebuilds an OpenType font around a reduced CFF table.
+// If anything about the font is beyond the subsetter, the original
+// program is returned unchanged, which is always correct.
+func (f *ttfFont) subsetCFFProgram(used map[uint16]bool) []byte {
+	cff := f.tables["CFF "]
+	if cff == nil {
+		return f.program
+	}
+	reduced, err := subsetCFF(cff, used, f.numGlyphs)
+	if err != nil {
+		return f.program
+	}
+	var include [][2]interface{}
+	add := func(tag string, data []byte) {
+		if data != nil {
+			include = append(include, [2]interface{}{tag, data})
+		}
+	}
+	add("CFF ", reduced)
+	for _, tag := range []string{"cmap", "head", "hhea", "hmtx", "maxp", "name", "OS/2", "post"} {
+		add(tag, f.tables[tag])
+	}
+	sort.Slice(include, func(i, j int) bool {
+		return include[i][0].(string) < include[j][0].(string)
+	})
+	out := buildSfnt(0x4F54544F, include) // 'OTTO'
+
+	// A subset that will not parse back is not worth shipping.
+	if again, err := parseTTF(out); err != nil || again.numGlyphs != f.numGlyphs {
+		return f.program
+	}
+	return out
+}
+
+// buildSfnt assembles a font file from its tables, which must already be
+// sorted by tag.
+func buildSfnt(version uint32, include [][2]interface{}) []byte {
 	numTables := len(include)
 	entrySelector := 0
 	for 1<<(entrySelector+1) <= numTables {
@@ -548,13 +586,13 @@ func (f *ttfFont) subset(used map[uint16]bool) ([]byte, error) {
 	searchRange := (1 << entrySelector) * 16
 
 	out := make([]byte, 12+numTables*16)
-	binary.BigEndian.PutUint32(out[0:], 0x00010000)
+	binary.BigEndian.PutUint32(out[0:], version)
 	binary.BigEndian.PutUint16(out[4:], uint16(numTables))
 	binary.BigEndian.PutUint16(out[6:], uint16(searchRange))
 	binary.BigEndian.PutUint16(out[8:], uint16(entrySelector))
 	binary.BigEndian.PutUint16(out[10:], uint16(numTables*16-searchRange))
 
-	headOffset := 0
+	headOffset := -1
 	for i, entry := range include {
 		tag, data := entry[0].(string), entry[1].([]byte)
 		offset := len(out)
@@ -573,9 +611,12 @@ func (f *ttfFont) subset(used map[uint16]bool) ([]byte, error) {
 	}
 
 	// Whole-font checksum, stored in head.checkSumAdjustment.
-	adjustment := 0xB1B0AFBA - tableChecksum(out)
-	binary.BigEndian.PutUint32(out[headOffset+8:], adjustment)
-	return out, nil
+	if headOffset >= 0 {
+		binary.BigEndian.PutUint32(out[headOffset+8:], 0)
+		adjustment := 0xB1B0AFBA - tableChecksum(out)
+		binary.BigEndian.PutUint32(out[headOffset+8:], adjustment)
+	}
+	return out
 }
 
 func tableChecksum(data []byte) uint32 {
