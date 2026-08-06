@@ -25,6 +25,38 @@ type Reader struct {
 	// /Encrypt dictionary, whose own strings are never encrypted.
 	crypt      *stdCrypt
 	encryptNum int
+
+	// startXref is the offset of the most recent cross-reference section
+	// and xrefIsStream records its form, so an incremental update can
+	// chain onto it in the same style.
+	startXref    int64
+	xrefIsStream bool
+
+	// pageRefs holds each page's object number, in page order.
+	pageRefs []int
+}
+
+// maxObjectNumber returns the highest object number the file defines.
+func (r *Reader) maxObjectNumber() int {
+	max := 0
+	for num := range r.xref {
+		if num > max {
+			max = num
+		}
+	}
+	if size, ok := toInt(r.resolve(r.trailer["Size"])); ok && size-1 > max {
+		max = size - 1
+	}
+	return max
+}
+
+// pageObjectNumber returns the object number of a page, if the page is an
+// indirect object (which it is in every real document).
+func (r *Reader) pageObjectNumber(index int) (int, bool) {
+	if index < 0 || index >= len(r.pageRefs) || r.pageRefs[index] == 0 {
+		return 0, false
+	}
+	return r.pageRefs[index], true
 }
 
 // xrefEntry locates one object: either a byte offset in the file, or a
@@ -197,7 +229,9 @@ func (r *Reader) parseXrefChain() error {
 	if err != nil {
 		return err
 	}
+	r.startXref = off
 	visited := make(map[int64]bool)
+	first := true
 	for off >= 0 {
 		if visited[off] || off >= int64(len(r.data)) {
 			break
@@ -206,7 +240,12 @@ func (r *Reader) parseXrefChain() error {
 		p := &parser{data: r.data, pos: int(off), r: r}
 		p.skipWS()
 		var trailer Dict
-		if bytes.HasPrefix(r.data[p.pos:], []byte("xref")) {
+		isTable := bytes.HasPrefix(r.data[p.pos:], []byte("xref"))
+		if first {
+			r.xrefIsStream = !isTable
+			first = false
+		}
+		if isTable {
 			trailer, err = r.parseClassicXref(p)
 		} else {
 			trailer, err = r.parseXrefStreamAt(int(off))
@@ -649,6 +688,11 @@ func (r *Reader) loadPages() error {
 		r.pages = append(r.pages, pageInfo{
 			dict: d, mediaBox: box, resources: res, rotate: rotate,
 		})
+		num := 0
+		if ref, ok := node.(Ref); ok {
+			num = ref.Num
+		}
+		r.pageRefs = append(r.pageRefs, num)
 		return nil
 	}
 	if err := walk(root["Pages"], defaultBox, nil, 0, 0); err != nil {

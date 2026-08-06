@@ -67,6 +67,8 @@ go get github.com/salvionidigital/gopdf
 - **Paragraph reflow** that re-wraps text across a paragraph's own lines
 - **Interactive forms**: read fields, fill them (flattened or still
   editable), and author new ones from scratch
+- **Incremental update**: append changes so the original file survives
+  byte for byte, including everything the library does not model
 - Reads encrypted files (RC4, AES-128, AES-256) with either password
 
 ## Highlights
@@ -106,6 +108,26 @@ page.AddRadioButton("plan", "pro", 240, 190, 14, gopdf.FieldOptions{Selected: tr
 page.AddChoiceField("country", 160, 130, 160, 20,
 	[]string{"Italy", "France", "Spain"}, gopdf.FieldOptions{Value: "Italy"})
 ```
+
+### Update a file without rewriting it
+
+```go
+r, _ := gopdf.Open("contract.pdf")
+u := gopdf.Update(r)
+
+page, _ := u.Page(0)
+page.ReplaceText("2024", "2026")
+u.SetFormValues(map[string]string{"signatory": "A. Lovelace"})
+
+u.Save("contract.pdf")   // safe to overwrite the source
+```
+
+An incremental update writes the original bytes out unchanged and appends
+only what differs, chained to the old cross-reference table. Structure
+trees, embedded files, optional content, scripts — anything gopdf does not
+model — survives untouched, because it is never rewritten. Rebuilding a
+document with `EditPage` or `ImportPage` keeps only what the library
+understands; `Update` keeps everything.
 
 ### Gradients
 
@@ -168,7 +190,7 @@ go run ./examples/edit -in report.pdf -out final.pdf -replace "DRAFT=FINAL"
 Coordinates are in points (1/72 inch) with the origin at the **top-left**
 of the page; `Mm`, `Cm` and `Inch` convert other units.
 
-- **88 tests** covering the writer, the parser, the font subsetter, the
+- **98 tests** covering the writer, the parser, the font subsetter, the
   filters, encryption, editing, reflow and forms
 - **Fuzz targets** for the PDF reader and the TrueType parser, with a
   checked-in regression corpus of 600+ inputs. Fuzzing has found and fixed
@@ -185,6 +207,7 @@ Stated plainly, because they matter when choosing a library:
 
 - Editing can only use glyphs a document's fonts actually contain. Subset
   fonts routinely lack characters; those edits are refused, not mangled.
+- An incremental update only grows a file; superseded objects stay in it.
 - Reflow re-wraps a paragraph within the lines it already occupies. It
   cannot push later content down the page.
 - `FillForm` flattens; `FillFormInteractive` keeps fields editable.
@@ -196,7 +219,6 @@ Stated plainly, because they matter when choosing a library:
 ## Roadmap
 
 - CFF charstring subsetting, so OpenType files shrink like TrueType ones
-- Incremental update: append changes and keep the original bytes intact
 - Cascading reflow that pushes later content down the page
 - Public-key (certificate) security handlers
 - PDF/A conformance

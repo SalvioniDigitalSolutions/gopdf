@@ -65,6 +65,10 @@ type writeCtx struct {
 	num     func(rawRef) int
 	fontNum func(docFontRef) int
 	encrypt func([]byte) []byte // nil when not encrypting
+	// refsAreLiteral writes a parsed Ref as an indirect reference rather
+	// than null. It is set when writing into a file whose original object
+	// numbering still applies, as an incremental update does.
+	refsAreLiteral bool
 }
 
 func (c *writeCtx) str(b []byte) []byte {
@@ -109,6 +113,13 @@ func writeValue(w io.Writer, v any, ctx *writeCtx) {
 		fmt.Fprintf(w, "%d 0 R", ctx.ref(t))
 	case docFontRef:
 		fmt.Fprintf(w, "%d 0 R", ctx.font(t))
+	case Ref:
+		if ctx != nil && ctx.refsAreLiteral {
+			fmt.Fprintf(w, "%d %d R", t.Num, t.Gen)
+		} else {
+			// A reference that was never rewritten would dangle.
+			io.WriteString(w, "null")
+		}
 	case Array:
 		io.WriteString(w, "[")
 		for i, e := range t {

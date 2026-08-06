@@ -154,6 +154,7 @@ footer { border-top: 1px solid var(--border); margin-top: 4rem; padding-top: 1.5
     <li><a href="#stamp">Stamp &amp; watermark</a></li>
     <li><a href="#editing">Editing text</a></li>
     <li><a href="#reflow">Paragraph reflow</a></li>
+    <li><a href="#update">Incremental update</a></li>
   </ul>
 
   <h4>Forms</h4>
@@ -447,6 +448,40 @@ paragraph but cannot push the rest of the page down.
 <code>SetMaxExtraLines(n)</code> allows growth when you know there is room.
 Shorter text simply leaves trailing lines blank.</p>
 
+<h2 id="update">Incremental update</h2>
+<p>Everything above rebuilds a document: pages are imported into a new
+<code>Document</code> and written from scratch, which keeps only what this
+library models. An <strong>incremental update</strong> instead writes the
+original file out unchanged and appends the objects that differ, chained
+to the previous cross-reference section.</p>
+<pre><code>r, _ := gopdf.<span class="f">Open</span>(<span class="s">"contract.pdf"</span>)
+u := gopdf.<span class="f">Update</span>(r)
+
+page, _ := u.<span class="f">Page</span>(<span class="n">0</span>)
+page.<span class="f">ReplaceText</span>(<span class="s">"2024"</span>, <span class="s">"2026"</span>)
+page.<span class="f">ReplaceTextReflow</span>(<span class="s">"internal use"</span>, <span class="s">"any lawful use"</span>)
+
+u.<span class="f">SetFormValues</span>(<span class="k">map</span>[<span class="k">string</span>]<span class="k">string</span>{<span class="s">"signatory"</span>: <span class="s">"A. Lovelace"</span>})
+u.<span class="f">SetPageRotation</span>(<span class="n">1</span>, <span class="n">90</span>)
+u.<span class="f">SetInfo</span>(gopdf.Info{Title: <span class="s">"Contract (revised)"</span>})
+
+u.<span class="f">Save</span>(<span class="s">"contract.pdf"</span>)   <span class="c">// safe to overwrite the source</span></code></pre>
+<div class="note">
+<p><strong>This is the highest-fidelity way to change a PDF.</strong> Structure trees,
+embedded files, optional content groups, scripts, annotations — anything
+gopdf has no concept of — survives byte for byte, because those bytes are
+never rewritten. The test suite proves it by planting an object of an
+invented type in a file and checking it is still readable afterwards.</p>
+</div>
+<p>The appended section matches the original's style: a classic table for a
+classic file, a cross-reference stream for a PDF 1.5+ one. Encrypted
+documents stay encrypted, with appended objects protected using the
+original file key. An update with no changes reproduces the source
+exactly.</p>
+<p>The trade-off is size: an update only ever grows a file, because the
+objects it supersedes remain in place. Use <code>Document.EditPage</code>
+when you would rather have a compact, fully rewritten file.</p>
+
 <h2 id="forms-read">Reading form fields</h2>
 <pre><code>r, _ := gopdf.<span class="f">Open</span>(<span class="s">"application.pdf"</span>)
 <span class="k">if</span> r.<span class="f">HasForm</span>() {
@@ -573,6 +608,8 @@ and font parser are continuously fuzzed with a checked-in corpus.</li>
 <li>Editing can only use glyphs a document's fonts actually contain.</li>
 <li>Reflow re-wraps within a paragraph's existing lines; it cannot push
 later content down the page.</li>
+<li>An incremental update only grows a file; superseded objects stay in
+it.</li>
 <li><code>FillForm</code> flattens; use <code>FillFormInteractive</code> to keep
 fields editable.</li>
 <li>OpenType (<code>.otf</code>) fonts are embedded whole rather than

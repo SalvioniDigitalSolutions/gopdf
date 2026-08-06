@@ -158,12 +158,19 @@ func (d *Document) EditPage(r *Reader, index int) (*EditablePage, error) {
 
 	e := &EditablePage{Page: p, doc: d, r: r, fit: FitAdvance}
 	pageTarget := &editTarget{content: content, resources: pi.resources}
-	e.targets = append(e.targets, pageTarget)
 
 	// Collect the page's own runs, descending into form XObjects, whose
 	// copied streams stay editable too.
-	sc := &runScanner{e: e, im: im, seen: make(map[Ref]bool), infos: make(map[any]*fontInfo)}
+	sc := &runScanner{
+		r:         r,
+		mediaBox:  p.mediaBox,
+		targets:   []*editTarget{pageTarget},
+		seen:      make(map[Ref]bool),
+		infos:     make(map[any]*fontInfo),
+		adoptForm: im.copiedStream,
+	}
 	sc.scan(pageTarget, pi.resources, identityMatrix, 0)
+	e.targets, e.runs = sc.targets, sc.runs
 
 	d.editables = append(d.editables, e)
 	return e, nil
@@ -232,14 +239,23 @@ func freeResourcePrefix(res Dict) string {
 
 // --- scanning runs out of content streams ---
 
+// runScanner walks content streams and collects their text runs. It is
+// shared by EditPage, which copies content into a new document, and by
+// Updater, which rewrites objects in the original file; adoptForm is the
+// only difference between them.
 type runScanner struct {
-	e    *EditablePage
-	im   *importer
-	seen map[Ref]bool
+	r        *Reader
+	mediaBox *[4]float64
+	runs     []*TextRun
+	targets  []*editTarget
+	seen     map[Ref]bool
 	// infos caches font metadata across every content stream of the page,
 	// so the record of which glyphs the document actually draws is
 	// complete before any replacement is encoded.
 	infos map[any]*fontInfo
+	// adoptForm claims a form XObject for editing and returns the stream
+	// whose data should carry the edits back, or nil to scan read-only.
+	adoptForm func(entry any) *rawStream
 }
 
 // contentToken is a lexed content-stream token with its byte span.
@@ -285,7 +301,7 @@ func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth
 	if depth > maxFormDepth {
 		return
 	}
-	r := sc.e.r
+	r := sc.r
 	fonts := newFontDecoders(r, resources)
 	fontInfoFor := func(name Name) *fontInfo {
 		// Identify a font by its indirect reference where possible, so
@@ -353,7 +369,7 @@ func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth
 		x, y := full.apply(0, 0)
 		// Report positions in this package's top-left origin, matching
 		// the coordinates the drawing API uses.
-		box := sc.e.Page.mediaBox
+		box := sc.mediaBox
 		if box != nil {
 			x -= box[0]
 			y = box[3] - y
@@ -382,7 +398,7 @@ func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth
 			fontSizeRaw: st.fontSize,
 		}
 		if run.Text != "" {
-			sc.e.runs = append(sc.e.runs, run)
+			sc.runs = append(sc.runs, run)
 		}
 		tm = matrix{1, 0, 0, 1, widthText, 0}.mul(tm)
 	}
@@ -495,7 +511,7 @@ func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth
 // scanForm descends into a form XObject, making its copied content stream
 // editable as well.
 func (sc *runScanner) scanForm(name Name, resources any, ctm matrix, depth int) {
-	r := sc.e.r
+	r := sc.r
 	res, ok := r.resolve(resources).(Dict)
 	if !ok {
 		return
@@ -520,10 +536,9 @@ func (sc *runScanner) scanForm(name Name, resources any, ctm matrix, depth int) 
 	if err != nil {
 		return
 	}
-	// Locate the copy of this stream inside the document so edits to it
-	// are written back.
-	copied := sc.copiedStream(entry)
-	if copied == nil {
+	// Claim a writable stream for this form so edits reach the output.
+	writable := sc.adoptForm(entry)
+	if writable == nil {
 		return
 	}
 	inner := ctm
@@ -546,23 +561,22 @@ func (sc *runScanner) scanForm(name Name, resources any, ctm matrix, depth int) 
 	if formRes == nil {
 		formRes = resources
 	}
-	target := &editTarget{content: content, resources: formRes, stream: copied}
-	sc.e.targets = append(sc.e.targets, target)
+	target := &editTarget{content: content, resources: formRes, stream: writable}
+	sc.targets = append(sc.targets, target)
 	sc.scan(target, formRes, inner, depth+1)
 }
 
-// copiedStream returns this document's copy of a source stream, creating
-// it if the resource graph has not been copied yet.
-func (sc *runScanner) copiedStream(entry any) *rawStream {
-	cp, err := sc.im.copy(entry, 0)
+// copiedStream returns a document's copy of a source stream, creating it
+// if the resource graph has not been copied yet. It is the adoptForm
+// implementation used when importing into a new document.
+func (im *importer) copiedStream(entry any) *rawStream {
+	cp, err := im.copy(entry, 0)
 	if err != nil {
 		return nil
 	}
 	if rr, ok := cp.(rawRef); ok {
-		if stm, ok := sc.e.doc.raw[rr].(*rawStream); ok {
-			return stm
-		}
-		return nil
+		stm, _ := im.d.raw[rr].(*rawStream)
+		return stm
 	}
 	stm, _ := cp.(*rawStream)
 	return stm
@@ -598,12 +612,19 @@ func (e *EditablePage) ReplaceText(old, new string) (int, error) {
 // text with the returned string. It returns the number of runs rewritten;
 // on error nothing is changed.
 func (e *EditablePage) ReplaceFunc(fn func(*TextRun) (string, bool)) (int, error) {
+	return replaceRuns(e.runs, fn, e.fit)
+}
+
+// replaceRuns rewrites the runs fn selects. Every replacement is encoded
+// before any is applied, so a font that cannot represent one of them
+// leaves the document untouched.
+func replaceRuns(runs []*TextRun, fn func(*TextRun) (string, bool), fit FitMode) (int, error) {
 	type pending struct {
 		run  *TextRun
 		text string
 	}
 	var todo []pending
-	for _, run := range e.runs {
+	for _, run := range runs {
 		if run.replaced {
 			continue
 		}
@@ -611,8 +632,6 @@ func (e *EditablePage) ReplaceFunc(fn func(*TextRun) (string, bool)) (int, error
 			todo = append(todo, pending{run, text})
 		}
 	}
-	// Encode everything before mutating anything, so a font that cannot
-	// represent the replacement leaves the document untouched.
 	encoded := make([][]byte, len(todo))
 	for i, p := range todo {
 		codes, err := p.run.font.encodeText(p.text)
@@ -622,7 +641,7 @@ func (e *EditablePage) ReplaceFunc(fn func(*TextRun) (string, bool)) (int, error
 		encoded[i] = codes
 	}
 	for i, p := range todo {
-		p.run.applySplice(encoded[i], e.fit)
+		p.run.applySplice(encoded[i], fit)
 		p.run.Text = p.text
 		p.run.replaced = true
 	}

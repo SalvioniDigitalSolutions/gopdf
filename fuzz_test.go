@@ -113,6 +113,16 @@ func FuzzReader(f *testing.F) {
 		if _, err := keeper.FillFormInteractive(r, values); err == nil {
 			keeper.WriteTo(io.Discard)
 		}
+		// An incremental update rewrites objects of the original file.
+		u := Update(r)
+		if page, err := u.Page(0); err == nil {
+			page.ReplaceText("e", "a")
+			page.ReplaceTextReflow("1", "2")
+		}
+		u.SetFormValues(values)
+		u.SetPageRotation(0, 90)
+		u.SetInfo(Info{Title: "fuzz"})
+		u.WriteTo(io.Discard)
 		doc := New()
 		if _, err := doc.ImportPage(r, 0); err == nil {
 			doc.WriteTo(io.Discard)

@@ -25,8 +25,12 @@ type TextBlock struct {
 	// FontName is the font resource name in the source file.
 	FontName string
 
-	e     *EditablePage
 	lines []*TextRun
+	// Settings and the change hook come from whichever editing path
+	// produced the block.
+	fit      FitMode
+	maxExtra int
+	onChange func()
 	// wrapEm is the column width in 1/1000 em, the unit line widths are
 	// measured in, so wrapping needs no scale conversion.
 	wrapEm float64
@@ -53,6 +57,16 @@ func (e *EditablePage) SetMaxExtraLines(n int) {
 // one line; lines built from several runs (a bold word inside a sentence,
 // say) are not reflowable and become single-line blocks of their own.
 func (e *EditablePage) Blocks() []*TextBlock {
+	blocks := groupBlocks(e.runs, nil)
+	for _, b := range blocks {
+		b.fit, b.maxExtra = e.fit, e.maxExtraLines
+	}
+	return blocks
+}
+
+// groupBlocks partitions runs into paragraphs. onChange, when set, is
+// called whenever a block is rewritten.
+func groupBlocks(runs []*TextRun, onChange func()) []*TextBlock {
 	var blocks []*TextBlock
 	var cur *TextBlock
 
@@ -64,14 +78,14 @@ func (e *EditablePage) Blocks() []*TextBlock {
 		}
 	}
 
-	for i := 0; i < len(e.runs); {
+	for i := 0; i < len(runs); {
 		// Collect every run sharing this baseline.
 		j := i + 1
-		for j < len(e.runs) && math.Abs(e.runs[j].Y-e.runs[i].Y) < 0.5 &&
-			e.runs[j].target == e.runs[i].target {
+		for j < len(runs) && math.Abs(runs[j].Y-runs[i].Y) < 0.5 &&
+			runs[j].target == runs[i].target {
 			j++
 		}
-		line := e.runs[i]
+		line := runs[i]
 		multi := j-i > 1
 		i = j
 
@@ -86,7 +100,7 @@ func (e *EditablePage) Blocks() []*TextBlock {
 			continue
 		}
 		flush()
-		cur = &TextBlock{e: e, lines: []*TextRun{line}}
+		cur = &TextBlock{lines: []*TextRun{line}, onChange: onChange}
 	}
 	flush()
 	return blocks
@@ -145,9 +159,14 @@ func (b *TextBlock) finish() {
 // nothing.
 func (b *TextBlock) SetText(s string) error {
 	first := b.lines[0]
-	if len(b.lines) == 1 && b.e.maxExtraLines == 0 {
+	if len(b.lines) == 1 && b.maxExtra == 0 {
 		// Nothing to wrap into: fall back to a plain in-line rewrite.
-		return first.SetText(s, b.e.fit)
+		if err := first.SetText(s, b.fit); err != nil {
+			return err
+		}
+		b.Text = s
+		b.changed()
+		return nil
 	}
 	fi := first.font
 
@@ -155,7 +174,7 @@ func (b *TextBlock) SetText(s string) error {
 	if err != nil {
 		return err
 	}
-	if extra := len(lines) - len(b.lines); extra > b.e.maxExtraLines {
+	if extra := len(lines) - len(b.lines); extra > b.maxExtra {
 		return fmt.Errorf("gopdf: reflowed text needs %d more line(s) than the "+
 			"paragraph occupies; allow them with SetMaxExtraLines or shorten the text",
 			extra)
@@ -208,7 +227,15 @@ func (b *TextBlock) SetText(s string) error {
 		run.replaced = true
 	}
 	b.Text = strings.Join(lines, " ")
+	b.changed()
 	return nil
+}
+
+// changed notifies the owning editor that this block was rewritten.
+func (b *TextBlock) changed() {
+	if b.onChange != nil {
+		b.onChange()
+	}
 }
 
 // wrap greedily breaks s into lines no wider than the block's column,
