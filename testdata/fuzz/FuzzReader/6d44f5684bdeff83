@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("%PDF-00000<<%\rstartxref10")

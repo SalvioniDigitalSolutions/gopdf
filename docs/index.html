@@ -1,0 +1,597 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gopdf — PDF creation and manipulation in pure Go</title>
+<meta name="description" content="gopdf is a pure-Go library for creating, reading, editing and filling PDF files, with no dependencies outside the standard library.">
+<style>
+:root {
+  --bg: #ffffff;
+  --bg-soft: #f6f7f9;
+  --bg-code: #f4f5f7;
+  --fg: #1d2127;
+  --fg-soft: #5b6472;
+  --fg-faint: #8b95a3;
+  --accent: #1d4ed8;
+  --accent-soft: #e8eeff;
+  --border: #e3e6ea;
+  --ok: #14804a;
+  --warn: #9a6700;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1115;
+    --bg-soft: #161920;
+    --bg-code: #171a21;
+    --fg: #e6e9ef;
+    --fg-soft: #a4adbb;
+    --fg-faint: #6f7987;
+    --accent: #7aa2ff;
+    --accent-soft: #1b2439;
+    --border: #262b34;
+    --ok: #4ade80;
+    --warn: #fbbf24;
+  }
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 1.5rem; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Layout */
+.wrap { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 3.5rem; max-width: 1180px; margin: 0 auto; padding: 0 1.5rem; }
+nav {
+  position: sticky; top: 0; align-self: start; height: 100vh; overflow-y: auto;
+  padding: 2.5rem 0 3rem; font-size: 0.9rem;
+}
+nav .brand { font-weight: 700; font-size: 1.15rem; letter-spacing: -0.01em; margin-bottom: 0.15rem; display: block; color: var(--fg); }
+nav .tag { color: var(--fg-faint); font-size: 0.8rem; margin-bottom: 1.6rem; }
+nav h4 { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg-faint); margin: 1.5rem 0 0.5rem; font-weight: 600; }
+nav ul { list-style: none; margin: 0; padding: 0; }
+nav li a { display: block; padding: 0.22rem 0; color: var(--fg-soft); }
+nav li a:hover { color: var(--accent); text-decoration: none; }
+main { padding: 2.5rem 0 6rem; min-width: 0; }
+
+/* Header */
+header.hero { padding-bottom: 1rem; border-bottom: 1px solid var(--border); margin-bottom: 2.5rem; }
+header.hero h1 { font-size: 2.6rem; margin: 0 0 0.4rem; letter-spacing: -0.03em; }
+header.hero p.lead { font-size: 1.2rem; color: var(--fg-soft); margin: 0 0 1.2rem; max-width: 46rem; }
+.badges { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1.2rem; }
+.badge { font-size: 0.75rem; padding: 0.2rem 0.6rem; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.badge.plain { background: var(--bg-soft); color: var(--fg-soft); }
+
+h2 { font-size: 1.6rem; margin: 3rem 0 0.8rem; letter-spacing: -0.02em; padding-top: 0.5rem; }
+h3 { font-size: 1.15rem; margin: 2rem 0 0.5rem; letter-spacing: -0.01em; }
+h4 { font-size: 0.98rem; margin: 1.4rem 0 0.4rem; }
+p { margin: 0 0 1rem; }
+ul, ol { margin: 0 0 1rem; padding-left: 1.3rem; }
+li { margin-bottom: 0.3rem; }
+
+/* Code */
+pre {
+  background: var(--bg-code); border: 1px solid var(--border); border-radius: 8px;
+  padding: 1rem 1.1rem; overflow-x: auto; font-family: var(--mono);
+  font-size: 0.845rem; line-height: 1.6; margin: 0 0 1.2rem;
+  tab-size: 4; -moz-tab-size: 4;
+}
+code { font-family: var(--mono); font-size: 0.875em; }
+p code, li code, td code { background: var(--bg-soft); padding: 0.1em 0.36em; border-radius: 4px; border: 1px solid var(--border); }
+pre code { background: none; padding: 0; border: 0; }
+.k { color: #a626a4; } .s { color: #50a14f; } .c { color: var(--fg-faint); font-style: italic; } .f { color: #4078f2; } .n { color: #986801; }
+@media (prefers-color-scheme: dark) {
+  .k { color: #c792ea; } .s { color: #7ec699; } .f { color: #82aaff; } .n { color: #f7c66a; }
+}
+
+/* Tables */
+table { width: 100%; border-collapse: collapse; margin: 0 0 1.4rem; font-size: 0.92rem; display: block; overflow-x: auto; }
+th, td { text-align: left; padding: 0.55rem 0.8rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--fg-faint); }
+tbody tr:last-child td { border-bottom: 0; }
+
+/* Callouts */
+.note { border-left: 3px solid var(--accent); background: var(--bg-soft); padding: 0.85rem 1.1rem; border-radius: 0 8px 8px 0; margin: 0 0 1.3rem; }
+.note.warn { border-left-color: var(--warn); }
+.note p:last-child { margin-bottom: 0; }
+.note strong { color: var(--fg); }
+
+/* Feature grid */
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 0.9rem; margin: 0 0 1.5rem; }
+.card { border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.1rem; background: var(--bg-soft); }
+.card h4 { margin: 0 0 0.3rem; font-size: 0.95rem; }
+.card p { margin: 0; font-size: 0.88rem; color: var(--fg-soft); }
+
+footer { border-top: 1px solid var(--border); margin-top: 4rem; padding-top: 1.5rem; color: var(--fg-faint); font-size: 0.88rem; }
+
+@media (max-width: 900px) {
+  .wrap { grid-template-columns: 1fr; gap: 0; }
+  nav { position: static; height: auto; padding: 1.5rem 0 0; border-bottom: 1px solid var(--border); }
+  nav h4 { margin-top: 1rem; }
+  nav ul { display: flex; flex-wrap: wrap; gap: 0 1rem; }
+  main { padding-top: 1.5rem; }
+  header.hero h1 { font-size: 2rem; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<nav>
+  <a class="brand" href="#top">gopdf</a>
+  <div class="tag">PDF in pure Go</div>
+
+  <h4>Start</h4>
+  <ul>
+    <li><a href="#install">Install</a></li>
+    <li><a href="#quickstart">Quick start</a></li>
+    <li><a href="#coordinates">Coordinates &amp; units</a></li>
+  </ul>
+
+  <h4>Creating</h4>
+  <ul>
+    <li><a href="#text">Text &amp; fonts</a></li>
+    <li><a href="#graphics">Graphics</a></li>
+    <li><a href="#gradients">Gradients</a></li>
+    <li><a href="#images">Images</a></li>
+    <li><a href="#links">Links &amp; bookmarks</a></li>
+  </ul>
+
+  <h4>Manipulating</h4>
+  <ul>
+    <li><a href="#reading">Reading</a></li>
+    <li><a href="#merge">Merge &amp; split</a></li>
+    <li><a href="#stamp">Stamp &amp; watermark</a></li>
+    <li><a href="#editing">Editing text</a></li>
+    <li><a href="#reflow">Paragraph reflow</a></li>
+  </ul>
+
+  <h4>Forms</h4>
+  <ul>
+    <li><a href="#forms-read">Reading fields</a></li>
+    <li><a href="#forms-fill">Filling</a></li>
+    <li><a href="#forms-author">Authoring</a></li>
+  </ul>
+
+  <h4>More</h4>
+  <ul>
+    <li><a href="#encryption">Encryption</a></li>
+    <li><a href="#design">Design notes</a></li>
+    <li><a href="#limits">Limitations</a></li>
+    <li><a href="https://pkg.go.dev/github.com/salvionidigital/gopdf">API reference ↗</a></li>
+    <li><a href="https://github.com/salvionidigital/gopdf">GitHub ↗</a></li>
+  </ul>
+</nav>
+
+<main id="top">
+
+<header class="hero">
+  <h1>gopdf</h1>
+  <p class="lead">Create, read, edit and fill PDF files in pure Go — with nothing but the standard library.</p>
+  <div class="badges">
+    <span class="badge">No cgo</span>
+    <span class="badge">Zero dependencies</span>
+    <span class="badge plain">MIT licensed</span>
+    <span class="badge plain">Go 1.22+</span>
+  </div>
+  <p>The document writer, the file parser, the TrueType subsetter, the stream
+  filters and the encryption are all implemented in this repository. Nothing
+  wraps a native PDF library.</p>
+</header>
+
+<h2 id="install">Install</h2>
+<pre><code>go get github.com/salvionidigital/gopdf</code></pre>
+
+<h2 id="quickstart">Quick start</h2>
+<pre><code><span class="k">package</span> main
+
+<span class="k">import</span> (
+	<span class="s">"log"</span>
+
+	<span class="s">"github.com/salvionidigital/gopdf"</span>
+)
+
+<span class="k">func</span> <span class="f">main</span>() {
+	doc := gopdf.<span class="f">New</span>()
+	page := doc.<span class="f">AddPage</span>()
+	page.<span class="f">SetFont</span>(gopdf.Helvetica, <span class="n">14</span>)
+	page.<span class="f">Text</span>(<span class="n">72</span>, <span class="n">72</span>, <span class="s">"Hello, PDF!"</span>)
+	<span class="k">if</span> err := doc.<span class="f">Save</span>(<span class="s">"hello.pdf"</span>); err != <span class="k">nil</span> {
+		log.<span class="f">Fatal</span>(err)
+	}
+}</code></pre>
+
+<div class="grid">
+  <div class="card"><h4>Write</h4><p>Text, vector graphics, images, links, bookmarks, encryption.</p></div>
+  <div class="card"><h4>Read</h4><p>Parse any PDF: xref streams, object streams, every common filter.</p></div>
+  <div class="card"><h4>Edit</h4><p>Rewrite text in place without disturbing the layout.</p></div>
+  <div class="card"><h4>Forms</h4><p>Read, fill, flatten and author interactive AcroForms.</p></div>
+</div>
+
+<h2 id="coordinates">Coordinates &amp; units</h2>
+<p>All coordinates are in <strong>points</strong> (1/72 inch) with the origin at the
+<strong>top-left</strong> of the page — <code>y</code> grows downward, matching how you read a
+page. This differs from PDF's own bottom-left convention; the library
+converts internally so you never have to.</p>
+<pre><code><span class="c">// 25 mm from the left, 30 mm from the top</span>
+page.<span class="f">Text</span>(<span class="n">25</span>*gopdf.Mm, <span class="n">30</span>*gopdf.Mm, <span class="s">"Positioned in millimetres"</span>)</code></pre>
+<p>Available factors: <code>Pt</code>, <code>Mm</code>, <code>Cm</code>, <code>Inch</code>. Page sizes
+<code>A3</code>, <code>A4</code>, <code>A5</code>, <code>Letter</code> and <code>Legal</code> each
+have <code>.Portrait()</code> and <code>.Landscape()</code>.</p>
+
+<h2 id="text">Text &amp; fonts</h2>
+<p>The standard 14 PDF fonts are always available and need no embedding. They
+carry real Adobe metrics, so measurement and alignment are exact.</p>
+<pre><code>page.<span class="f">SetFont</span>(gopdf.TimesBold, <span class="n">16</span>)
+page.<span class="f">Text</span>(x, y, <span class="s">"Section title"</span>)
+
+w := page.<span class="f">TextWidth</span>(<span class="s">"Section title"</span>)
+page.<span class="f">TextAligned</span>(x, y, colWidth, gopdf.AlignCenter, s)
+next := page.<span class="f">TextWrapped</span>(x, y, width, lineHeight, longParagraph)</code></pre>
+
+<h3>Embedding a TrueType font</h3>
+<p>For text beyond the WinAnsi character set, load a <code>.ttf</code>,
+<code>.ttc</code> or <code>.otf</code>. The font is <strong>subset</strong> to the glyphs you actually use,
+pair kerning from the font's <code>kern</code> table is applied automatically,
+and a ToUnicode map keeps the text searchable and copyable.</p>
+<pre><code>noto, err := gopdf.<span class="f">LoadFont</span>(<span class="s">"NotoSans-Regular.ttf"</span>)
+<span class="k">if</span> err != <span class="k">nil</span> {
+	log.<span class="f">Fatal</span>(err)
+}
+page.<span class="f">SetFont</span>(noto, <span class="n">12</span>)
+page.<span class="f">Text</span>(<span class="n">72</span>, <span class="n">72</span>, <span class="s">"Καλημέρα κόσμε — Привет, мир — čeština"</span>)</code></pre>
+<div class="note">
+<p><strong>Standard fonts are limited to WinAnsi (CP-1252).</strong> Characters outside it
+render as <code>?</code>. Embed a font for anything else.</p>
+<p>CFF-based OpenType (<code>.otf</code>) fonts work too, embedded as
+<code>CIDFontType0</code>. They are embedded <em>whole</em> rather than
+subset — there is no charstring subsetter yet — so they produce larger
+files than TrueType.</p>
+</div>
+
+<h2 id="graphics">Graphics</h2>
+<pre><code>page.<span class="f">SetStrokeColor</span>(gopdf.<span class="f">RGB</span>(<span class="n">30</span>, <span class="n">60</span>, <span class="n">120</span>))
+page.<span class="f">SetFillColor</span>(gopdf.<span class="f">Gray</span>(<span class="n">240</span>))
+page.<span class="f">SetLineWidth</span>(<span class="n">1.5</span>)
+page.<span class="f">SetLineCap</span>(gopdf.CapRound)
+page.<span class="f">SetDash</span>(<span class="n">4</span>, <span class="n">2</span>)
+
+page.<span class="f">Line</span>(x1, y1, x2, y2)
+page.<span class="f">Rect</span>(x, y, w, h, gopdf.FillStroke)
+page.<span class="f">RoundedRect</span>(x, y, w, h, radius, gopdf.Stroke)
+page.<span class="f">Circle</span>(cx, cy, r, gopdf.Fill)
+page.<span class="f">Ellipse</span>(cx, cy, rx, ry, gopdf.Stroke)
+page.<span class="f">Polygon</span>(gopdf.Fill, x1, y1, x2, y2, x3, y3)
+
+<span class="c">// Arbitrary paths</span>
+page.<span class="f">MoveTo</span>(x, y)
+page.<span class="f">CurveTo</span>(c1x, c1y, c2x, c2y, x2, y2)
+page.<span class="f">LineTo</span>(x3, y3)
+page.<span class="f">ClosePath</span>()
+page.<span class="f">DrawPath</span>(gopdf.FillStroke)</code></pre>
+
+<h3>Scoped state: transforms, opacity, clipping</h3>
+<p>Every <code>Push</code> must be paired with a <code>Pop</code>. Colours, line
+settings and transforms all restore correctly, and the library skips
+operators that would not change anything, keeping content streams small.</p>
+<pre><code>page.<span class="f">Push</span>()
+page.<span class="f">RotateAt</span>(<span class="n">45</span>, cx, cy)
+page.<span class="f">SetAlpha</span>(<span class="n">0.5</span>, <span class="n">1</span>)      <span class="c">// fill, stroke opacity</span>
+page.<span class="f">ClipRect</span>(x, y, w, h)
+page.<span class="f">Text</span>(cx, cy, <span class="s">"watermark"</span>)
+page.<span class="f">Pop</span>()</code></pre>
+
+<h2 id="gradients">Gradients</h2>
+<p>Axial (linear) and radial gradients with any number of colour stops.
+<code>Stop</code> pairs a position from 0 to 1 with a colour; stops are
+sorted and padded to span the whole range for you.</p>
+<pre><code>page.<span class="f">FillGradientRect</span>(<span class="n">30</span>, <span class="n">60</span>, <span class="n">200</span>, <span class="n">80</span>, gopdf.GradientVertical,
+	gopdf.<span class="f">Stop</span>(<span class="n">0</span>, gopdf.<span class="f">RGB</span>(<span class="n">40</span>, <span class="n">90</span>, <span class="n">200</span>)),
+	gopdf.<span class="f">Stop</span>(<span class="n">1</span>, gopdf.<span class="f">RGB</span>(<span class="n">230</span>, <span class="n">240</span>, <span class="n">255</span>)))
+
+page.<span class="f">FillGradientCircle</span>(<span class="n">300</span>, <span class="n">100</span>, <span class="n">45</span>,
+	gopdf.<span class="f">Stop</span>(<span class="n">0</span>, gopdf.White), gopdf.<span class="f">Stop</span>(<span class="n">1</span>, gopdf.<span class="f">RGB</span>(<span class="n">180</span>, <span class="n">30</span>, <span class="n">90</span>)))</code></pre>
+<p>Directions are <code>GradientVertical</code>,
+<code>GradientHorizontal</code> and <code>GradientDiagonal</code>. For any
+other shape, clip first and paint the gradient into the clip:</p>
+<pre><code>page.<span class="f">Push</span>()
+page.<span class="f">MoveTo</span>(<span class="n">215</span>, <span class="n">175</span>)
+page.<span class="f">LineTo</span>(<span class="n">265</span>, <span class="n">260</span>)
+page.<span class="f">LineTo</span>(<span class="n">165</span>, <span class="n">260</span>)
+page.<span class="f">ClosePath</span>()
+page.<span class="f">Clip</span>(<span class="k">false</span>)
+page.<span class="f">PaintLinearGradient</span>(<span class="n">165</span>, <span class="n">175</span>, <span class="n">265</span>, <span class="n">260</span>, stops...)
+page.<span class="f">Pop</span>()</code></pre>
+<p>Any shape method also accepts <code>ClipPath</code> as its draw mode,
+which turns the shape into a clipping region instead of painting it:</p>
+<pre><code>page.<span class="f">Push</span>()
+page.<span class="f">Circle</span>(cx, cy, r, gopdf.ClipPath)
+page.<span class="f">PaintRadialGradient</span>(cx, cy, <span class="n">0</span>, r, stops...)
+page.<span class="f">Pop</span>()</code></pre>
+
+<h2 id="images">Images</h2>
+<pre><code>img, err := doc.<span class="f">AddImageFile</span>(<span class="s">"photo.jpg"</span>)   <span class="c">// JPEG, PNG or GIF</span>
+page.<span class="f">DrawImage</span>(img, x, y, w, h)
+
+<span class="c">// Or any image.Image</span>
+img2, err := doc.<span class="f">AddImage</span>(myImage)</code></pre>
+<p>JPEG data is embedded byte-for-byte with no re-encoding. PNG and GIF are
+decoded and stored as raw samples, with any alpha channel preserved as a
+PDF soft mask. Grayscale images use <code>DeviceGray</code>, and Adobe CMYK
+JPEGs get the inversion they require.</p>
+
+<h2 id="links">Links &amp; bookmarks</h2>
+<pre><code>page.<span class="f">LinkURL</span>(x, y, w, h, <span class="s">"https://example.com"</span>)
+page.<span class="f">LinkPage</span>(x, y, w, h, otherPage, <span class="n">0</span>)
+
+chapter := doc.<span class="f">AddOutline</span>(<span class="k">nil</span>, <span class="s">"Chapter 1"</span>, page, <span class="n">0</span>)
+doc.<span class="f">AddOutline</span>(chapter, <span class="s">"Section 1.1"</span>, otherPage, <span class="n">200</span>)</code></pre>
+
+<h2 id="reading">Reading an existing PDF</h2>
+<pre><code>r, err := gopdf.<span class="f">Open</span>(<span class="s">"report.pdf"</span>)
+<span class="k">if</span> err != <span class="k">nil</span> {
+	log.<span class="f">Fatal</span>(err)
+}
+fmt.<span class="f">Println</span>(r.<span class="f">NumPages</span>(), r.<span class="f">Info</span>().Title)
+
+size, _ := r.<span class="f">PageSize</span>(<span class="n">0</span>)      <span class="c">// accounts for page rotation</span>
+text, _ := r.<span class="f">PageText</span>(<span class="n">0</span>)      <span class="c">// content order, line breaks inferred</span></code></pre>
+<p>The parser handles classic cross-reference tables, PDF 1.5+ cross-reference
+streams, object streams and hybrid files, with Flate (including PNG and
+TIFF predictors), LZW, ASCII85, ASCIIHex and RunLength filters. Text
+extraction uses ToUnicode CMaps where present and falls back to the font's
+declared encoding — WinAnsi, MacRoman, or a <code>/Differences</code> table —
+and descends into nested form XObjects.</p>
+
+<h2 id="merge">Merge &amp; split</h2>
+<pre><code>gopdf.<span class="f">Merge</span>(<span class="s">"combined.pdf"</span>, <span class="s">"a.pdf"</span>, <span class="s">"b.pdf"</span>, <span class="s">"c.pdf"</span>)
+gopdf.<span class="f">ExtractPages</span>(<span class="s">"first-two.pdf"</span>, <span class="s">"input.pdf"</span>, <span class="n">0</span>, <span class="n">1</span>)
+
+<span class="c">// Or compose manually</span>
+doc := gopdf.<span class="f">New</span>()
+doc.<span class="f">AppendPDF</span>(r)
+page, _ := doc.<span class="f">ImportPage</span>(r, <span class="n">3</span>)
+page.<span class="f">SetRotate</span>(<span class="n">90</span>)</code></pre>
+
+<h2 id="stamp">Stamp &amp; watermark</h2>
+<p>An imported page is a normal <code>*Page</code>: the entire drawing API works
+on top of the original content. Source pages are wrapped as form XObjects,
+so imported resources can never collide with your overlay.</p>
+<pre><code>doc := gopdf.<span class="f">New</span>()
+<span class="k">for</span> i := <span class="n">0</span>; i &lt; src.<span class="f">NumPages</span>(); i++ {
+	page, _ := doc.<span class="f">ImportPage</span>(src, i)
+	page.<span class="f">Push</span>()
+	page.<span class="f">SetAlpha</span>(<span class="n">0.3</span>, <span class="n">0.3</span>)
+	page.<span class="f">RotateAt</span>(<span class="n">45</span>, page.<span class="f">Width</span>()/<span class="n">2</span>, page.<span class="f">Height</span>()/<span class="n">2</span>)
+	page.<span class="f">SetFont</span>(gopdf.HelveticaBold, <span class="n">72</span>)
+	page.<span class="f">SetFillColor</span>(gopdf.<span class="f">RGB</span>(<span class="n">200</span>, <span class="n">30</span>, <span class="n">30</span>))
+	page.<span class="f">TextAligned</span>(<span class="n">0</span>, page.<span class="f">Height</span>()/<span class="n">2</span>, page.<span class="f">Width</span>(), gopdf.AlignCenter, <span class="s">"DRAFT"</span>)
+	page.<span class="f">Pop</span>()
+}
+doc.<span class="f">Save</span>(<span class="s">"watermarked.pdf"</span>)</code></pre>
+
+<h2 id="editing">Editing text in place</h2>
+<p><code>EditPage</code> keeps a page's original operators editable, preserving its
+resources, media box and rotation exactly. <code>ReplaceText</code> rewrites
+text using the page's <em>own</em> font, so it renders identically.</p>
+<pre><code>src, _ := gopdf.<span class="f">Open</span>(<span class="s">"invoice.pdf"</span>)
+doc := gopdf.<span class="f">New</span>()
+
+page, err := doc.<span class="f">EditPage</span>(src, <span class="n">0</span>)
+<span class="k">if</span> err != <span class="k">nil</span> {
+	log.<span class="f">Fatal</span>(err)
+}
+n, err := page.<span class="f">ReplaceText</span>(<span class="s">"DRAFT"</span>, <span class="s">"FINAL"</span>)
+
+<span class="c">// An edited page is still a Page — draw on top as usual.</span>
+page.<span class="f">SetFont</span>(gopdf.HelveticaBold, <span class="n">10</span>)
+page.<span class="f">Text</span>(<span class="n">40</span>, <span class="n">40</span>, <span class="s">"revised"</span>)
+
+doc.<span class="f">Save</span>(<span class="s">"final.pdf"</span>)</code></pre>
+
+<h3>Inspecting before you change anything</h3>
+<pre><code><span class="k">for</span> _, run := <span class="k">range</span> page.<span class="f">Runs</span>() {
+	fmt.<span class="f">Printf</span>(<span class="s">"%.1f,%.1f  %.1fpt  %-8s %q\n"</span>,
+		run.X, run.Y, run.FontSize, run.FontName, run.Text)
+}</code></pre>
+<p><code>ReplaceFunc</code> rewrites runs matching arbitrary logic, and
+<code>TextRun.SetText</code> edits one specific run.</p>
+
+<h3>How the layout survives</h3>
+<p>A replacement almost always has a different width. <code>SetFitMode</code>
+decides what happens:</p>
+<table>
+<thead><tr><th>Mode</th><th>Behaviour</th></tr></thead>
+<tbody>
+<tr><td><code>FitAdvance</code> <em>(default)</em></td><td>Compensates for the width difference so everything after the edit stays exactly where it was.</td></tr>
+<tr><td><code>FitScale</code></td><td>Additionally scales the replacement horizontally to occupy precisely the original width. Use it when the text would otherwise overlap a neighbour.</td></tr>
+<tr><td><code>FitNone</code></td><td>Writes at natural width and lets the rest of the line shift, as a word processor would.</td></tr>
+</tbody>
+</table>
+<div class="note warn">
+<p><strong>When an edit is refused.</strong> PDFs usually embed only a <em>subset</em> of each
+font — just the glyphs the document draws. If your replacement needs a
+character that subset lacks, it would render as a blank box, so gopdf
+refuses the edit, names the missing character, and leaves the document
+unchanged:</p>
+<pre><code>font /Tc1 cannot represent '5': the source file embeds only a
+subset of this font, which does not include that character</code></pre>
+<p>Add such text with the drawing API and a font of your own instead.</p>
+</div>
+
+<h2 id="reflow">Paragraph reflow</h2>
+<p>A run is one line. When a change makes a sentence appreciably longer or
+shorter, reflow re-wraps the whole paragraph instead of stretching a single
+line. <code>Blocks</code> groups lines into paragraphs — same font, same left
+edge, constant leading — and measures each one's column width.</p>
+<pre><code><span class="k">for</span> _, b := <span class="k">range</span> page.<span class="f">Blocks</span>() {
+	fmt.<span class="f">Printf</span>(<span class="s">"%d lines, %.0fpt wide: %q\n"</span>, <span class="f">len</span>(b.<span class="f">Lines</span>()), b.Width, b.Text)
+}
+
+page.<span class="f">ReplaceTextReflow</span>(<span class="s">"internal use only"</span>, <span class="s">"any lawful purpose"</span>)
+page.<span class="f">Blocks</span>()[<span class="n">2</span>].<span class="f">SetText</span>(<span class="s">"Entirely new wording for this paragraph."</span>)</code></pre>
+<p>Reflow wraps using the paragraph's own font metrics and writes the result
+back onto the lines it already occupies. If the new text needs
+<em>more</em> lines, it is refused by default — reflow can re-wrap a
+paragraph but cannot push the rest of the page down.
+<code>SetMaxExtraLines(n)</code> allows growth when you know there is room.
+Shorter text simply leaves trailing lines blank.</p>
+
+<h2 id="forms-read">Reading form fields</h2>
+<pre><code>r, _ := gopdf.<span class="f">Open</span>(<span class="s">"application.pdf"</span>)
+<span class="k">if</span> r.<span class="f">HasForm</span>() {
+	<span class="k">for</span> _, f := <span class="k">range</span> r.<span class="f">FormFields</span>() {
+		fmt.<span class="f">Printf</span>(<span class="s">"%-14s %-9s page %d  %q %v\n"</span>,
+			f.Name, f.Type, f.Page, f.Value, f.Options)
+	}
+}</code></pre>
+<pre><code>applicant   text      page 0  ""       []
+country     choice    page 0  "Italy"  [Italy France Spain]
+subscribe   checkbox  page 0  ""       []
+plan        radio     page 0  ""       []</code></pre>
+<p>Field types are <code>FieldText</code>, <code>FieldCheckbox</code>,
+<code>FieldRadio</code>, <code>FieldChoice</code>, <code>FieldButton</code> and
+<code>FieldSignature</code>. Each field also reports <code>ReadOnly</code>,
+<code>Required</code>, <code>MaxLen</code> and its widget <code>Rect</code>.</p>
+
+<h2 id="forms-fill">Filling forms</h2>
+<h3>Flattened — final and unchangeable</h3>
+<pre><code>doc := gopdf.<span class="f">New</span>()
+n, err := doc.<span class="f">FillForm</span>(r, <span class="k">map</span>[<span class="k">string</span>]<span class="k">string</span>{
+	<span class="s">"applicant"</span>: <span class="s">"Ada Lovelace"</span>,
+	<span class="s">"country"</span>:   <span class="s">"France"</span>,
+	<span class="s">"subscribe"</span>: <span class="s">"Yes"</span>,
+})
+doc.<span class="f">Save</span>(<span class="s">"application-filled.pdf"</span>)</code></pre>
+<p>Values are drawn into the page content and the interactive fields are
+dropped, so the result displays and prints identically everywhere and the
+recipient cannot alter it. Fields you do not set keep the appearance they
+already had. Text uses each field's own <code>/DA</code> — font, size, colour
+and alignment — auto-sized to its box and clipped to its rectangle.</p>
+
+<h3>Interactive — still editable</h3>
+<pre><code>doc.<span class="f">FillFormInteractive</span>(r, <span class="k">map</span>[<span class="k">string</span>]<span class="k">string</span>{<span class="s">"applicant"</span>: <span class="s">"Grace Hopper"</span>})</code></pre>
+<p>This carries the field tree, the widget annotations and the form's default
+resources across, and generates a fresh appearance stream for every text
+and choice field so the values are visible immediately rather than only
+after a viewer regenerates them. Checkboxes and radio buttons switch to
+their existing "on" appearance.</p>
+<div class="note">
+<p>Both paths <strong>validate before changing anything</strong>. An unknown field name,
+a value past <code>MaxLen</code>, a choice value that is not an option, or a
+write to a read-only field returns an error and leaves the document
+untouched.</p>
+</div>
+
+<h2 id="forms-author">Authoring forms</h2>
+<pre><code>doc := gopdf.<span class="f">New</span>()
+page := doc.<span class="f">AddPage</span>()
+
+page.<span class="f">AddTextField</span>(<span class="s">"name"</span>, <span class="n">160</span>, <span class="n">100</span>, <span class="n">240</span>, <span class="n">20</span>, gopdf.FieldOptions{
+	MaxLen:  <span class="n">60</span>,
+	Tooltip: <span class="s">"Your full legal name"</span>,
+})
+page.<span class="f">AddChoiceField</span>(<span class="s">"country"</span>, <span class="n">160</span>, <span class="n">130</span>, <span class="n">160</span>, <span class="n">20</span>,
+	[]<span class="k">string</span>{<span class="s">"Italy"</span>, <span class="s">"France"</span>, <span class="s">"Spain"</span>}, gopdf.FieldOptions{Value: <span class="s">"Italy"</span>})
+page.<span class="f">AddCheckbox</span>(<span class="s">"newsletter"</span>, <span class="n">160</span>, <span class="n">160</span>, <span class="n">16</span>, gopdf.FieldOptions{Selected: <span class="k">true</span>})
+page.<span class="f">AddRadioButton</span>(<span class="s">"plan"</span>, <span class="s">"basic"</span>, <span class="n">160</span>, <span class="n">190</span>, <span class="n">14</span>, gopdf.FieldOptions{})
+page.<span class="f">AddRadioButton</span>(<span class="s">"plan"</span>, <span class="s">"pro"</span>, <span class="n">240</span>, <span class="n">190</span>, <span class="n">14</span>, gopdf.FieldOptions{Selected: <span class="k">true</span>})
+page.<span class="f">AddTextField</span>(<span class="s">"notes"</span>, <span class="n">160</span>, <span class="n">220</span>, <span class="n">240</span>, <span class="n">60</span>, gopdf.FieldOptions{
+	Multiline:  <span class="k">true</span>,
+	Background: &amp;gopdf.Color{<span class="n">245</span>, <span class="n">245</span>, <span class="n">245</span>},
+})
+
+doc.<span class="f">Save</span>(<span class="s">"application.pdf"</span>)</code></pre>
+<p><code>FieldOptions</code> covers the value, font, size, colour, alignment,
+<code>MaxLen</code>, multiline, read-only and required flags, border and
+background colours, tooltip, and the initial selection of a checkbox or
+radio button. Every widget gets a complete appearance stream, so the form
+looks right before a viewer touches it. Duplicate field names, repeated
+radio values and out-of-range initial values are all rejected.</p>
+
+<h2 id="encryption">Encryption</h2>
+<pre><code><span class="c">// Protect a new document</span>
+doc.<span class="f">Encrypt</span>(<span class="s">"userpw"</span>, <span class="s">"ownerpw"</span>, gopdf.AllowPrint|gopdf.AllowCopy, gopdf.AES256)
+
+<span class="c">// Read a protected file — either password works</span>
+r, err := gopdf.<span class="f">OpenPassword</span>(<span class="s">"protected.pdf"</span>, <span class="s">"userpw"</span>)
+<span class="k">if</span> errors.<span class="f">Is</span>(err, gopdf.ErrPasswordRequired) {
+	<span class="c">// prompt and retry</span>
+}</code></pre>
+<p>Reading supports RC4 (40/128-bit), AES-128 and AES-256, including the
+revision 6 hardened password hash. Writing supports <code>AES128</code>
+(revision 4, readable everywhere) and <code>AES256</code> (revision 6, PDF 2.0).
+An empty user password means anyone can open the file while the permissions
+still apply, and <code>Open</code>/<code>NewReader</code> try it automatically.</p>
+<p>Permission constants: <code>AllowPrint</code>, <code>AllowModify</code>,
+<code>AllowCopy</code>, <code>AllowAnnotate</code>, <code>AllowFillForms</code>,
+<code>AllowAccessible</code>, <code>AllowAssemble</code>,
+<code>AllowHighResPrint</code>, plus <code>AllowAll</code> and
+<code>AllowNone</code>.</p>
+<div class="note warn">
+<p><strong>Permissions are advisory.</strong> The PDF specification relies on viewers to
+honour them; they do not protect content from anyone who can open the
+document.</p>
+</div>
+
+<h2 id="design">Design notes</h2>
+<ul>
+<li>The writer emits objects in a single pass with pre-assigned object
+numbers, then writes the cross-reference table from recorded offsets.
+Unencrypted output is byte-for-byte <strong>deterministic</strong>.</li>
+<li>Graphics-state setters skip operators that would not change anything,
+with <code>Push</code>/<code>Pop</code>-aware tracking, so repetitive drawing code
+still produces compact content streams.</li>
+<li>Embedded fonts are subset by clearing the outlines of unused glyphs;
+glyph IDs are preserved and the result is a valid TrueType font in its own
+right — the test suite re-parses it to prove that.</li>
+<li>Text editing splices new show-text operators over the originals; every
+other operator is left untouched. An edited page keeps its own resource
+dictionary, and this library's resources are merged in under a prefix that
+cannot collide with the source's names.</li>
+<li>Imported pages become form XObjects with their original streams copied
+verbatim and shared objects deduplicated per source document.</li>
+<li>Encryption applies to every string and stream, after compression, with
+per-object keys. The <code>/Encrypt</code> dictionary and file identifier are
+written in the clear, as the specification requires.</li>
+<li>Stream decoding is bounded against decompression bombs, and the reader
+and font parser are continuously fuzzed with a checked-in corpus.</li>
+</ul>
+
+<h2 id="limits">Limitations</h2>
+<ul>
+<li>Editing can only use glyphs a document's fonts actually contain.</li>
+<li>Reflow re-wraps within a paragraph's existing lines; it cannot push
+later content down the page.</li>
+<li><code>FillForm</code> flattens; use <code>FillFormInteractive</code> to keep
+fields editable.</li>
+<li>OpenType (<code>.otf</code>) fonts are embedded whole rather than
+subset, so they produce larger files than TrueType.</li>
+<li>Encrypted files are read, but public-key (certificate) security
+handlers are not supported.</li>
+</ul>
+
+<h3>Roadmap</h3>
+<p>CFF charstring subsetting · incremental update · cascading reflow across
+pages · certificate security handlers · PDF/A conformance.</p>
+
+<footer>
+<p><strong>gopdf</strong> — MIT licensed ·
+<a href="https://github.com/salvionidigital/gopdf">Source on GitHub</a> ·
+<a href="https://pkg.go.dev/github.com/salvionidigital/gopdf">API reference</a></p>
+</footer>
+
+</main>
+</div>
+</body>
+</html>

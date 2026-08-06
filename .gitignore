@@ -1,0 +1,7 @@
+examples/demo/demo.pdf
+*.out
+examples/stamp/stamped.pdf
+examples/edit/edit
+*.test
+examples/demo/demo
+examples/stamp/stamp

@@ -1,0 +1,206 @@
+# gopdf
+
+**Create, read, edit and fill PDFs — in pure Go, with nothing but the standard library.**
+
+[![Go Reference](https://pkg.go.dev/badge/github.com/salvionidigital/gopdf.svg)](https://pkg.go.dev/github.com/salvionidigital/gopdf)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+No cgo. No third-party dependencies. No native PDF library underneath — the
+document writer, the file parser, the font subsetter, the filters and
+the encryption are all implemented here.
+
+📖 **[Documentation](https://salvionidigital.github.io/gopdf/)**
+
+```go
+package main
+
+import (
+	"log"
+
+	"github.com/salvionidigital/gopdf"
+)
+
+func main() {
+	doc := gopdf.New()
+	page := doc.AddPage()
+	page.SetFont(gopdf.Helvetica, 14)
+	page.Text(72, 72, "Hello, PDF!")
+	if err := doc.Save("hello.pdf"); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+```
+go get github.com/salvionidigital/gopdf
+```
+
+## What it does
+
+**Writing**
+
+- Multi-page documents, standard sizes (A3–A5, Letter, Legal) or custom, in
+  either orientation, with Unicode metadata
+- The standard 14 fonts with accurate metrics, plus **TrueType and
+  OpenType embedding** — `.ttf`/`.ttc` subset automatically, `.otf` (CFF)
+  embedded whole — with pair kerning and ToUnicode maps for full Unicode
+  text that stays searchable
+- Vector graphics: lines, rectangles, rounded rectangles, circles,
+  ellipses, polygons, Bézier paths, dash patterns, caps and joins,
+  fill/stroke opacity, clipping, and scoped transforms
+- **Axial and radial gradients** with any number of colour stops, painted
+  into a rectangle, a circle or any path you clip to
+- Images: JPEG embedded byte-for-byte, PNG/GIF/`image.Image` with alpha
+  preserved as soft masks, grayscale, and Adobe CMYK handling
+- Word wrapping, alignment, links, and a nestable bookmark tree
+- **Encryption**: AES-128 or AES-256 with per-field permissions
+
+**Reading and manipulating**
+
+- A native parser: classic xref tables, PDF 1.5+ cross-reference streams,
+  object streams, hybrid files; Flate (with PNG/TIFF predictors), LZW,
+  ASCII85, ASCIIHex and RunLength filters
+- Merge, split, rotate, stamp and watermark
+- **Text extraction** through ToUnicode CMaps and simple-font encodings,
+  descending into nested form XObjects
+- **In-place text editing** that preserves the layout exactly
+- **Paragraph reflow** that re-wraps text across a paragraph's own lines
+- **Interactive forms**: read fields, fill them (flattened or still
+  editable), and author new ones from scratch
+- Reads encrypted files (RC4, AES-128, AES-256) with either password
+
+## Highlights
+
+### Edit text without destroying the layout
+
+```go
+src, _ := gopdf.Open("invoice.pdf")
+doc := gopdf.New()
+
+page, _ := doc.EditPage(src, 0)          // keeps the original operators
+page.ReplaceText("DRAFT", "FINAL")       // drawn in the page's own font
+doc.Save("final.pdf")
+```
+
+The replacement is encoded with the font the original text used, so it
+renders identically, and the width difference is compensated so nothing
+else on the page moves. Editing a real-world PDF this way changes only the
+pixels of the edited lines — the rest of the page is byte-identical.
+
+If the page's font is a subset without a glyph your replacement needs, the
+edit is **refused with a clear message** rather than rendering blank boxes.
+
+### Fill a form, or build one
+
+```go
+// Fill and flatten — the result cannot be changed by the recipient
+doc.FillForm(src, map[string]string{"applicant": "Ada Lovelace"})
+
+// Fill and keep it editable, with freshly generated appearances
+doc.FillFormInteractive(src, map[string]string{"applicant": "Ada Lovelace"})
+
+// Or author a form from scratch
+page.AddTextField("name", 160, 100, 240, 20, gopdf.FieldOptions{MaxLen: 60})
+page.AddCheckbox("newsletter", 160, 160, 16, gopdf.FieldOptions{Selected: true})
+page.AddRadioButton("plan", "pro", 240, 190, 14, gopdf.FieldOptions{Selected: true})
+page.AddChoiceField("country", 160, 130, 160, 20,
+	[]string{"Italy", "France", "Spain"}, gopdf.FieldOptions{Value: "Italy"})
+```
+
+### Gradients
+
+```go
+page.FillGradientRect(30, 60, 200, 80, gopdf.GradientVertical,
+	gopdf.Stop(0, gopdf.RGB(40, 90, 200)),
+	gopdf.Stop(1, gopdf.RGB(230, 240, 255)))
+
+page.FillGradientCircle(300, 100, 45,
+	gopdf.Stop(0, gopdf.White), gopdf.Stop(1, gopdf.RGB(180, 30, 90)))
+
+// Or into any shape you clip to
+page.Push()
+page.Circle(cx, cy, r, gopdf.ClipPath)
+page.PaintLinearGradient(x0, y0, x1, y1, stops...)
+page.Pop()
+```
+
+### Merge, watermark, encrypt
+
+```go
+gopdf.Merge("combined.pdf", "a.pdf", "b.pdf")
+gopdf.ExtractPages("first-two.pdf", "input.pdf", 0, 1)
+
+doc := gopdf.New()
+for i := 0; i < src.NumPages(); i++ {
+	page, _ := doc.ImportPage(src, i)      // an imported page is a normal Page
+	page.Push()
+	page.SetAlpha(0.3, 0.3)
+	page.RotateAt(45, page.Width()/2, page.Height()/2)
+	page.SetFont(gopdf.HelveticaBold, 72)
+	page.TextAligned(0, page.Height()/2, page.Width(), gopdf.AlignCenter, "DRAFT")
+	page.Pop()
+}
+doc.Encrypt("", "owner-password", gopdf.AllowPrint, gopdf.AES256)
+doc.Save("watermarked.pdf")
+```
+
+Full guides, the complete API tour and the design notes are in the
+**[documentation](https://salvionidigital.github.io/gopdf/)**.
+
+## Examples
+
+| Command | What it shows |
+| --- | --- |
+| [`examples/demo`](examples/demo) | Every drawing feature on three pages |
+| [`examples/stamp`](examples/stamp) | Watermarking an existing PDF |
+| [`examples/edit`](examples/edit) | Listing and rewriting text in place |
+
+```bash
+go run ./examples/edit -in report.pdf -list
+```
+
+```bash
+go run ./examples/edit -in report.pdf -out final.pdf -replace "DRAFT=FINAL"
+```
+
+## Correctness
+
+Coordinates are in points (1/72 inch) with the origin at the **top-left**
+of the page; `Mm`, `Cm` and `Inch` convert other units.
+
+- **88 tests** covering the writer, the parser, the font subsetter, the
+  filters, encryption, editing, reflow and forms
+- **Fuzz targets** for the PDF reader and the TrueType parser, with a
+  checked-in regression corpus of 600+ inputs. Fuzzing has found and fixed
+  real bugs, including a denial-of-service in `cmap` parsing
+- **Validated against Poppler** in both directions: files gopdf writes are
+  read by an independent implementation, and files other tools wrote are
+  read, edited and rewritten by gopdf with their text preserved
+- Unencrypted output is byte-for-byte **deterministic**
+- Stream decoding is bounded against decompression bombs
+
+## Limitations
+
+Stated plainly, because they matter when choosing a library:
+
+- Editing can only use glyphs a document's fonts actually contain. Subset
+  fonts routinely lack characters; those edits are refused, not mangled.
+- Reflow re-wraps a paragraph within the lines it already occupies. It
+  cannot push later content down the page.
+- `FillForm` flattens; `FillFormInteractive` keeps fields editable.
+- OpenType (`.otf`) fonts are embedded whole rather than subset, so they
+  produce larger files than TrueType. TrueType is subset per document.
+- Permission flags on encrypted documents are advisory, as the PDF
+  specification defines them — they are not a security boundary.
+
+## Roadmap
+
+- CFF charstring subsetting, so OpenType files shrink like TrueType ones
+- Incremental update: append changes and keep the original bytes intact
+- Cascading reflow that pushes later content down the page
+- Public-key (certificate) security handlers
+- PDF/A conformance
+
+## License
+
+[MIT](LICENSE)

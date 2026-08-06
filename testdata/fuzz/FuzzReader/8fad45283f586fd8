@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("%PDF-000000 0obj<</Size 7/W[7 0 0]>>stream0000000000000000000000000000000000000000endstreamstartxref10")
