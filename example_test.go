@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/salvionidigital/gopdf"
+	"github.com/SalvioniDigitalSolutions/gopdf"
 )
 
 // A minimal one-page document.

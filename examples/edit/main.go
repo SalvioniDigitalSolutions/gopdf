@@ -15,7 +15,7 @@ import (
 	"log"
 	"strings"
 
-	"github.com/salvionidigital/gopdf"
+	"github.com/SalvioniDigitalSolutions/gopdf"
 )
 
 type replacements []string

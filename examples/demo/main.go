@@ -11,7 +11,7 @@ import (
 	"log"
 	"math"
 
-	"github.com/salvionidigital/gopdf"
+	"github.com/SalvioniDigitalSolutions/gopdf"
 )
 
 func main() {
@@ -196,7 +196,7 @@ func main() {
 	linkText := "gopdf on GitHub"
 	p3.Text(boxX+4*gopdf.Mm, y+9*gopdf.Mm, linkText)
 	p3.LinkURL(boxX+4*gopdf.Mm, y+5*gopdf.Mm, p3.TextWidth(linkText), 5*gopdf.Mm,
-		"https://github.com/salvionidigital/gopdf")
+		"https://github.com/SalvioniDigitalSolutions/gopdf")
 
 	// Bookmarks for the viewer sidebar.
 	root := doc.AddOutline(nil, "gopdf demo", page, 0)

@@ -9,7 +9,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/salvionidigital/gopdf"
+	"github.com/SalvioniDigitalSolutions/gopdf"
 )
 
 func main() {

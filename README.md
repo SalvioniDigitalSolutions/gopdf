@@ -2,14 +2,14 @@
 
 **Create, read, edit and fill PDFs — in pure Go, with nothing but the standard library.**
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/salvionidigital/gopdf.svg)](https://pkg.go.dev/github.com/salvionidigital/gopdf)
+[![Go Reference](https://pkg.go.dev/badge/github.com/SalvioniDigitalSolutions/gopdf.svg)](https://pkg.go.dev/github.com/SalvioniDigitalSolutions/gopdf)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 No cgo. No third-party dependencies. No native PDF library underneath — the
 document writer, the file parser, the font subsetter, the filters and
 the encryption are all implemented here.
 
-📖 **[Documentation](https://salvionidigital.github.io/gopdf/)**
+📖 **[Documentation](https://salvionidigitalsolutions.github.io/gopdf/)**
 
 ```go
 package main
@@ -17,7 +17,7 @@ package main
 import (
 	"log"
 
-	"github.com/salvionidigital/gopdf"
+	"github.com/SalvioniDigitalSolutions/gopdf"
 )
 
 func main() {
@@ -32,7 +32,7 @@ func main() {
 ```
 
 ```
-go get github.com/salvionidigital/gopdf
+go get github.com/SalvioniDigitalSolutions/gopdf
 ```
 
 ## What it does
@@ -167,7 +167,7 @@ doc.Save("watermarked.pdf")
 ```
 
 Full guides, the complete API tour and the design notes are in the
-**[documentation](https://salvionidigital.github.io/gopdf/)**.
+**[documentation](https://salvionidigitalsolutions.github.io/gopdf/)**.
 
 ## Examples
 

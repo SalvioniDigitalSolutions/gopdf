@@ -1,3 +1,3 @@
-module github.com/salvionidigital/gopdf
+module github.com/SalvioniDigitalSolutions/gopdf
 
 go 1.22
