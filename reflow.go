@@ -279,7 +279,17 @@ func (b *TextBlock) wrap(s string) ([]string, error) {
 }
 
 // spliceRaw records a verbatim replacement of the run's whole operation.
+// Rewriting the same run again replaces the earlier edit rather than
+// stacking a second one on top of it, so a page can be edited more than
+// once without the two edits colliding.
 func (run *TextRun) spliceRaw(s string) {
+	for i := range run.target.splices {
+		if run.target.splices[i].start == run.start &&
+			run.target.splices[i].end == run.end {
+			run.target.splices[i].repl = []byte(s)
+			return
+		}
+	}
 	run.target.splices = append(run.target.splices, splice{
 		start: run.start, end: run.end, repl: []byte(s),
 	})

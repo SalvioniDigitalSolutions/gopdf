@@ -99,8 +99,10 @@ type EditablePage struct {
 	runs          []*TextRun
 	fit           FitMode
 	maxExtraLines int
-	apCount       int // appearance streams placed on this page
-	flushed       bool
+	// flows caches the page's paragraphs so repeated edits accumulate.
+	flows   []*Flow
+	apCount int // appearance streams placed on this page
+	flushed bool
 }
 
 // rawOp appends a raw content-stream operator to the page. It is used for

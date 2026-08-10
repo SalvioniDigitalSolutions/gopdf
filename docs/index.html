@@ -154,6 +154,7 @@ footer { border-top: 1px solid var(--border); margin-top: 4rem; padding-top: 1.5
     <li><a href="#stamp">Stamp &amp; watermark</a></li>
     <li><a href="#editing">Editing text</a></li>
     <li><a href="#reflow">Paragraph reflow</a></li>
+    <li><a href="#flow">Flowing longer text</a></li>
     <li><a href="#images-edit">Images</a></li>
     <li><a href="#restyle">Restyling text</a></li>
     <li><a href="#annotations">Annotations</a></li>
@@ -456,6 +457,66 @@ back onto the lines it already occupies. If the new text needs
 paragraph but cannot push the rest of the page down.
 <code>SetMaxExtraLines(n)</code> allows growth when you know there is room.
 Shorter text simply leaves trailing lines blank.</p>
+
+<h2 id="flow">Flowing longer text</h2>
+<p>The <a href="#reflow">reflow</a> above re-wraps a paragraph within the
+lines it already occupies, and needs every line to be one operation in one
+font. That rules out the ordinary case of a bold word inside a sentence,
+and refuses any replacement that needs more room. A <strong>flow</strong>
+drops both restrictions.</p>
+<pre><code>r, _ := gopdf.<span class="f">Open</span>(<span class="s">"contract.pdf"</span>)
+u := gopdf.<span class="f">Update</span>(r)
+page, _ := u.<span class="f">Page</span>(<span class="n">0</span>)
+
+<span class="c">// Rewrites every paragraph containing the phrase, and moves the</span>
+<span class="c">// ones below it to make room.</span>
+page.<span class="f">ReplaceTextFlow</span>(<span class="s">"twelve months"</span>,
+	<span class="s">"thirty-six calendar months from the effective date"</span>)
+
+<span class="c">// Or a paragraph at a time.</span>
+<span class="k">for</span> _, f := <span class="k">range</span> page.<span class="f">Flows</span>() {
+	f.<span class="f">Replace</span>(<span class="s">"EUR 1,200"</span>, <span class="s">"EUR 27,450.99"</span>)
+	fmt.<span class="f">Println</span>(f.<span class="f">LineCount</span>(), f.<span class="f">LineDelta</span>())
+}
+u.<span class="f">Save</span>(<span class="s">"revised.pdf"</span>)</code></pre>
+
+<h3>Styling survives the edit</h3>
+<p>A paragraph is modelled as a run of <em>styled spans</em> rather than a
+run of lines. A replacement inherits the styling of the text it replaces,
+and everything around it keeps its own — change a figure inside a bold
+phrase and it stays bold, while the sentence around it does not.</p>
+<pre><code><span class="k">for</span> _, s := <span class="k">range</span> f.<span class="f">Spans</span>() {
+	fmt.<span class="f">Printf</span>(<span class="s">"%-10s %4.1fpt %q\n"</span>, s.FontName, s.FontSize, s.Text)
+}
+<span class="c">// F2  11.0 "Payment of "</span>
+<span class="c">// F1  11.0 "EUR 1,200"        &lt;- bold</span>
+<span class="c">// F2  11.0 " is due on Friday."</span></code></pre>
+<p><code>SetSpans</code> takes the same list back for full control;
+<code>SetText</code> replaces the paragraph outright in its first span's
+style.</p>
+
+<h3>Length is free</h3>
+<p>The paragraph is re-wrapped to its own column width, measuring every
+piece in its own font, and takes however many lines it needs.
+<code>LineDelta</code> reports how many it gained or lost. Everything
+below it on the page then moves down, or up, by that much — so a clause
+that grows does not print over the one after it.</p>
+<p>Two details that decide whether this works on real files. A word the
+content stream broke in two — or drew one glyph at a time, as justified
+documents often do — is matched all the same, because matching runs over
+the paragraph rather than one operation at a time. And the baseline step
+is taken from the leading on the page, not from the difference between two
+text matrices: a document may position each line under its own transform,
+which leaves those matrices identical while the lines are plainly
+apart.</p>
+<pre><code>f.<span class="f">SetMaxExtraLines</span>(<span class="n">2</span>)   <span class="c">// refuse to grow by more than two lines</span></code></pre>
+<div class="note warn">
+<p><strong>A flow moves text, not everything.</strong> Images, rules and
+other artwork below a paragraph stay where they are, so leave room or
+check <code>LineDelta</code> before writing. Re-wrapping also needs the
+font to be able to set a space: a document that positions every word
+separately and never draws one is declined rather than run together.</p>
+</div>
 
 <h2 id="images-edit">Images in an existing file</h2>
 <p><code>Reader.PageImages</code> lists what a page draws, including images
@@ -887,8 +948,9 @@ and font parser are continuously fuzzed with a checked-in corpus.</li>
 <h2 id="limits">Limitations</h2>
 <ul>
 <li>Editing can only use glyphs a document's fonts actually contain.</li>
-<li>Reflow re-wraps within a paragraph's existing lines; it cannot push
-later content down the page.</li>
+<li>Reflow re-wraps within a paragraph's existing lines. Use a
+<a href="#flow">flow</a> when the length changes: it adds or removes lines
+and moves the text below, though not images or rules.</li>
 <li>An incremental update only grows a file; superseded objects stay in
 it.</li>
 <li><code>FillForm</code> flattens; use <code>FillFormInteractive</code> to keep

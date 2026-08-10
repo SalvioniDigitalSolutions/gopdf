@@ -65,6 +65,9 @@ go get github.com/SalvioniDigitalSolutions/gopdf
   descending into nested form XObjects
 - **In-place text editing** that preserves the layout exactly
 - **Paragraph reflow** that re-wraps text across a paragraph's own lines
+- **Flow engine**: replace text of any length, keeping each part's
+  styling, growing or shrinking the paragraph by whole lines and pushing
+  what follows out of the way
 - **Interactive forms**: read fields, fill them (flattened or still
   editable), and author new ones from scratch
 - **Images**: list what a page draws, with placement and colour space,
@@ -107,6 +110,40 @@ pixels of the edited lines — the rest of the page is byte-identical.
 
 If the page's font is a subset without a glyph your replacement needs, the
 edit is **refused with a clear message** rather than rendering blank boxes.
+
+### Replace text of any length, keeping the styling
+
+`ReplaceText` swaps text inside one line. When the replacement is a
+different length, a flow re-wraps the whole paragraph instead.
+
+```go
+r, _ := gopdf.Open("contract.pdf")
+u := gopdf.Update(r)
+page, _ := u.Page(0)
+
+// Rewrites every paragraph containing the phrase, and moves the ones
+// below to make room.
+page.ReplaceTextFlow("twelve months", "thirty-six calendar months from the effective date")
+
+// Or work a paragraph at a time.
+for _, f := range page.Flows() {
+	f.Replace("EUR 1,200", "EUR 27,450.99")   // stays bold if it was bold
+	fmt.Println(f.LineCount(), f.LineDelta()) // how it grew
+}
+u.Save("revised.pdf")
+```
+
+Two things it gets right. **Styling survives**: a paragraph is modelled as
+styled spans rather than lines, so a replacement inherits the styling of
+the text it replaces and everything around it keeps its own — swap a
+figure inside a bold phrase and it stays bold, while the sentence around
+it does not. **Length is free**: the paragraph is re-wrapped to its own
+column using each span's own font metrics, taking however many lines it
+needs, and everything below it on the page moves down or up to match.
+
+A word split across two operations, or drawn one glyph at a time as
+justified documents often are, is matched all the same. Cap the growth
+with `SetMaxExtraLines` where a paragraph must not run past its box.
 
 ### Fill a form, or build one
 
@@ -310,16 +347,18 @@ go run ./examples/redact -in case.pdf -list -text "Ada Lovelace"
 Coordinates are in points (1/72 inch) with the origin at the **top-left**
 of the page; `Mm`, `Cm` and `Inch` convert other units.
 
-- **182 tests** at **85% statement coverage**, covering the writer, the
+- **210 tests** at **86% statement coverage**, covering the writer, the
   parser, the font subsetter, the filters, encryption, editing, reflow,
-  forms, signatures and redaction
+  flow, forms, signatures and redaction
 - **Swept against 4,635 real PDFs** — macOS and application resources, Go
   module fixtures, and a 130,000-file legal corpus spanning Word,
   StarOffice, LibreOffice, iText, Aspose, Quartz, groff and TeX, PDF 1.1
   through 2.0. Every one opens, extracts and round-trips. A further
   **3,613-file redaction sweep** removed a word from each and confirmed it
-  was gone from both the text and the raw bytes; it found two real bugs,
-  both fixed and now regression-tested
+  was gone from both the text and the raw bytes, and a **2,000-file flow
+  sweep** replaced a word with a much longer one and checked the
+  paragraph reflowed intact. Between them the sweeps found four real
+  bugs, all fixed and now regression-tested
 - **Fuzz targets** for the PDF reader and the TrueType parser, with a
   checked-in regression corpus of 700+ inputs. Fuzzing has found and fixed
   real bugs, including a denial-of-service in `cmap` parsing
@@ -340,8 +379,12 @@ Stated plainly, because they matter when choosing a library:
 - An incremental update only grows a file; superseded objects stay in it.
 - Object streams are opt-in and skipped for encrypted documents, whose
   strings are protected per object rather than by the enclosing stream.
-- Reflow re-wraps a paragraph within the lines it already occupies. It
-  cannot push later content down the page.
+- Reflow (`TextBlock`) re-wraps within the lines a paragraph already
+  occupies. Use a `Flow` when the length changes: it adds or removes
+  lines and moves the text below. A flow moves text, not images or
+  rules, and needs the font to have a space glyph — a document that
+  positions every word separately and never draws a space cannot be
+  re-wrapped.
 - `FillForm` flattens; `FillFormInteractive` keeps fields editable.
 - CID-keyed CFF fonts are embedded whole rather than subset; every other
   font kind is subset.

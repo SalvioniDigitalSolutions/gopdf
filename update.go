@@ -153,6 +153,8 @@ type UpdatablePage struct {
 	// removed holds the object numbers of annotations this update drops
 	// from the page.
 	removed map[int]bool
+	// flows caches the page's paragraphs so repeated edits accumulate.
+	flows []*Flow
 }
 
 // Page prepares a page for text editing. The page's content stream and
