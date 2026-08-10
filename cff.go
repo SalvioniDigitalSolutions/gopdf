@@ -329,47 +329,75 @@ func subsetCFF(cff []byte, keep map[uint16]bool, nGlyphs int) ([]byte, error) {
 		}
 	}
 
-	// The charset maps glyph IDs to names; it is copied unchanged.
+	// The charset names every glyph; a subset only needs names for the
+	// glyphs it keeps, which lets most of the string index go too.
 	var charsetData []byte
 	charsetPredefined := 0
+	keptStrings := stringIdx.items
 	if e := dictEntry(top, cffOpCharset); e != nil && len(e.values) == 1 {
 		if v := e.values[0]; v > 2 {
-			n, err := charsetLength(cff, v, nGlyphs)
+			sids, err := parseCharsetSIDs(cff, v, nGlyphs)
 			if err != nil {
 				return nil, err
 			}
-			charsetData = cff[v : v+n]
+			var newSids []uint16
+			newSids, keptStrings = pruneGlyphNames(sids, keep, stringIdx.items)
+			charsetData = buildCharset(newSids)
 		} else {
 			charsetPredefined = v
+			// Nothing references the string index once the descriptive
+			// top dictionary entries are dropped.
+			keptStrings = nil
 		}
+	} else {
+		keptStrings = nil
 	}
 
-	// The private dictionary and its local subroutines are copied as one
-	// block, so the Subrs offset stored inside it stays valid.
-	var privateBlock []byte
-	privateSize := 0
+	// The private dictionary is copied verbatim; its local subroutines,
+	// which follow it, are rebuilt so unused ones cost almost nothing.
+	var privateDict, localSubrsData []byte
+	var localSubrs [][]byte
+	privateSize, localSubrsRel := 0, 0
 	if e := dictEntry(top, cffOpPrivate); e != nil && len(e.values) == 2 {
 		privateSize = e.values[0]
 		privOff := e.values[1]
 		if privOff < 0 || privateSize < 0 || privOff+privateSize > len(cff) {
 			return nil, errCFF
 		}
-		blockEnd := privOff + privateSize
-		priv, err := parseCFFDict(cff[privOff:blockEnd])
+		privateDict = cff[privOff : privOff+privateSize]
+		priv, err := parseCFFDict(privateDict)
 		if err != nil {
 			return nil, err
 		}
-		if s := dictEntry(priv, cffOpSubrs); s != nil && len(s.values) == 1 {
-			subrsOff := privOff + s.values[0]
-			subrs, err := parseCFFIndex(cff, subrsOff)
+		if sub := dictEntry(priv, cffOpSubrs); sub != nil && len(sub.values) == 1 {
+			localSubrsRel = sub.values[0]
+			idx, err := parseCFFIndex(cff, privOff+localSubrsRel)
 			if err != nil {
 				return nil, err
 			}
-			if subrs.end > blockEnd {
-				blockEnd = subrs.end
-			}
+			localSubrs = idx.items
 		}
-		privateBlock = cff[privOff:blockEnd]
+	}
+
+	// Follow the kept charstrings to see which subroutines they still
+	// need; anything unreachable becomes a bare return.
+	usedLocal, usedGlobal := reachableSubrs(charStrings.items, localSubrs, gsubrIdx.items, keep)
+	newLocalSubrs := pruneSubrs(localSubrs, usedLocal)
+	newGlobalSubrs := pruneSubrs(gsubrIdx.items, usedGlobal)
+	if localSubrs != nil {
+		localSubrsData = buildCFFIndex(newLocalSubrs)
+	}
+
+	// The Subrs offset inside the private dictionary is relative to the
+	// dictionary's own start, so the rebuilt index has to sit exactly
+	// that far along.
+	privateBlockBytes := append([]byte(nil), privateDict...)
+	if localSubrsData != nil {
+		for len(privateBlockBytes) < localSubrsRel {
+			privateBlockBytes = append(privateBlockBytes, 0)
+		}
+		privateBlockBytes = privateBlockBytes[:localSubrsRel]
+		privateBlockBytes = append(privateBlockBytes, localSubrsData...)
 	}
 
 	// Assemble. The offsets in the top dictionary are written in the
@@ -378,6 +406,9 @@ func subsetCFF(cff []byte, keep map[uint16]bool, nGlyphs int) ([]byte, error) {
 	rebuild := func(charsetOff, charStringsOff, privateOff int) []byte {
 		entries := make([]cffDictEntry, 0, len(top))
 		for _, e := range top {
+			if cffSIDOperators[e.op] {
+				continue
+			}
 			switch e.op {
 			case cffOpEncoding:
 				// Glyphs are addressed by index, so the encoding is
@@ -407,11 +438,11 @@ func subsetCFF(cff []byte, keep map[uint16]bool, nGlyphs int) ([]byte, error) {
 		out = append(out, cff[:hdrSize]...)
 		out = append(out, buildCFFIndex(nameIdx.items)...)
 		out = append(out, buildCFFIndex([][]byte{topData})...)
-		out = append(out, buildCFFIndex(stringIdx.items)...)
-		out = append(out, buildCFFIndex(gsubrIdx.items)...)
+		out = append(out, buildCFFIndex(keptStrings)...)
+		out = append(out, buildCFFIndex(newGlobalSubrs)...)
 		out = append(out, charsetData...)
 		out = append(out, buildCFFIndex(newCharStrings)...)
-		out = append(out, privateBlock...)
+		out = append(out, privateBlockBytes...)
 		return out
 	}
 
@@ -420,15 +451,15 @@ func subsetCFF(cff []byte, keep map[uint16]bool, nGlyphs int) ([]byte, error) {
 	prefix := hdrSize +
 		len(buildCFFIndex(nameIdx.items)) +
 		len(buildCFFIndex([][]byte{buildCFFDict(topDictShape(top))})) +
-		len(buildCFFIndex(stringIdx.items)) +
-		len(buildCFFIndex(gsubrIdx.items))
+		len(buildCFFIndex(keptStrings)) +
+		len(buildCFFIndex(newGlobalSubrs))
 	charsetOff := prefix
 	charStringsOff := charsetOff + len(charsetData)
 	privateOff := charStringsOff + len(buildCFFIndex(newCharStrings))
 
 	out := rebuild(charsetOff, charStringsOff, privateOff)
 	// The sizing pass must have predicted the layout exactly.
-	if len(out) != privateOff+len(privateBlock) {
+	if len(out) != privateOff+len(privateBlockBytes) {
 		return nil, errors.New("gopdf: CFF subset layout did not converge")
 	}
 	return out, nil
@@ -440,6 +471,9 @@ func subsetCFF(cff []byte, keep map[uint16]bool, nGlyphs int) ([]byte, error) {
 func topDictShape(top []cffDictEntry) []cffDictEntry {
 	entries := make([]cffDictEntry, 0, len(top))
 	for _, e := range top {
+		if cffSIDOperators[e.op] {
+			continue
+		}
 		switch e.op {
 		case cffOpEncoding:
 			continue
@@ -453,4 +487,317 @@ func topDictShape(top []cffDictEntry) []cffDictEntry {
 		}
 	}
 	return entries
+}
+
+// --- subroutine reachability ---
+//
+// Charstrings call subroutines by an index biased by the size of the
+// subroutine index they come from. Finding which subroutines a subset
+// still needs means interpreting enough of the Type 2 charstring format
+// to follow those calls — and, crucially, to skip the variable-length
+// hint masks, since misreading one would desynchronise everything after.
+
+// subrBias is the offset applied to a subroutine number, which depends on
+// how many subroutines the index holds.
+func subrBias(n int) int {
+	switch {
+	case n < 1240:
+		return 107
+	case n < 33900:
+		return 1131
+	default:
+		return 32768
+	}
+}
+
+// charstringWalker marks the subroutines a set of charstrings reaches.
+type charstringWalker struct {
+	local, global [][]byte
+	usedLocal     map[int]bool
+	usedGlobal    map[int]bool
+	localBias     int
+	globalBias    int
+	// giveUp is set when the charstrings do something this walker cannot
+	// follow, in which case every subroutine must be kept.
+	giveUp bool
+}
+
+func newCharstringWalker(local, global [][]byte) *charstringWalker {
+	return &charstringWalker{
+		local: local, global: global,
+		usedLocal:  make(map[int]bool),
+		usedGlobal: make(map[int]bool),
+		localBias:  subrBias(len(local)),
+		globalBias: subrBias(len(global)),
+	}
+}
+
+// walk follows one charstring, marking the subroutines it calls.
+func (w *charstringWalker) walk(cs []byte, numHints *int, depth int) {
+	if w.giveUp || depth > 10 {
+		if depth > 10 {
+			w.giveUp = true
+		}
+		return
+	}
+	var stack []int
+	push := func(v int) {
+		if len(stack) < 48 {
+			stack = append(stack, v)
+		}
+	}
+
+	for i := 0; i < len(cs); {
+		b := cs[i]
+		switch {
+		case b >= 32 || b == 28:
+			// An operand.
+			switch {
+			case b == 28:
+				if i+3 > len(cs) {
+					w.giveUp = true
+					return
+				}
+				push(int(int16(binary.BigEndian.Uint16(cs[i+1:]))))
+				i += 3
+			case b <= 246:
+				push(int(b) - 139)
+				i++
+			case b <= 250:
+				if i+2 > len(cs) {
+					w.giveUp = true
+					return
+				}
+				push((int(b)-247)*256 + int(cs[i+1]) + 108)
+				i += 2
+			case b <= 254:
+				if i+2 > len(cs) {
+					w.giveUp = true
+					return
+				}
+				push(-(int(b)-251)*256 - int(cs[i+1]) - 108)
+				i += 2
+			default: // 255: a 16.16 fixed-point number
+				if i+5 > len(cs) {
+					w.giveUp = true
+					return
+				}
+				push(int(int32(binary.BigEndian.Uint32(cs[i+1:]))) >> 16)
+				i += 5
+			}
+			continue
+
+		case b == 1 || b == 3 || b == 18 || b == 23:
+			// Stem hints: each takes a pair of operands.
+			*numHints += len(stack) / 2
+			stack = stack[:0]
+			i++
+
+		case b == 19 || b == 20:
+			// A hint mask is preceded by an implicit vstem when operands
+			// are pending, and followed by one bit per hint.
+			*numHints += len(stack) / 2
+			stack = stack[:0]
+			i++
+			i += (*numHints + 7) / 8
+			if i > len(cs) {
+				w.giveUp = true
+				return
+			}
+
+		case b == 10: // callsubr
+			if len(stack) == 0 {
+				w.giveUp = true
+				return
+			}
+			idx := stack[len(stack)-1] + w.localBias
+			stack = stack[:len(stack)-1]
+			if idx < 0 || idx >= len(w.local) {
+				w.giveUp = true
+				return
+			}
+			if !w.usedLocal[idx] {
+				w.usedLocal[idx] = true
+				w.walk(w.local[idx], numHints, depth+1)
+			}
+			i++
+
+		case b == 29: // callgsubr
+			if len(stack) == 0 {
+				w.giveUp = true
+				return
+			}
+			idx := stack[len(stack)-1] + w.globalBias
+			stack = stack[:len(stack)-1]
+			if idx < 0 || idx >= len(w.global) {
+				w.giveUp = true
+				return
+			}
+			if !w.usedGlobal[idx] {
+				w.usedGlobal[idx] = true
+				w.walk(w.global[idx], numHints, depth+1)
+			}
+			i++
+
+		case b == 11: // return
+			return
+
+		case b == 14: // endchar
+			return
+
+		case b == 12: // an escaped operator
+			if i+1 >= len(cs) {
+				w.giveUp = true
+				return
+			}
+			stack = stack[:0]
+			i += 2
+
+		default:
+			stack = stack[:0]
+			i++
+		}
+	}
+}
+
+// reachableSubrs reports which local and global subroutines the given
+// charstrings need. It returns nil sets when the charstrings cannot be
+// followed, meaning every subroutine must be kept.
+func reachableSubrs(charstrings, local, global [][]byte, keep map[uint16]bool) (map[int]bool, map[int]bool) {
+	w := newCharstringWalker(local, global)
+	for gid, cs := range charstrings {
+		if gid != 0 && !keep[uint16(gid)] {
+			continue // this glyph became an empty outline
+		}
+		hints := 0
+		w.walk(cs, &hints, 0)
+		if w.giveUp {
+			return nil, nil
+		}
+	}
+	return w.usedLocal, w.usedGlobal
+}
+
+// pruneSubrs replaces unused subroutines with a bare return, keeping the
+// index the same length so the numbers charstrings call by stay valid.
+func pruneSubrs(subrs [][]byte, used map[int]bool) [][]byte {
+	if used == nil {
+		return subrs
+	}
+	out := make([][]byte, len(subrs))
+	for i := range subrs {
+		if used[i] {
+			out[i] = subrs[i]
+		} else {
+			out[i] = []byte{11} // return
+		}
+	}
+	return out
+}
+
+// --- glyph names ---
+//
+// A name-keyed CFF names every glyph through its charset, which indexes
+// the string index. A subset only needs names for the glyphs it keeps, so
+// the rest are pointed at .notdef and the strings they used drop out.
+
+// cffStandardStrings is the number of predefined strings; a SID below
+// this refers to one of them rather than to the string index.
+const cffStandardStrings = 391
+
+// parseCharsetSIDs reads a charset into one string identifier per glyph.
+func parseCharsetSIDs(data []byte, off, nGlyphs int) ([]uint16, error) {
+	sids := make([]uint16, nGlyphs)
+	if off < 0 || off >= len(data) {
+		return nil, errCFF
+	}
+	switch format := data[off]; format {
+	case 0:
+		for gid := 1; gid < nGlyphs; gid++ {
+			p := off + 1 + (gid-1)*2
+			if p+2 > len(data) {
+				return nil, errCFF
+			}
+			sids[gid] = binary.BigEndian.Uint16(data[p:])
+		}
+	case 1, 2:
+		step := 3
+		if format == 2 {
+			step = 4
+		}
+		gid, p := 1, off+1
+		for gid < nGlyphs {
+			if p+step > len(data) {
+				return nil, errCFF
+			}
+			first := binary.BigEndian.Uint16(data[p:])
+			var left int
+			if format == 1 {
+				left = int(data[p+2])
+			} else {
+				left = int(binary.BigEndian.Uint16(data[p+2:]))
+			}
+			for k := 0; k <= left && gid < nGlyphs; k++ {
+				sids[gid] = first + uint16(k)
+				gid++
+			}
+			p += step
+		}
+	default:
+		return nil, fmt.Errorf("gopdf: unsupported CFF charset format %d", format)
+	}
+	return sids, nil
+}
+
+// buildCharset writes a format 0 charset, one string identifier per glyph
+// after .notdef.
+func buildCharset(sids []uint16) []byte {
+	out := make([]byte, 0, 1+(len(sids)-1)*2)
+	out = append(out, 0)
+	for _, sid := range sids[1:] {
+		out = binary.BigEndian.AppendUint16(out, sid)
+	}
+	return out
+}
+
+// pruneGlyphNames points dropped glyphs at .notdef and rebuilds the
+// string index with only the names that survive, renumbering as it goes.
+func pruneGlyphNames(sids []uint16, keep map[uint16]bool, strings [][]byte) ([]uint16, [][]byte) {
+	out := make([]uint16, len(sids))
+	remap := make(map[uint16]uint16)
+	var kept [][]byte
+
+	for gid, sid := range sids {
+		if gid != 0 && !keep[uint16(gid)] {
+			continue // the glyph is empty; it needs no name
+		}
+		if sid < cffStandardStrings {
+			out[gid] = sid // one of the predefined names
+			continue
+		}
+		if mapped, seen := remap[sid]; seen {
+			out[gid] = mapped
+			continue
+		}
+		idx := int(sid) - cffStandardStrings
+		if idx < 0 || idx >= len(strings) {
+			continue // a dangling name is simply dropped
+		}
+		mapped := uint16(cffStandardStrings + len(kept))
+		remap[sid] = mapped
+		kept = append(kept, strings[idx])
+		out[gid] = mapped
+	}
+	return out, kept
+}
+
+// cffSIDOperators are the top dictionary entries whose operand is a
+// string identifier. A subset drops them: they are descriptive metadata,
+// and keeping them would mean renumbering into the pruned string index.
+var cffSIDOperators = map[int]bool{
+	0: true, 1: true, 2: true, 3: true, 4: true, // version..Weight
+	1200: true, // Copyright
+	1221: true, // PostScript
+	1222: true, // BaseFontName
+	1238: true, // FontName
 }

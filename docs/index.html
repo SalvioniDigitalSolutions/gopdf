@@ -259,11 +259,11 @@ page.<span class="f">Text</span>(<span class="n">72</span>, <span class="n">72</
 <p><strong>Standard fonts are limited to WinAnsi (CP-1252).</strong> Characters outside it
 render as <code>?</code>. Embed a font for anything else.</p>
 <p>CFF-based OpenType (<code>.otf</code>) fonts work too, embedded as
-<code>CIDFontType0</code> and subset like TrueType: unused outlines are
-replaced with an empty glyph, which keeps every glyph ID in place. Glyph
-names and subroutines are retained, so an <code>.otf</code> embed is
-larger than the equivalent TrueType one. CID-keyed CFF fonts are embedded
-whole.</p>
+<code>CIDFontType0</code> and subset like TrueType: unused outlines
+become empty glyphs, unreachable subroutines a bare return, and dropped
+glyphs give up their names — all while every glyph ID stays where it was.
+Embedding one line of STIX General takes the font from 369 KB to 25 KB.
+CID-keyed CFF fonts are embedded whole.</p>
 </div>
 
 <h2 id="graphics">Graphics</h2>
@@ -716,8 +716,11 @@ still produces compact content streams.</li>
 <li>Embedded fonts are subset by clearing the outlines of unused glyphs;
 glyph IDs are preserved and the result is a valid font in its own right —
 the test suite re-parses it to prove that. CFF subsetting rewrites the
-top dictionary's offsets, and falls back to embedding the whole program
-if anything about the font is beyond it.</li>
+top dictionary's offsets and prunes the subroutines a Type 2 charstring
+interpreter proves unreachable, keeping the indexes the same length so
+the numbers charstrings call by stay valid. Anything it cannot follow
+means every subroutine is kept, and anything about the font beyond the
+subsetter means the whole program is embedded.</li>
 <li>Text editing splices new show-text operators over the originals; every
 other operator is left untouched. An edited page keeps its own resource
 dictionary, and this library's resources are merged in under a prefix that
@@ -747,8 +750,9 @@ handlers are not supported.</li>
 </ul>
 
 <h3>Roadmap</h3>
-<p>Subsetting CFF subroutines and glyph names · cascading reflow across
-pages · certificate security handlers · PDF/A conformance.</p>
+<p>CID-keyed CFF subsetting · digital signatures · certificate security
+handlers · mesh shadings and tiling patterns · PDF/A conformance ·
+linearization · reflow that cascades across pages.</p>
 
 <footer>
 <p><strong>gopdf</strong> — MIT licensed ·

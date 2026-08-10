@@ -43,8 +43,8 @@ go get github.com/SalvioniDigitalSolutions/gopdf
   either orientation, with Unicode metadata
 - The standard 14 fonts with accurate metrics, plus **TrueType and
   OpenType embedding** — `.ttf`, `.ttc` and `.otf` are all subset to the
-  glyphs you use — with pair kerning and ToUnicode maps for full Unicode
-  text that stays searchable
+  glyphs you use, outlines, subroutines and glyph names alike — with pair
+  kerning and ToUnicode maps for full Unicode text that stays searchable
 - Vector graphics: lines, rectangles, rounded rectangles, circles,
   ellipses, polygons, Bézier paths, dash patterns, caps and joins,
   fill/stroke opacity, clipping, and scoped transforms
@@ -228,7 +228,7 @@ go run ./examples/edit -in report.pdf -out final.pdf -replace "DRAFT=FINAL"
 Coordinates are in points (1/72 inch) with the origin at the **top-left**
 of the page; `Mm`, `Cm` and `Inch` convert other units.
 
-- **138 tests** covering the writer, the parser, the font subsetter, the
+- **143 tests** covering the writer, the parser, the font subsetter, the
   filters, encryption, editing, reflow and forms
 - **Fuzz targets** for the PDF reader and the TrueType parser, with a
   checked-in regression corpus of 600+ inputs. Fuzzing has found and fixed
@@ -251,15 +251,17 @@ Stated plainly, because they matter when choosing a library:
 - Reflow re-wraps a paragraph within the lines it already occupies. It
   cannot push later content down the page.
 - `FillForm` flattens; `FillFormInteractive` keeps fields editable.
-- OpenType subsetting reduces the outlines but keeps glyph names and
-  subroutines, so `.otf` embeds are larger than the equivalent TrueType.
-  CID-keyed CFF fonts are embedded whole.
+- CID-keyed CFF fonts are embedded whole rather than subset; every other
+  font kind is subset.
 - Permission flags on encrypted documents are advisory, as the PDF
   specification defines them — they are not a security boundary.
 
 ## Roadmap
 
-- Subsetting CFF subroutines and glyph names, for smaller `.otf` embeds
+Nothing outstanding from the original plan. Candidates, in no order:
+CID-keyed CFF subsetting, digital signatures, public-key security
+handlers, mesh shadings and tiling patterns, PDF/A conformance,
+linearization, and reflow that cascades across pages.
 - Cascading reflow that pushes later content down the page
 - Public-key (certificate) security handlers
 - PDF/A conformance

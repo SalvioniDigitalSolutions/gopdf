@@ -15,6 +15,20 @@ func FuzzParseTTF(f *testing.F) {
 	f.Add([]byte("\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"))
 	f.Add([]byte("ttcf\x00\x01\x00\x00\x00\x00\x00\x01\x00\x00\x00\x0c"))
 	f.Add([]byte("OTTO\x00\x00\x00\x00\x00\x00\x00\x00"))
+	// A CFF-based OpenType font exercises the charstring interpreter that
+	// decides which subroutines a subset still needs.
+	if data, err := os.ReadFile("/System/Library/Fonts/Supplemental/STIXGeneral.otf"); err == nil {
+		if full, err := parseTTF(data); err == nil {
+			used := map[uint16]bool{}
+			for _, r := range "Hand" {
+				used[full.cmap[r]] = true
+			}
+			if small, err := full.subset(used); err == nil {
+				f.Add(small)
+			}
+		}
+	}
+
 	// Seed with a small valid font — a subset of a system font — so the
 	// mutator reaches the success path without megabyte-sized inputs.
 	if data, err := os.ReadFile("/System/Library/Fonts/Supplemental/Arial.ttf"); err == nil {
