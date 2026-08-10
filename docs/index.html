@@ -480,6 +480,27 @@ classic file, a cross-reference stream for a PDF 1.5+ one. Encrypted
 documents stay encrypted, with appended objects protected using the
 original file key. An update with no changes reproduces the source
 exactly.</p>
+<h3>Drawing during an update</h3>
+<p>An updated page carries the whole drawing API, so a stamp, watermark or
+signature can be added without rewriting a single original object. What
+you draw becomes an <em>additional</em> content stream, and the resources
+it needs are merged into the page under a prefix that cannot collide with
+the source's own names.</p>
+<pre><code>page, _ := u.<span class="f">Page</span>(<span class="n">0</span>)
+page.<span class="f">ReplaceText</span>(<span class="s">"DRAFT"</span>, <span class="s">"FINAL"</span>)   <span class="c">// edit what is there…</span>
+
+page.<span class="f">Push</span>()                             <span class="c">// …and draw on top</span>
+page.<span class="f">SetAlpha</span>(<span class="n">0.25</span>, <span class="n">0.25</span>)
+page.<span class="f">RotateAt</span>(<span class="n">38</span>, page.<span class="f">Width</span>()/<span class="n">2</span>, page.<span class="f">Height</span>()/<span class="n">2</span>)
+page.<span class="f">SetFont</span>(gopdf.HelveticaBold, <span class="n">58</span>)
+page.<span class="f">TextAligned</span>(<span class="n">0</span>, page.<span class="f">Height</span>()/<span class="n">2</span>, page.<span class="f">Width</span>(), gopdf.AlignCenter, <span class="s">"REVISED"</span>)
+page.<span class="f">Pop</span>()
+
+img, _ := u.<span class="f">AddImageFile</span>(<span class="s">"signature.png"</span>)
+page.<span class="f">DrawImage</span>(img, <span class="n">400</span>, <span class="n">640</span>, <span class="n">120</span>, <span class="n">40</span>)</code></pre>
+<p>Fonts, images, transparency and gradients all work; each is written as a
+new object in the appended section. If the page's text is left alone, its
+original content stream is never rewritten at all.</p>
 <p>The trade-off is size: an update only ever grows a file, because the
 objects it supersedes remain in place. Use <code>Document.EditPage</code>
 when you would rather have a compact, fully rewritten file.</p>

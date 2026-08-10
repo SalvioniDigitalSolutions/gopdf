@@ -64,42 +64,9 @@ func (d *Document) WriteTo(w io.Writer) (int64, error) {
 		encryptNum = alloc()
 	}
 
-	fontNums := make([]fontRefs, len(d.fonts))
-	for i, f := range d.fonts {
-		fontNums[i] = fontRefs{font: alloc()}
-		if f.ttf != nil {
-			fontNums[i].cid = alloc()
-			fontNums[i].descriptor = alloc()
-			fontNums[i].fontFile = alloc()
-			fontNums[i].toUnicode = alloc()
-		}
-	}
+	rs := d.allocResources(alloc)
+	fontNums := rs.fontNums
 
-	imageNums := make([]int, len(d.images))
-	smaskNums := make([]int, len(d.images))
-	for i, img := range d.images {
-		imageNums[i] = alloc()
-		if img.smask != nil {
-			smaskNums[i] = alloc()
-		}
-	}
-
-	gsNums := make([]int, len(d.alphas))
-	for i := range d.alphas {
-		gsNums[i] = alloc()
-	}
-
-	shadingNums := make([]int, len(d.shadings))
-	shadingFuncNums := make([]int, len(d.shadings))
-	for i := range d.shadings {
-		shadingNums[i] = alloc()
-		shadingFuncNums[i] = alloc()
-	}
-
-	xobjNums := make([]int, len(d.xobjects))
-	for i := range d.xobjects {
-		xobjNums[i] = alloc()
-	}
 	rawNums := make([]int, len(d.raw))
 	for i := range d.raw {
 		rawNums[i] = alloc()
@@ -263,90 +230,8 @@ func (d *Document) WriteTo(w io.Writer) (int64, error) {
 	ow.str(" >>\n")
 	endObj()
 
-	for i, f := range d.fonts {
-		if f.ttf == nil {
-			beginObj(fontNums[i].font)
-			ow.printf("<< /Type /Font /Subtype /Type1 /BaseFont /%s", f.name)
-			if f.winAnsi {
-				ow.str(" /Encoding /WinAnsiEncoding")
-			}
-			ow.str(" >>\n")
-			endObj()
-			continue
-		}
-		if err := d.writeEmbeddedFont(ow, f, fontNums[i], d.fontUsage[i], beginObj, endObj); err != nil {
-			return ow.n, err
-		}
-	}
-
-	for i, img := range d.images {
-		beginObj(imageNums[i])
-		extra := fmt.Sprintf("/Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace /%s /BitsPerComponent 8 ",
-			img.width, img.height, img.colorSpace)
-		if img.smask != nil {
-			extra += fmt.Sprintf("/SMask %d 0 R ", smaskNums[i])
-		}
-		if img.invert {
-			extra += "/Decode [1 0 1 0 1 0 1 0] "
-		}
-		if img.dct {
-			// JPEG data is embedded as-is and must not be
-			// double-compressed (but is still encrypted).
-			extra += "/Filter /DCTDecode "
-			data := ow.encryptBytes(img.data, ow.stmMethod())
-			ow.printf("<< %s/Length %d >>\nstream\n", extra, len(data))
-			ow.Write(data)
-			ow.str("\nendstream\n")
-		} else if err := ow.writeStream(extra, img.data, d.Compress); err != nil {
-			return ow.n, err
-		}
-		endObj()
-
-		if img.smask != nil {
-			beginObj(smaskNums[i])
-			extra := fmt.Sprintf("/Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace /DeviceGray /BitsPerComponent 8 ",
-				img.width, img.height)
-			if err := ow.writeStream(extra, img.smask, d.Compress); err != nil {
-				return ow.n, err
-			}
-			endObj()
-		}
-	}
-
-	for i, a := range d.alphas {
-		beginObj(gsNums[i])
-		ow.printf("<< /Type /ExtGState /ca %s /CA %s >>\n", fl(a.fill), fl(a.stroke))
-		endObj()
-	}
-
-	for i, s := range d.shadings {
-		beginObj(shadingNums[i])
-		d.writeShading(ow, s, shadingFuncNums[i])
-		endObj()
-		beginObj(shadingFuncNums[i])
-		ow.str(shadingFunction(s) + "\n")
-		endObj()
-	}
-
-	for i, xo := range d.xobjects {
-		beginObj(xobjNums[i])
-		var extra strings.Builder
-		fmt.Fprintf(&extra, "/Type /XObject /Subtype /Form /BBox [%s %s %s %s] ",
-			fl(xo.bbox[0]), fl(xo.bbox[1]), fl(xo.bbox[2]), fl(xo.bbox[3]))
-		if xo.resources != nil {
-			extra.WriteString("/Resources ")
-			writeValue(&extra, xo.resources, ctx)
-			extra.WriteString(" ")
-		}
-		if xo.group != nil {
-			extra.WriteString("/Group ")
-			writeValue(&extra, xo.group, ctx)
-			extra.WriteString(" ")
-		}
-		if err := ow.writeStream(extra.String(), xo.content, d.Compress); err != nil {
-			return ow.n, err
-		}
-		endObj()
+	if err := rs.write(ow, ctx, beginObj, endObj); err != nil {
+		return ow.n, err
 	}
 
 	for i, v := range d.raw {
@@ -402,31 +287,7 @@ func (d *Document) WriteTo(w io.Writer) (int64, error) {
 
 	// ownEntries lists this library's resources for one category, using
 	// the page's name prefix.
-	ownEntries := func(prefix, category string) string {
-		var b strings.Builder
-		switch category {
-		case "Font":
-			for i, fr := range fontNums {
-				fmt.Fprintf(&b, " /%s%s%d %d 0 R", prefix, "F", i+1, fr.font)
-			}
-		case "XObject":
-			for i, num := range imageNums {
-				fmt.Fprintf(&b, " /%s%s%d %d 0 R", prefix, "I", i+1, num)
-			}
-			for i, num := range xobjNums {
-				fmt.Fprintf(&b, " /%s%s%d %d 0 R", prefix, "X", i+1, num)
-			}
-		case "ExtGState":
-			for i, num := range gsNums {
-				fmt.Fprintf(&b, " /%s%s%d %d 0 R", prefix, "GS", i+1, num)
-			}
-		case "Shading":
-			for i, num := range shadingNums {
-				fmt.Fprintf(&b, " /%s%s%d %d 0 R", prefix, "Sh", i+1, num)
-			}
-		}
-		return b.String()
-	}
+	ownEntries := rs.entries
 
 	// Pages created by this library share one resource dictionary listing
 	// every font, image and graphics state in the document.

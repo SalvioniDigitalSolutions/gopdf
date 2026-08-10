@@ -36,6 +36,11 @@ type Updater struct {
 	fit       FitMode
 	maxExtra  int
 	formDirty bool
+
+	// res owns resources created by drawing on updated pages; rs holds
+	// their object numbers once the update is being written.
+	res *Document
+	rs  *resourceSet
 }
 
 // Update opens a parsed document for incremental modification.
@@ -123,6 +128,10 @@ func cloneDict(d Dict) Dict {
 
 // UpdatablePage is one page of a document being updated incrementally.
 type UpdatablePage struct {
+	// Page carries the drawing API. Anything drawn is appended to the
+	// page as an extra content stream, leaving the original untouched.
+	*Page
+
 	u       *Updater
 	index   int
 	pageNum int
@@ -130,6 +139,9 @@ type UpdatablePage struct {
 	runs    []*TextRun
 	// contentTarget is the page's own content stream.
 	contentTarget *editTarget
+	// sourceResources is the page's resource dictionary as the file has
+	// it, for merging in anything drawn.
+	sourceResources any
 }
 
 // Page prepares a page for text editing. The page's content stream and
@@ -153,8 +165,11 @@ func (u *Updater) Page(index int) (*UpdatablePage, error) {
 		return nil, fmt.Errorf("gopdf: reading page %d: %w", index, err)
 	}
 
-	p := &UpdatablePage{u: u, index: index, pageNum: pageNum}
+	p := &UpdatablePage{u: u, index: index, pageNum: pageNum,
+		sourceResources: pi.resources}
 	p.contentTarget = &editTarget{content: content, resources: pi.resources}
+	srcRes, _ := u.r.resolve(pi.resources).(Dict)
+	p.Page = u.newDrawingPage(pi, srcRes)
 
 	box := pi.mediaBox
 	sc := &runScanner{
@@ -437,6 +452,15 @@ func (u *Updater) Save(path string) error {
 
 // WriteTo writes the original file followed by the appended changes.
 func (u *Updater) WriteTo(w io.Writer) (int64, error) {
+	// Drawing resources need object numbers before the pages that name
+	// them are rebuilt.
+	if u.anyDrawing() {
+		u.rs = u.scratch().allocResources(func() int {
+			n := u.nextID
+			u.nextID++
+			return n
+		})
+	}
 	if err := u.materialize(); err != nil {
 		return 0, err
 	}
@@ -499,6 +523,19 @@ func (u *Updater) WriteTo(w io.Writer) (int64, error) {
 			ow.str("\n")
 		}
 		ow.str("endobj\n")
+	}
+
+	if u.rs != nil {
+		begin := func(num int) {
+			offsets[num] = ow.n
+			ow.obj = num
+			nums = append(nums, num)
+			ow.printf("%d 0 obj\n", num)
+		}
+		end := func() { ow.str("endobj\n") }
+		if err := u.rs.write(ow, ctx, begin, end); err != nil {
+			return ow.n, err
+		}
 	}
 
 	if infoNum != 0 {
@@ -667,24 +704,41 @@ func (u *Updater) materialize() error {
 				}
 			}
 		}
-		if !p.contentDirty() {
+		edited, drawn := p.contentDirty(), p.hasDrawing()
+		if !edited && !drawn {
 			continue
 		}
-		// The page's own content becomes a fresh object, and the page
-		// dictionary is rewritten to point at it.
-		stream := &rawStream{dict: Dict{}, data: p.contentTarget.content}
-		if u.r.crypt == nil {
-			if compressed, err := flateCompress(stream.data); err == nil {
-				stream.data = compressed
-				stream.dict["Filter"] = Name("FlateDecode")
+		dict := cloneDict(u.pageDict(p.pageNum, p.index))
+
+		// Text edits replace the page's own stream; drawing is appended
+		// as a further one, so an untouched original stays untouched.
+		if edited {
+			dict["Contents"] = Ref{Num: u.add(u.contentStream(p.contentTarget.content))}
+		}
+		if drawn {
+			extra := Ref{Num: u.add(u.contentStream(p.drawnContent()))}
+			dict["Contents"] = p.contentsWith(dict["Contents"], extra)
+			if u.rs != nil {
+				dict["Resources"] = p.mergedResources(u.rs)
 			}
 		}
-		contentNum := u.add(stream)
-		dict := cloneDict(u.pageDict(p.pageNum, p.index))
-		dict["Contents"] = Ref{Num: contentNum}
 		u.set(p.pageNum, dict)
 	}
 	return nil
+}
+
+// contentStream wraps page content as a stream object, compressing it
+// unless the document is encrypted, where compression happens before the
+// encryption applied at write time.
+func (u *Updater) contentStream(data []byte) *rawStream {
+	stream := &rawStream{dict: Dict{}, data: data}
+	if u.scratch().Compress {
+		if compressed, err := flateCompress(data); err == nil {
+			stream.data = compressed
+			stream.dict["Filter"] = Name("FlateDecode")
+		}
+	}
+	return stream
 }
 
 // contentDirty reports whether the page's own stream was rewritten.

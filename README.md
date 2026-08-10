@@ -67,8 +67,9 @@ go get github.com/SalvioniDigitalSolutions/gopdf
 - **Paragraph reflow** that re-wraps text across a paragraph's own lines
 - **Interactive forms**: read fields, fill them (flattened or still
   editable), and author new ones from scratch
-- **Incremental update**: append changes so the original file survives
-  byte for byte, including everything the library does not model
+- **Incremental update**: edit text *and* draw new content, appended so
+  the original file survives byte for byte — including everything the
+  library does not model
 - Reads encrypted files (RC4, AES-128, AES-256) with either password
 
 ## Highlights
@@ -116,7 +117,10 @@ r, _ := gopdf.Open("contract.pdf")
 u := gopdf.Update(r)
 
 page, _ := u.Page(0)
-page.ReplaceText("2024", "2026")
+page.ReplaceText("2024", "2026")          // edit what is there
+page.SetFont(gopdf.HelveticaBold, 48)     // and draw on top, same pass
+page.SetFillColor(gopdf.RGB(200, 30, 30))
+page.Text(120, 400, "REVISED")
 u.SetFormValues(map[string]string{"signatory": "A. Lovelace"})
 
 u.Save("contract.pdf")   // safe to overwrite the source
@@ -128,6 +132,11 @@ trees, embedded files, optional content, scripts — anything gopdf does not
 model — survives untouched, because it is never rewritten. Rebuilding a
 document with `EditPage` or `ImportPage` keeps only what the library
 understands; `Update` keeps everything.
+
+An updated page carries the full drawing API, so stamps, watermarks and
+signatures can be added without rewriting a single original object: the
+drawn content becomes an extra content stream and its resources are merged
+under a collision-proof prefix.
 
 ### Gradients
 
@@ -190,7 +199,7 @@ go run ./examples/edit -in report.pdf -out final.pdf -replace "DRAFT=FINAL"
 Coordinates are in points (1/72 inch) with the origin at the **top-left**
 of the page; `Mm`, `Cm` and `Inch` convert other units.
 
-- **99 tests** covering the writer, the parser, the font subsetter, the
+- **105 tests** covering the writer, the parser, the font subsetter, the
   filters, encryption, editing, reflow and forms
 - **Fuzz targets** for the PDF reader and the TrueType parser, with a
   checked-in regression corpus of 600+ inputs. Fuzzing has found and fixed
