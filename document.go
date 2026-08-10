@@ -83,6 +83,12 @@ type Document struct {
 	// the time New was called.
 	CreationDate time.Time
 
+	// CompressObjects packs the document's dictionaries into object
+	// streams and writes a cross-reference stream, which makes files with
+	// many small objects noticeably smaller. It requires PDF 1.5 readers
+	// and is ignored for encrypted documents.
+	CompressObjects bool
+
 	info       Info
 	pageSize   PageSize
 	pages      []*Page

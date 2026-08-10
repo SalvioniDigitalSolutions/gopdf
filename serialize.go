@@ -1,6 +1,7 @@
 package gopdf
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -151,10 +152,22 @@ func (d *Document) WriteTo(w io.Writer) (int64, error) {
 		}
 		pageIndex[p] = i
 	}
+	// Packing objects requires two extra objects of its own, and is not
+	// combined with encryption: strings inside an object stream are
+	// covered by the stream's encryption, not their own.
+	useObjStm := d.CompressObjects && crypt == nil
+	objStmNum, xrefStmNum := 0, 0
+	if useObjStm {
+		objStmNum = alloc()
+		xrefStmNum = alloc()
+	}
 	totalObjs := next - 1
 
 	ow := &offsetWriter{w: w, crypt: crypt}
 	version := "1.4"
+	if useObjStm {
+		version = "1.5" // object and cross-reference streams
+	}
 	if crypt != nil && crypt.r >= 6 {
 		version = "2.0" // AES-256 requires PDF 2.0
 	}
@@ -163,13 +176,39 @@ func (d *Document) WriteTo(w io.Writer) (int64, error) {
 	ow.printf("%%PDF-%s\n%%\xe2\xe3\xcf\xd3\n", version)
 
 	offsets := make([]int64, totalObjs+1)
+	packed := make(map[int]int) // object number -> index within the object stream
+	var packedBodies [][]byte
+	var packedNums []int
+	var capture bytes.Buffer
+
 	beginObj := func(num int) {
-		offsets[num] = ow.n
 		ow.obj = num
+		if useObjStm {
+			capture.Reset()
+			ow.beginCapture(&capture)
+			return
+		}
+		offsets[num] = ow.n
 		ow.printf("%d 0 obj\n", num)
 	}
 	endObj := func() {
-		ow.str("endobj\n")
+		if !useObjStm {
+			ow.str("endobj\n")
+			return
+		}
+		ow.endCapture()
+		body := append([]byte(nil), capture.Bytes()...)
+		if ow.wroteStream {
+			// Streams stay in the file body; only their offset is recorded.
+			offsets[ow.obj] = ow.n
+			ow.printf("%d 0 obj\n", ow.obj)
+			ow.Write(body)
+			ow.str("endobj\n")
+			return
+		}
+		packed[ow.obj] = len(packedNums)
+		packedNums = append(packedNums, ow.obj)
+		packedBodies = append(packedBodies, bytes.TrimRight(body, " \r\n"))
 	}
 	d.fontNums = make([]int, len(fontNums))
 	for i, fr := range fontNums {
@@ -437,6 +476,14 @@ func (d *Document) WriteTo(w io.Writer) (int64, error) {
 		}
 	}
 
+	if useObjStm {
+		if err := d.writePackedTail(ow, offsets, packed, packedNums, packedBodies,
+			objStmNum, xrefStmNum, totalObjs, catalogNum, infoNum, docID); err != nil {
+			return ow.n, err
+		}
+		return ow.n, ow.err
+	}
+
 	xrefOffset := ow.n
 	ow.printf("xref\n0 %d\n", totalObjs+1)
 	ow.str("0000000000 65535 f \n")
@@ -628,4 +675,66 @@ end
 end
 `)
 	return []byte(b.String())
+}
+
+// writePackedTail emits the object stream holding the document's
+// dictionaries, then the cross-reference stream that indexes everything.
+func (d *Document) writePackedTail(ow *offsetWriter, offsets []int64,
+	packed map[int]int, packedNums []int, packedBodies [][]byte,
+	objStmNum, xrefStmNum, totalObjs, catalogNum, infoNum int, docID []byte) error {
+
+	// The object stream is a header of number/offset pairs followed by
+	// the objects themselves.
+	var header, body bytes.Buffer
+	for i, num := range packedNums {
+		fmt.Fprintf(&header, "%d %d ", num, body.Len())
+		body.Write(packedBodies[i])
+		body.WriteByte('\n')
+	}
+	payload := append(header.Bytes(), body.Bytes()...)
+
+	offsets[objStmNum] = ow.n
+	ow.obj = objStmNum
+	ow.printf("%d 0 obj\n", objStmNum)
+	extra := fmt.Sprintf("/Type /ObjStm /N %d /First %d ", len(packedNums), header.Len())
+	if err := ow.writeStream(extra, payload, d.Compress); err != nil {
+		return err
+	}
+	ow.str("endobj\n")
+
+	// The cross-reference stream indexes every object: those in the file
+	// body by offset, those in the object stream by their index in it.
+	xrefOffset := ow.n
+	var table bytes.Buffer
+	put := func(typ byte, f2, f3 int) {
+		table.Write([]byte{typ,
+			byte(f2 >> 24), byte(f2 >> 16), byte(f2 >> 8), byte(f2),
+			byte(f3 >> 8), byte(f3)})
+	}
+	put(0, 0, 0xFFFF) // the free head of the chain
+	for num := 1; num <= totalObjs; num++ {
+		idx, isPacked := packed[num]
+		switch {
+		case num == xrefStmNum:
+			put(1, int(xrefOffset), 0)
+		case isPacked:
+			put(2, objStmNum, idx)
+		default:
+			put(1, int(offsets[num]), 0)
+		}
+	}
+	data := table.Bytes()
+	filter := ""
+	if compressed, err := flateCompress(data); err == nil {
+		data = compressed
+		filter = "/Filter /FlateDecode "
+	}
+	ow.obj = xrefStmNum
+	ow.printf("%d 0 obj\n<< /Type /XRef /Size %d /W [1 4 2] /Root %d 0 R /Info %d 0 R",
+		xrefStmNum, totalObjs+1, catalogNum, infoNum)
+	ow.printf(" /ID [<%X> <%X>] %s/Length %d >>\nstream\n", docID, docID, filter, len(data))
+	ow.Write(data)
+	ow.str("\nendstream\nendobj\n")
+	ow.printf("startxref\n%d\n%%%%EOF\n", xrefOffset)
+	return ow.err
 }

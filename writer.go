@@ -18,6 +18,15 @@ type offsetWriter struct {
 	n   int64
 	err error
 
+	// While capturing, output is diverted to a buffer and does not count
+	// towards the file offset: the bytes are destined for an object
+	// stream, not for this position in the file.
+	capturing bool
+	saved     io.Writer
+	// wroteStream records whether the object being written is a stream,
+	// which cannot live inside an object stream.
+	wroteStream bool
+
 	// Encryption state: when crypt is non-nil, strings and stream data
 	// are encrypted with a key derived from the object being written.
 	crypt *stdCrypt
@@ -75,11 +84,26 @@ func (ow *offsetWriter) Write(p []byte) (int, error) {
 		return 0, ow.err
 	}
 	n, err := ow.w.Write(p)
-	ow.n += int64(n)
+	if !ow.capturing {
+		ow.n += int64(n)
+	}
 	if err != nil {
 		ow.err = err
 	}
 	return n, err
+}
+
+// beginCapture diverts output into buf until endCapture.
+func (ow *offsetWriter) beginCapture(buf io.Writer) {
+	ow.saved, ow.w, ow.capturing = ow.w, buf, true
+	ow.wroteStream = false
+}
+
+// endCapture restores the file as the destination.
+func (ow *offsetWriter) endCapture() {
+	if ow.capturing {
+		ow.w, ow.capturing = ow.saved, false
+	}
 }
 
 func (ow *offsetWriter) str(s string) {
@@ -200,6 +224,7 @@ func (ow *offsetWriter) writeStream(extraDict string, data []byte, compress bool
 		filter = "/Filter /FlateDecode "
 	}
 	data = ow.encryptBytes(data, ow.stmMethod())
+	ow.wroteStream = true
 	ow.printf("<< %s%s/Length %d >>\nstream\n", extraDict, filter, len(data))
 	ow.Write(data)
 	ow.str("\nendstream\n")

@@ -152,7 +152,15 @@ func verifyXref(t *testing.T, out []byte) int {
 	}
 	xrefOff, _ := strconv.Atoi(string(m[1]))
 	if !bytes.HasPrefix(out[xrefOff:], []byte("xref\n")) {
-		t.Fatalf("startxref %d does not point at xref table", xrefOff)
+		// A PDF 1.5 file points startxref at a cross-reference stream
+		// object rather than at a classic table.
+		if !regexp.MustCompile(`^\d+ 0 obj`).Match(out[xrefOff:min(xrefOff+24, len(out))]) {
+			t.Fatalf("startxref %d points at neither an xref table nor an xref stream", xrefOff)
+		}
+		if !bytes.Contains(out[xrefOff:], []byte("/Type /XRef")) {
+			t.Fatalf("the object at startxref %d is not a cross-reference stream", xrefOff)
+		}
+		return -1 // object count is not readable from a stream without decoding
 	}
 	lines := strings.Split(string(out[xrefOff:]), "\n")
 	if len(lines) < 3 {
@@ -263,4 +271,11 @@ func TestPageDefaults(t *testing.T) {
 	if got := Letter.Landscape(); got.W != 792 || got.H != 612 {
 		t.Errorf("Letter.Landscape() = %v", got)
 	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

@@ -228,7 +228,7 @@ go run ./examples/edit -in report.pdf -out final.pdf -replace "DRAFT=FINAL"
 Coordinates are in points (1/72 inch) with the origin at the **top-left**
 of the page; `Mm`, `Cm` and `Inch` convert other units.
 
-- **133 tests** covering the writer, the parser, the font subsetter, the
+- **138 tests** covering the writer, the parser, the font subsetter, the
   filters, encryption, editing, reflow and forms
 - **Fuzz targets** for the PDF reader and the TrueType parser, with a
   checked-in regression corpus of 600+ inputs. Fuzzing has found and fixed
@@ -246,6 +246,8 @@ Stated plainly, because they matter when choosing a library:
 - Editing can only use glyphs a document's fonts actually contain. Subset
   fonts routinely lack characters; those edits are refused, not mangled.
 - An incremental update only grows a file; superseded objects stay in it.
+- Object streams are opt-in and skipped for encrypted documents, whose
+  strings are protected per object rather than by the enclosing stream.
 - Reflow re-wraps a paragraph within the lines it already occupies. It
   cannot push later content down the page.
 - `FillForm` flattens; `FillFormInteractive` keeps fields editable.
@@ -257,7 +259,6 @@ Stated plainly, because they matter when choosing a library:
 
 ## Roadmap
 
-- Writing object streams, for smaller output
 - Subsetting CFF subroutines and glyph names, for smaller `.otf` embeds
 - Cascading reflow that pushes later content down the page
 - Public-key (certificate) security handlers
