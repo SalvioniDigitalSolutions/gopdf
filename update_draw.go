@@ -51,14 +51,15 @@ func (p *UpdatablePage) hasDrawing() bool {
 	return p.Page != nil && p.Page.buf.Len() > 0
 }
 
-// anyDrawing reports whether any page of the update has new content.
-func (u *Updater) anyDrawing() bool {
-	for _, p := range u.pages {
-		if p.hasDrawing() {
-			return true
-		}
+// needsResources reports whether the update created any drawing resource
+// — a font, image, graphics state or gradient — whether through drawing
+// on a page or through restyling existing text.
+func (u *Updater) needsResources() bool {
+	d := u.res
+	if d == nil {
+		return false
 	}
-	return false
+	return len(d.fonts)+len(d.images)+len(d.alphas)+len(d.shadings)+len(d.xobjects) > 0
 }
 
 // drawnContent returns the content stream for what was drawn, wrapped so

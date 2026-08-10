@@ -154,6 +154,8 @@ footer { border-top: 1px solid var(--border); margin-top: 4rem; padding-top: 1.5
     <li><a href="#stamp">Stamp &amp; watermark</a></li>
     <li><a href="#editing">Editing text</a></li>
     <li><a href="#reflow">Paragraph reflow</a></li>
+    <li><a href="#images-edit">Images</a></li>
+    <li><a href="#restyle">Restyling text</a></li>
     <li><a href="#annotations">Annotations</a></li>
     <li><a href="#pageops">Page operations</a></li>
     <li><a href="#update">Incremental update</a></li>
@@ -451,6 +453,50 @@ back onto the lines it already occupies. If the new text needs
 paragraph but cannot push the rest of the page down.
 <code>SetMaxExtraLines(n)</code> allows growth when you know there is room.
 Shorter text simply leaves trailing lines blank.</p>
+
+<h2 id="images-edit">Images in an existing file</h2>
+<p><code>Reader.PageImages</code> lists what a page draws, including images
+reached through a form XObject, with the place each occupies on the page.
+<code>Decode</code> returns the pixels.</p>
+<pre><code>imgs, _ := r.<span class="f">PageImages</span>(<span class="n">0</span>)
+<span class="k">for</span> _, im := <span class="k">range</span> imgs {
+	fmt.<span class="f">Printf</span>(<span class="s">"%dx%d %s at (%.0f,%.0f) %.0fx%.0f\n"</span>,
+		im.Width, im.Height, im.ColorSpace, im.X, im.Y, im.W, im.H)
+	pixels, err := im.<span class="f">Decode</span>()   <span class="c">// an image.Image</span>
+}
+
+u.<span class="f">ReplaceImage</span>(imgs[<span class="n">0</span>], newLogo)   <span class="c">// scaled into the same box</span></code></pre>
+<p>Decoding covers JPEG through the standard library, and raw samples in
+grey, RGB, CMYK and indexed colour at 1, 2, 4, 8 and 16 bits per
+component, with image masks and soft masks applied as alpha. Fax, JBIG2
+and JPEG 2000 report a clear error rather than guessing.</p>
+<div class="note">
+<p>Replacing an image rewrites the shared image object, so every page that
+draws it shows the replacement. The placement is untouched: an image of a
+different pixel size is scaled into exactly the same area.</p>
+</div>
+
+<h2 id="restyle">Restyling text</h2>
+<p>Editing a run changes the characters it draws; restyling changes how
+they are drawn.</p>
+<pre><code>blue := gopdf.<span class="f">RGB</span>(<span class="n">20</span>, <span class="n">70</span>, <span class="n">190</span>)
+run.<span class="f">Restyle</span>(gopdf.TextStyle{
+	Font:  gopdf.HelveticaBold,
+	Size:  <span class="n">15</span>,
+	Color: &amp;blue,
+})</code></pre>
+<p>A zero field leaves that aspect alone. The style operators are emitted
+immediately before the run's own show-text operation and undone
+immediately after, so the change applies to that run and nothing else —
+the previous colour operation is restored verbatim, whatever colour space
+it used.</p>
+<p><code>Size</code> is in the points a reader sees. Many files set a
+nominal size with <code>Tf</code> and scale it through the text matrix, so
+the requested size is converted back through that scale rather than
+written straight into the operator.</p>
+<p>A new typeface is registered with the page and the text re-encoded for
+it; if the font cannot represent one of the characters, the restyle is
+refused and nothing changes.</p>
 
 <h2 id="annotations">Annotations</h2>
 <p>Annotations are comments and marks that live alongside the page rather

@@ -53,7 +53,13 @@ type TextRun struct {
 	wordSpacing float64
 	horizScale  float64 // Tz as a fraction (1.0 = 100%)
 	fontSizeRaw float64 // the Tf operand, before transforms
+	fillOp      string  // the fill-colour operation in force, verbatim
 	replaced    bool
+
+	// style carries a pending restyle, applied when the run is written.
+	style *TextStyle
+	// owner registers new fonts when a restyle changes the typeface.
+	owner styleHost
 }
 
 // editTarget is one editable content stream: either the page's own, or
@@ -171,6 +177,9 @@ func (d *Document) EditPage(r *Reader, index int) (*EditablePage, error) {
 	}
 	sc.scan(pageTarget, pi.resources, identityMatrix, 0)
 	e.targets, e.runs = sc.targets, sc.runs
+	for _, run := range e.runs {
+		run.owner = e
+	}
 
 	d.editables = append(d.editables, e)
 	return e, nil
@@ -295,6 +304,10 @@ type textState struct {
 	horizScale  float64
 	rise        float64
 	leading     float64
+	// fillOp is the source text of the operation that last set the fill
+	// colour, so a restyled run can put it back exactly — whatever colour
+	// space it used.
+	fillOp string
 }
 
 func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth int) {
@@ -396,6 +409,7 @@ func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth
 			wordSpacing: st.wordSpacing,
 			horizScale:  st.horizScale,
 			fontSizeRaw: st.fontSize,
+			fillOp:      st.fillOp,
 		}
 		if run.Text != "" {
 			sc.runs = append(sc.runs, run)
@@ -460,6 +474,12 @@ func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth
 			st.leading = num(0)
 		case "T*":
 			translateLine(0, -st.leading)
+		case "g", "rg", "k", "sc", "scn":
+			// Keep the operation's own source text; restoring it verbatim
+			// works for any colour space.
+			if len(operands) > 0 {
+				st.fillOp = string(target.content[operands[0].start:tok.end])
+			}
 		case "Tc":
 			st.charSpacing = num(0)
 		case "Tw":
@@ -688,8 +708,10 @@ func (run *TextRun) applySplice(codes []byte, mode FitMode) {
 			fmt.Fprintf(&b, "[<%X> %s] TJ", codes, fl(delta))
 		}
 	}
+	setup, restore := run.styleOps()
 	run.target.splices = append(run.target.splices, splice{
-		start: run.start, end: run.end, repl: []byte(b.String()),
+		start: run.start, end: run.end,
+		repl: []byte(setup + b.String() + restore),
 	})
 }
 

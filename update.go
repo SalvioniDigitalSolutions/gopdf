@@ -205,6 +205,9 @@ func (u *Updater) Page(index int) (*UpdatablePage, error) {
 	}
 	sc.scan(p.contentTarget, pi.resources, identityMatrix, 0)
 	p.targets, p.runs = sc.targets, sc.runs
+	for _, run := range p.runs {
+		run.owner = p
+	}
 
 	u.pages[index] = p
 	return p, nil
@@ -460,7 +463,7 @@ func (u *Updater) Save(path string) error {
 func (u *Updater) WriteTo(w io.Writer) (int64, error) {
 	// Drawing resources need object numbers before the pages that name
 	// them are rebuilt.
-	if u.anyDrawing() {
+	if u.needsResources() {
 		u.rs = u.scratch().allocResources(func() int {
 			n := u.nextID
 			u.nextID++
@@ -732,9 +735,9 @@ func (u *Updater) materialize() error {
 		if drawn {
 			extra := Ref{Num: u.add(u.contentStream(p.drawnContent()))}
 			dict["Contents"] = p.contentsWith(dict["Contents"], extra)
-			if u.rs != nil {
-				dict["Resources"] = p.mergedResources(u.rs)
-			}
+		}
+		if u.rs != nil {
+			dict["Resources"] = p.mergedResources(u.rs)
 		}
 		u.set(p.pageNum, dict)
 	}

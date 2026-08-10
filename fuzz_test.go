@@ -123,6 +123,14 @@ func FuzzReader(f *testing.F) {
 		u.SetPageRotation(0, 90)
 		u.SetInfo(Info{Title: "fuzz"})
 		r.Annotations(0)
+		if imgs, err := r.PageImages(0); err == nil {
+			for i, im := range imgs {
+				if i >= 3 {
+					break
+				}
+				im.Decode()
+			}
+		}
 		u.RemoveAnnotations(0, func(a Annotation) bool { return a.Type == AnnotText })
 		if r.NumPages() > 1 {
 			u.MovePage(r.NumPages()-1, 0)

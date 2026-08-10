@@ -67,6 +67,10 @@ go get github.com/SalvioniDigitalSolutions/gopdf
 - **Paragraph reflow** that re-wraps text across a paragraph's own lines
 - **Interactive forms**: read fields, fill them (flattened or still
   editable), and author new ones from scratch
+- **Images**: list what a page draws, with placement and colour space,
+  decode the pixels, and replace one in place
+- **Restyling**: change an existing run's typeface, size or colour, not
+  just the characters it draws
 - **Annotations**: read, add and remove highlights, underlines,
   strike-outs, sticky notes, boxes and links — on new pages or in place
 - **Page operations**: delete, reorder and move pages, in place
@@ -143,6 +147,26 @@ signatures can be added without rewriting a single original object: the
 drawn content becomes an extra content stream and its resources are merged
 under a collision-proof prefix.
 
+### Images and restyling
+
+```go
+for _, im := range r.PageImages(0) {
+	fmt.Printf("%dx%d %s at (%.0f,%.0f)\n", im.Width, im.Height, im.ColorSpace, im.X, im.Y)
+	pixels, err := im.Decode()          // an image.Image
+}
+
+u := gopdf.Update(r)
+u.ReplaceImage(im, newLogo)             // scaled into the same box
+
+page, _ := u.Page(0)
+for _, run := range page.Runs() {
+	if run.Text == "Heading" {
+		blue := gopdf.RGB(20, 70, 190)
+		run.Restyle(gopdf.TextStyle{Font: gopdf.HelveticaBold, Size: 15, Color: &blue})
+	}
+}
+```
+
 ### Gradients
 
 ```go
@@ -204,7 +228,7 @@ go run ./examples/edit -in report.pdf -out final.pdf -replace "DRAFT=FINAL"
 Coordinates are in points (1/72 inch) with the origin at the **top-left**
 of the page; `Mm`, `Cm` and `Inch` convert other units.
 
-- **116 tests** covering the writer, the parser, the font subsetter, the
+- **133 tests** covering the writer, the parser, the font subsetter, the
   filters, encryption, editing, reflow and forms
 - **Fuzz targets** for the PDF reader and the TrueType parser, with a
   checked-in regression corpus of 600+ inputs. Fuzzing has found and fixed
@@ -233,8 +257,6 @@ Stated plainly, because they matter when choosing a library:
 
 ## Roadmap
 
-- Image extraction and in-place image replacement
-- Changing a run's font, size or colour, not only its string
 - Writing object streams, for smaller output
 - Subsetting CFF subroutines and glyph names, for smaller `.otf` embeds
 - Cascading reflow that pushes later content down the page
