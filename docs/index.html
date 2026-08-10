@@ -154,6 +154,8 @@ footer { border-top: 1px solid var(--border); margin-top: 4rem; padding-top: 1.5
     <li><a href="#stamp">Stamp &amp; watermark</a></li>
     <li><a href="#editing">Editing text</a></li>
     <li><a href="#reflow">Paragraph reflow</a></li>
+    <li><a href="#annotations">Annotations</a></li>
+    <li><a href="#pageops">Page operations</a></li>
     <li><a href="#update">Incremental update</a></li>
   </ul>
 
@@ -449,6 +451,55 @@ back onto the lines it already occupies. If the new text needs
 paragraph but cannot push the rest of the page down.
 <code>SetMaxExtraLines(n)</code> allows growth when you know there is room.
 Shorter text simply leaves trailing lines blank.</p>
+
+<h2 id="annotations">Annotations</h2>
+<p>Annotations are comments and marks that live alongside the page rather
+than in it, so a reader can select, edit or delete them. They can be read
+from any document, and added either to a new page or to an existing one
+through an update.</p>
+<pre><code><span class="c">// Reading</span>
+<span class="k">for</span> _, a := <span class="k">range</span> annots {
+	fmt.<span class="f">Printf</span>(<span class="s">"%-10s %v %q %s\n"</span>, a.Type, a.Rect, a.Contents, a.URL)
+}
+<span class="c">// Link       [29 220 219 230] ""                    https://www.energystar.gov
+// Highlight  [29 186 559 198] "confirm this figure"
+// Text       [566 180 586 200] "Is 10 minutes still current?"</span>
+
+<span class="c">// Adding — on a new Page, or on an updated one</span>
+page.<span class="f">AddHighlight</span>(<span class="n">58</span>, <span class="n">132</span>, <span class="n">200</span>, <span class="n">16</span>, <span class="s">"check this total"</span>,
+	gopdf.NoteOptions{Author: <span class="s">"Reviewer"</span>})
+page.<span class="f">AddNote</span>(<span class="n">420</span>, <span class="n">70</span>, <span class="s">"please confirm"</span>, gopdf.NoteOptions{Author: <span class="s">"Reviewer"</span>})
+page.<span class="f">AddUnderline</span>(x, y, w, h, <span class="s">""</span>, gopdf.NoteOptions{})
+page.<span class="f">AddStrikeOut</span>(x, y, w, h, <span class="s">""</span>, gopdf.NoteOptions{})
+page.<span class="f">AddSquareAnnotation</span>(x, y, w, h, <span class="s">"boxed"</span>, gopdf.NoteOptions{})
+page.<span class="f">AddCircleAnnotation</span>(x, y, w, h, <span class="s">""</span>, gopdf.NoteOptions{})
+page.<span class="f">LinkURL</span>(x, y, w, h, <span class="s">"https://example.com"</span>)
+
+<span class="c">// Removing — strip every sticky note, keep the rest</span>
+u.<span class="f">RemoveAnnotations</span>(<span class="n">0</span>, <span class="k">func</span>(a gopdf.Annotation) <span class="k">bool</span> {
+	<span class="k">return</span> a.Type == gopdf.AnnotText
+})</code></pre>
+<p>Text-markup annotations are written with the quad points and an
+appearance stream of their own, so every viewer draws them the same way —
+a highlight uses a multiply blend, which keeps the text underneath
+legible. Sticky notes carry no appearance, letting the viewer draw its
+own icon as users expect.</p>
+
+<h2 id="pageops">Page operations</h2>
+<p>Pages can be removed and reordered in place, without rebuilding the
+document.</p>
+<pre><code>u := gopdf.<span class="f">Update</span>(r)
+u.<span class="f">RemovePage</span>(<span class="n">1</span>)                    <span class="c">// drop the second page</span>
+u.<span class="f">MovePage</span>(<span class="n">3</span>, <span class="n">0</span>)                   <span class="c">// bring the fourth to the front</span>
+u.<span class="f">SetPageOrder</span>([]<span class="k">int</span>{<span class="n">4</span>, <span class="n">3</span>, <span class="n">1</span>, <span class="n">0</span>})   <span class="c">// reverse, dropping one</span>
+u.<span class="f">Save</span>(<span class="s">"reordered.pdf"</span>)</code></pre>
+<div class="note">
+<p>The page tree is rewritten as one flat node. Attributes a page used to
+inherit from an intermediate node — its resources, boxes and rotation —
+are written onto the page first, so flattening cannot change how anything
+renders. Removed pages stay in the file as unreferenced objects, which is
+what makes the operation cheap and reversible by another update.</p>
+</div>
 
 <h2 id="update">Incremental update</h2>
 <p>Everything above rebuilds a document: pages are imported into a new

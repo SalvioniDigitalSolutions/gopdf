@@ -122,6 +122,11 @@ func FuzzReader(f *testing.F) {
 		u.SetFormValues(values)
 		u.SetPageRotation(0, 90)
 		u.SetInfo(Info{Title: "fuzz"})
+		r.Annotations(0)
+		u.RemoveAnnotations(0, func(a Annotation) bool { return a.Type == AnnotText })
+		if r.NumPages() > 1 {
+			u.MovePage(r.NumPages()-1, 0)
+		}
 		u.WriteTo(io.Discard)
 		doc := New()
 		if _, err := doc.ImportPage(r, 0); err == nil {

@@ -80,7 +80,8 @@ type Page struct {
 	fontSize  float64
 	links     []link
 	rotate    int
-	rawAnnots []any // imported annotations, written verbatim
+	rawAnnots []any           // imported annotations, written verbatim
+	annots    []*pendingAnnot // annotations created through this API
 
 	// Set for pages imported with EditPage: the original content stream
 	// (written before anything drawn through this API), the page's own

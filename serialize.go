@@ -143,6 +143,12 @@ func (d *Document) WriteTo(w io.Writer) (int64, error) {
 		for j := range p.links {
 			annotNums[i][j] = alloc()
 		}
+		for _, a := range p.annots {
+			a.num = alloc()
+			if a.ap != nil {
+				a.apNum = alloc()
+			}
+		}
 		pageIndex[p] = i
 	}
 	totalObjs := next - 1
@@ -373,6 +379,9 @@ func (d *Document) WriteTo(w io.Writer) (int64, error) {
 				}
 			}
 		}
+		for _, a := range p.annots {
+			fieldWidgets = append(fieldWidgets, a.num)
+		}
 		if len(p.links)+len(p.rawAnnots)+len(fieldWidgets) > 0 {
 			ow.str(" /Annots [")
 			sep := ""
@@ -399,6 +408,12 @@ func (d *Document) WriteTo(w io.Writer) (int64, error) {
 			return ow.n, err
 		}
 		endObj()
+
+		for _, a := range p.annots {
+			if err := writeAnnotation(ow, ctx, a, beginObj, endObj, d.Compress); err != nil {
+				return ow.n, err
+			}
+		}
 
 		for j, l := range p.links {
 			beginObj(annotNums[i][j])

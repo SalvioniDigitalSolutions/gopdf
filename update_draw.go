@@ -154,3 +154,80 @@ func (u *Updater) AddImageFile(path string) (*Image, error) {
 func (u *Updater) AddImageReader(r io.Reader) (*Image, error) {
 	return u.scratch().AddImageReader(r)
 }
+
+// --- annotations on an updated page ---
+
+// hasAnnots reports whether annotations were added to this page.
+func (p *UpdatablePage) hasAnnots() bool {
+	return p.Page != nil && (len(p.Page.annots) > 0 || len(p.Page.links) > 0)
+}
+
+// annotObjects writes the page's new annotations as appended objects and
+// returns references to them.
+func (u *Updater) annotObjects(p *UpdatablePage) Array {
+	var refs Array
+	for _, l := range p.Page.links {
+		refs = append(refs, Ref{Num: u.add(linkAnnotDict(p.Page, l))})
+	}
+	for _, a := range p.Page.annots {
+		dict := cloneDict(a.dict)
+		if a.ap != nil {
+			stream := &rawStream{
+				dict: Dict{
+					"Type": Name("XObject"), "Subtype": Name("Form"),
+					"BBox": Array{a.bbox[0], a.bbox[1], a.bbox[2], a.bbox[3]},
+				},
+				data: a.ap,
+			}
+			if a.apResources != nil {
+				stream.dict["Resources"] = a.apResources
+			}
+			dict["AP"] = Dict{"N": Ref{Num: u.add(stream)}}
+		}
+		refs = append(refs, Ref{Num: u.add(dict)})
+	}
+	return refs
+}
+
+// existingAnnots returns the page's current /Annots entries, minus any the
+// update has marked for removal.
+func (p *UpdatablePage) existingAnnots() Array {
+	arr, _ := p.u.r.resolve(p.u.pageDict(p.pageNum, p.index)["Annots"]).(Array)
+	if len(p.removed) == 0 {
+		return append(Array{}, arr...)
+	}
+	out := make(Array, 0, len(arr))
+	for _, e := range arr {
+		if ref, ok := e.(Ref); ok && p.removed[ref.Num] {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// RemoveAnnotations drops the annotations on a page for which drop
+// returns true, and reports how many were removed. The annotation objects
+// stay in the file; the page simply stops referencing them.
+func (u *Updater) RemoveAnnotations(pageIndex int, drop func(Annotation) bool) (int, error) {
+	page, err := u.Page(pageIndex)
+	if err != nil {
+		return 0, err
+	}
+	annots, err := u.r.Annotations(pageIndex)
+	if err != nil {
+		return 0, err
+	}
+	if page.removed == nil {
+		page.removed = make(map[int]bool)
+	}
+	n := 0
+	for _, a := range annots {
+		if a.ref.Num == 0 || !drop(a) {
+			continue
+		}
+		page.removed[a.ref.Num] = true
+		n++
+	}
+	return n, nil
+}

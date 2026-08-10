@@ -41,6 +41,9 @@ type Updater struct {
 	// their object numbers once the update is being written.
 	res *Document
 	rs  *resourceSet
+
+	// pageOrder, when set, is the document's new page order.
+	pageOrder []int
 }
 
 // Update opens a parsed document for incremental modification.
@@ -142,6 +145,9 @@ type UpdatablePage struct {
 	// sourceResources is the page's resource dictionary as the file has
 	// it, for merging in anything drawn.
 	sourceResources any
+	// removed holds the object numbers of annotations this update drops
+	// from the page.
+	removed map[int]bool
 }
 
 // Page prepares a page for text editing. The page's content stream and
@@ -464,6 +470,9 @@ func (u *Updater) WriteTo(w io.Writer) (int64, error) {
 	if err := u.materialize(); err != nil {
 		return 0, err
 	}
+	if err := u.rebuildPageTree(); err != nil {
+		return 0, err
+	}
 	if len(u.changed) == 0 && u.info == nil {
 		// Nothing changed: the original file is the answer.
 		n, err := w.Write(u.r.data)
@@ -705,10 +714,15 @@ func (u *Updater) materialize() error {
 			}
 		}
 		edited, drawn := p.contentDirty(), p.hasDrawing()
-		if !edited && !drawn {
+		annotated := p.hasAnnots() || len(p.removed) > 0
+		if !edited && !drawn && !annotated {
 			continue
 		}
 		dict := cloneDict(u.pageDict(p.pageNum, p.index))
+
+		if annotated {
+			dict["Annots"] = append(p.existingAnnots(), u.annotObjects(p)...)
+		}
 
 		// Text edits replace the page's own stream; drawing is appended
 		// as a further one, so an untouched original stays untouched.
