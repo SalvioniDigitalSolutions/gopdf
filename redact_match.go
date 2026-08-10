@@ -71,6 +71,11 @@ const (
 )
 
 // joinKind decides how two consecutive runs relate.
+//
+// Whether a gap reads as a space is decided by the same rule text
+// extraction uses, so that a word the extractor reports as whole is one
+// this can match. Two heuristics that disagree leave text that PageText
+// finds and redaction does not.
 func joinKind(prev, next *TextRun) joinMode {
 	size := prev.FontSize
 	if size <= 0 {
@@ -87,13 +92,23 @@ func joinKind(prev, next *TextRun) joinMode {
 	switch {
 	case gap < -size*0.5:
 		return joinBreak // the pen went backwards: a new column or overprint
-	case gap <= size*0.18:
-		return joinTight
-	case gap <= size*1.5:
+	case gap > size*2.5:
+		return joinBreak // far enough to be somewhere else entirely
+	case needsSpace(next.Text, gap, prev.spaceWidthPts()):
 		return joinSpace
 	default:
-		return joinBreak
+		return joinTight
 	}
+}
+
+// spaceWidthPts returns how wide a space is in a run's own font and size.
+func (run *TextRun) spaceWidthPts() float64 {
+	if run.font != nil && run.fontSizeRaw != 0 {
+		if w := run.font.codeWidth(32); w > 0 {
+			return w / 1000 * run.FontSize * run.horizScale
+		}
+	}
+	return run.FontSize * 0.25
 }
 
 // chainRanges maps a byte range of a chain's text onto the runs it covers,

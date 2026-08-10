@@ -349,6 +349,16 @@ chapter := doc.<span class="f">AddOutline</span>(<span class="k">nil</span>, <sp
 doc.<span class="f">AddOutline</span>(chapter, <span class="s">"Section 1.1"</span>, otherPage, <span class="n">200</span>)</code></pre>
 
 <h2 id="reading">Reading an existing PDF</h2>
+<div class="note">
+<p><strong>Word breaks are measured, not guessed.</strong> Producers set a
+word in pieces — troff moves the pen a fraction of a point between
+letters, TeX kerns inside words — and treating every forward move as a
+space turns <code>BASH</code> into <code>BA SH</code>. Extraction advances
+the pen by each string's real width and compares the gap against the
+font's own space, along the baseline rather than the page axes so rotated
+text reads the same. Measured against <code>pdftotext</code> over 918
+documents, agreement rose from 0.773 to 0.849.</p>
+</div>
 <pre><code>r, err := gopdf.<span class="f">Open</span>(<span class="s">"report.pdf"</span>)
 <span class="k">if</span> err != <span class="k">nil</span> {
 	log.<span class="f">Fatal</span>(err)
@@ -714,6 +724,14 @@ editing a signed document and precisely wrong here: everything it replaced
 stays readable in the bytes underneath. A redacted file is written afresh
 from the objects the document still reaches, so what is not written is
 gone.</p>
+<div class="note">
+<p><strong>The result is checked before you get it.</strong> The written
+document is read back and the text that global rules removed is searched
+for again. If any of it is still readable — because the document draws it
+in a way redaction could not reach — <code>WriteTo</code> reports that and
+writes nothing, rather than handing back a file that looks redacted and is
+not. <code>SetVerify(false)</code> turns the check off.</p>
+</div>
 <div class="note warn">
 <p><strong>Redaction removes content, not structure.</strong> A string can
 also live somewhere that is not content — a font's <code>/BaseFont</code>
@@ -959,6 +977,8 @@ fields editable.</li>
 <code>.otf</code> embeds are larger than TrueType ones.</li>
 <li>Encrypted files are read, but public-key (certificate) security
 handlers are not supported.</li>
+<li>Type 3 fonts are read — their widths are scaled through the font
+matrix and their text extracts — but authoring one is not supported.</li>
 <li>Redaction removes content, not structural names such as a font's
 <code>/BaseFont</code>. Vector artwork straddling the edge of an area is
 covered but not deleted; <code>PartialArtwork</code> reports it.</li>

@@ -1,6 +1,7 @@
 package gopdf
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"image"
@@ -82,6 +83,7 @@ type Redactor struct {
 	images   []ImageRef
 
 	fill         Color
+	verify       bool
 	overlay      bool
 	stripMeta    bool
 	keepAnnots   bool
@@ -102,6 +104,7 @@ func Redact(r *Reader) *Redactor {
 		bars:      make(map[int][]rect),
 		fill:      Black,
 		overlay:   true,
+		verify:    true,
 		stripMeta: true,
 	}
 }
@@ -156,6 +159,13 @@ func (rd *Redactor) Image(img ImageRef) {
 // default is black.
 func (rd *Redactor) SetFill(c Color) { rd.fill = c }
 
+// SetVerify controls whether the written document is read back and
+// checked. It is on by default: a redaction that quietly leaves one
+// occurrence behind is the worst way for this to fail, so the result is
+// proved rather than assumed. Turn it off only where the cost of parsing
+// the output again matters more than that.
+func (rd *Redactor) SetVerify(on bool) { rd.verify = on }
+
 // SetOverlay controls whether a box is painted over each redacted area.
 // It is on by default, so a redaction is visible as one. Turning it off
 // still removes the content; it just leaves no mark.
@@ -201,7 +211,61 @@ func (rd *Redactor) WriteTo(w io.Writer) (int64, error) {
 	if err := rd.plan(); err != nil {
 		return 0, err
 	}
-	return rd.rw.writeTo(w)
+	if !rd.verify {
+		return rd.rw.writeTo(w)
+	}
+	// Written to memory first: a document that fails its own check must
+	// not reach the caller looking redacted when it is not.
+	var buf bytes.Buffer
+	if _, err := rd.rw.writeTo(&buf); err != nil {
+		return 0, err
+	}
+	if err := rd.checkRemoved(buf.Bytes()); err != nil {
+		return 0, err
+	}
+	n, err := w.Write(buf.Bytes())
+	return int64(n), err
+}
+
+// checkRemoved re-reads the output and confirms that nothing a global
+// rule was supposed to remove can still be extracted.
+//
+// Only the literals and patterns are checked. Those apply to the whole
+// document, so no occurrence should survive anywhere. An area or an image
+// covers one place, and the same words may legitimately appear elsewhere.
+func (rd *Redactor) checkRemoved(out []byte) error {
+	if len(rd.literals) == 0 && len(rd.patterns) == 0 {
+		return nil
+	}
+	r, err := NewReader(out)
+	if err != nil {
+		return fmt.Errorf("gopdf: the redacted document could not be read back: %w", err)
+	}
+	var text strings.Builder
+	for i := 0; i < r.NumPages(); i++ {
+		t, err := r.PageText(i)
+		if err != nil {
+			return fmt.Errorf("gopdf: the redacted document could not be read back: %w", err)
+		}
+		text.WriteString(t)
+		text.WriteString("\n")
+	}
+	got := text.String()
+	for _, lit := range rd.literals {
+		if strings.Contains(got, lit) {
+			return fmt.Errorf("gopdf: %q is still readable after redaction; "+
+				"the document draws it in a way this could not reach, and the "+
+				"output has been withheld", lit)
+		}
+	}
+	for _, re := range rd.patterns {
+		if m := re.FindString(got); m != "" {
+			return fmt.Errorf("gopdf: %q still matches %v after redaction; "+
+				"the document draws it in a way this could not reach, and the "+
+				"output has been withheld", m, re)
+		}
+	}
+	return nil
 }
 
 // --- planning ---

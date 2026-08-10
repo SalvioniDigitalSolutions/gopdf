@@ -27,6 +27,13 @@ type fontInfo struct {
 	observed map[uint32]bool
 	glyphs   map[uint32]bool
 	built    bool
+
+	// A Type 3 font draws each glyph with a content stream of its own.
+	// Its widths are in glyph space rather than the 1/1000 em every
+	// other font uses, and only the codes with a procedure behind them
+	// exist at all.
+	type3 bool
+	procs map[uint32]bool
 }
 
 // newFontInfo builds encoding and metric tables for one font resource.
@@ -105,6 +112,11 @@ func (fi *fontInfo) observe(s []byte) {
 
 // canUse reports whether a character code is safe to write back.
 func (fi *fontInfo) canUse(code uint32) bool {
+	if fi.type3 {
+		// A Type 3 glyph exists only if the font carries a procedure
+		// that draws it.
+		return fi.procs == nil || fi.procs[code]
+	}
 	if !fi.embedded {
 		return true // the viewer supplies the full font
 	}
@@ -152,10 +164,20 @@ func (fi *fontInfo) buildEncoder() {
 }
 
 func (fi *fontInfo) loadSimpleWidths(r *Reader, dict Dict) {
+	fi.type3 = r.resolve(dict["Subtype"]) == Name("Type3")
+	// A Type 3 font measures its glyphs in whatever space its font
+	// matrix defines; scaling by that matrix puts the widths into the
+	// 1/1000 em the rest of this package works in.
+	scale := 1.0
+	if fi.type3 {
+		scale = type3WidthScale(r, dict)
+		fi.loadType3Procs(r, dict)
+	}
+
 	fi.defWidth = 0
 	if fd, ok := r.resolve(dict["FontDescriptor"]).(Dict); ok {
 		if mw, ok := toFloat(r.resolve(fd["MissingWidth"])); ok {
-			fi.defWidth = mw
+			fi.defWidth = mw * scale
 		}
 	}
 	first, _ := toInt(r.resolve(dict["FirstChar"]))
@@ -168,7 +190,59 @@ func (fi *fontInfo) loadSimpleWidths(r *Reader, dict Dict) {
 	}
 	for i, e := range widths {
 		if w, ok := toFloat(r.resolve(e)); ok {
-			fi.widths[uint32(first+i)] = w
+			fi.widths[uint32(first+i)] = w * scale
+		}
+	}
+}
+
+// type3WidthScale converts a Type 3 font's glyph-space widths into the
+// 1/1000 em used elsewhere, by way of the horizontal component of its
+// font matrix. The usual matrix is [0.001 0 0 0.001 0 0], which leaves
+// the widths unchanged, but the entry is free to be anything.
+func type3WidthScale(r *Reader, dict Dict) float64 {
+	m, ok := r.resolve(dict["FontMatrix"]).(Array)
+	if !ok || len(m) != 6 {
+		return 1
+	}
+	a, ok := toFloat(r.resolve(m[0]))
+	if !ok || a == 0 {
+		return 1
+	}
+	return a * 1000
+}
+
+// loadType3Procs records which character codes the font actually draws,
+// by pairing its encoding differences with the procedures it carries.
+// A code with no procedure behind it renders as nothing, so writing one
+// back would silently drop text.
+func (fi *fontInfo) loadType3Procs(r *Reader, dict Dict) {
+	procs, ok := r.resolve(dict["CharProcs"]).(Dict)
+	if !ok {
+		return
+	}
+	enc, ok := r.resolve(dict["Encoding"]).(Dict)
+	if !ok {
+		return
+	}
+	diffs, ok := r.resolve(enc["Differences"]).(Array)
+	if !ok {
+		return
+	}
+	fi.procs = make(map[uint32]bool)
+	code := 0
+	for _, e := range diffs {
+		switch t := r.resolve(e).(type) {
+		case int64:
+			code = int(t)
+		case float64:
+			code = int(t)
+		case Name:
+			if code >= 0 && code < 256 {
+				if _, has := procs[t]; has {
+					fi.procs[uint32(code)] = true
+				}
+				code++
+			}
 		}
 	}
 }

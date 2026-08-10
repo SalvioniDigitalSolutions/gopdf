@@ -905,3 +905,77 @@ func TestRedactSlicesOriginalCodes(t *testing.T) {
 			len(all), len(target.codes))
 	}
 }
+
+// TestRedactVerifiesItsOwnWork checks the safety net: if a document draws
+// text in a way redaction cannot reach, the output is withheld rather
+// than handed back looking redacted.
+func TestRedactVerifiesItsOwnWork(t *testing.T) {
+	src := redactFixture(t)
+	r, _ := NewReader(src)
+	rd := Redact(r)
+	rd.Text("Ada Lovelace")
+	if _, err := rd.Marks(); err != nil {
+		t.Fatal(err)
+	}
+	// A clean redaction passes its own check.
+	if _, err := rd.WriteTo(new(bytes.Buffer)); err != nil {
+		t.Fatalf("a sound redaction was rejected: %v", err)
+	}
+
+	// Now sabotage the plan so the text survives, and confirm it is caught.
+	r2, _ := NewReader(src)
+	bad := Redact(r2)
+	bad.Text("Ada Lovelace")
+	if err := bad.plan(); err != nil {
+		t.Fatal(err)
+	}
+	bad.rw.replace = map[int]any{} // discard every rewritten object
+	var buf bytes.Buffer
+	_, err := bad.WriteTo(&buf)
+	if err == nil {
+		t.Fatal("text that survived redaction was not detected")
+	}
+	if !strings.Contains(err.Error(), "still readable") {
+		t.Errorf("unhelpful error: %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Error("a document that failed its check should not be written out")
+	}
+}
+
+func TestRedactVerifyCanBeTurnedOff(t *testing.T) {
+	src := redactFixture(t)
+	r, _ := NewReader(src)
+	rd := Redact(r)
+	rd.Text("Ada Lovelace")
+	rd.SetVerify(false)
+	if err := rd.plan(); err != nil {
+		t.Fatal(err)
+	}
+	rd.rw.replace = map[int]any{}
+	var buf bytes.Buffer
+	if _, err := rd.WriteTo(&buf); err != nil {
+		t.Fatalf("with verification off, writing should not fail: %v", err)
+	}
+	if buf.Len() == 0 {
+		t.Error("nothing was written")
+	}
+}
+
+func TestRedactVerifiesPatterns(t *testing.T) {
+	src := redactFixture(t)
+	r, _ := NewReader(src)
+	rd := Redact(r)
+	rd.Pattern(regexp.MustCompile(`\d{10}`))
+	if err := rd.plan(); err != nil {
+		t.Fatal(err)
+	}
+	rd.rw.replace = map[int]any{}
+	_, err := rd.WriteTo(new(bytes.Buffer))
+	if err == nil {
+		t.Fatal("a surviving pattern match was not detected")
+	}
+	if !strings.Contains(err.Error(), "still matches") {
+		t.Errorf("unhelpful error: %v", err)
+	}
+}

@@ -62,7 +62,11 @@ go get github.com/SalvioniDigitalSolutions/gopdf
   ASCII85, ASCIIHex and RunLength filters
 - Merge, split, rotate, stamp and watermark
 - **Text extraction** through ToUnicode CMaps and simple-font encodings,
-  descending into nested form XObjects
+  descending into nested form XObjects, with word breaks decided by
+  measuring the gap rather than guessing — troff and TeX output reads as
+  words, not as `BA SH` and `Softw are`
+- **Type 3 fonts**: glyph-space widths scaled through the font matrix, and
+  text that extracts instead of coming out empty
 - **In-place text editing** that preserves the layout exactly
 - **Paragraph reflow** that re-wraps text across a paragraph's own lines
 - **Flow engine**: replace text of any length, keeping each part's
@@ -85,7 +89,8 @@ go get github.com/SalvioniDigitalSolutions/gopdf
   it was signed
 - **Redaction** that actually removes: glyphs come out of the content
   stream, pixels out of the image, annotations out of the page, and the
-  result is a fresh file rather than an appended revision
+  result is a fresh file rather than an appended revision — then read back
+  and checked, so a document that still shows the text is withheld
 - **Repairs damaged files**: a wrong `startxref`, bytes before the header
   or a broken table are recovered by scanning for the objects
 - Reads encrypted files (RC4, AES-128, AES-256) with either password
@@ -282,6 +287,12 @@ What gets removed, and how:
 | Annotations | Removed, along with whatever text they hold. |
 | Metadata | The information dictionary and XMP stream go by default. |
 
+The output is read back before you get it. If a document draws text in a
+way redaction could not reach, `WriteTo` reports it and writes nothing,
+rather than handing back a file that looks redacted and is not. Turn the
+check off with `SetVerify(false)` if the second parse costs more than the
+assurance is worth.
+
 Two properties it is built around. First, a word a content stream split
 in two — `Administra` then `tion`, or one glyph at a time, as justified
 documents often are — is still matched, because matching runs over a whole
@@ -347,9 +358,13 @@ go run ./examples/redact -in case.pdf -list -text "Ada Lovelace"
 Coordinates are in points (1/72 inch) with the origin at the **top-left**
 of the page; `Mm`, `Cm` and `Inch` convert other units.
 
-- **210 tests** at **86% statement coverage**, covering the writer, the
+- **227 tests** at **86% statement coverage**, covering the writer, the
   parser, the font subsetter, the filters, encryption, editing, reflow,
   flow, forms, signatures and redaction
+- **Text extraction measured against `pdftotext`** over 918 real
+  documents: agreement rose from 0.773 to 0.849 when word breaks started
+  being measured rather than guessed, improving 581 files and regressing
+  35
 - **Swept against 4,635 real PDFs** — macOS and application resources, Go
   module fixtures, and a 130,000-file legal corpus spanning Word,
   StarOffice, LibreOffice, iText, Aspose, Quartz, groff and TeX, PDF 1.1
