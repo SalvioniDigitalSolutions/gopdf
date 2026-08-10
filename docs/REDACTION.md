@@ -355,6 +355,27 @@ if f.OverflowsPage(pageHeight) {
 }
 ```
 
+## The output parses strictly
+
+Every writer here splices replacements into a content stream somebody else
+wrote. A splice landing immediately after an operator whose trailing space
+it consumed leaves `Tc` and `1` as the single token `Tc1` — content that
+is correct and a file that is not. Readers tolerate it, which is why it
+goes unnoticed until something strict refuses the page, and then the cost
+falls on whoever tries to re-open their own output to check it.
+
+Splices are separated on both sides, so that cannot happen. If you want to
+assert it yourself:
+
+```go
+if err := gopdf.StrictLexPages(out); err != nil {
+    // a keyword in the content stream is not an operator
+}
+```
+
+It is exported for exactly that: verifying a pipeline's output with a
+second parser, rather than trusting the one that wrote it.
+
 ## Choosing between them
 
 Reach for **`Redact`** when the fact that something was removed is the

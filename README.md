@@ -394,7 +394,7 @@ go run ./examples/redact -in case.pdf -list -text "Ada Lovelace"
 Coordinates are in points (1/72 inch) with the origin at the **top-left**
 of the page; `Mm`, `Cm` and `Inch` convert other units.
 
-- **287 tests** at **86% statement coverage**, covering the writer, the
+- **294 tests** at **86% statement coverage**, covering the writer, the
   parser, the font subsetter, the filters, encryption, editing, reflow,
   flow, forms, signatures and redaction
 - **Text extraction measured against `pdftotext`** over 918 real

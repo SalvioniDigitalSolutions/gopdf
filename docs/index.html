@@ -853,6 +853,16 @@ And a paragraph that grows pushes the ones below it down, which at the
 foot of a page pushes them off it: <code>OverflowsPage</code> answers that
 before you write, rather than clipping silently.</p>
 
+<h3>The output parses strictly</h3>
+<p>Every writer here splices replacements into a content stream somebody
+else wrote, and a splice landing immediately after an operator whose
+trailing space it consumed leaves <code>Tc</code> and <code>1</code> as
+the single token <code>Tc1</code>: content that is correct and a file that
+is not. Readers tolerate it, which is why it goes unnoticed until
+something strict refuses the page. Splices are separated on both sides so
+it cannot happen, and <code>StrictLexPages</code> is exported so a caller
+can assert it rather than trust it.</p>
+
 <h3>Not recoverable</h3>
 <p>The output is a complete file with one revision, so there is no
 earlier state to roll back to — which is the whole reason this is not an

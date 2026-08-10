@@ -777,10 +777,36 @@ func applySplices(data []byte, splices []splice) ([]byte, error) {
 			return nil, fmt.Errorf("gopdf: text edit out of range")
 		}
 		out = append(out, data[prev:s.start]...)
-		out = append(out, s.repl...)
+		// A splice can land immediately after an operator whose trailing
+		// whitespace it consumed, and then "Tc" and "1" run together as
+		// the single token "Tc1". Readers tolerate it; a strict parser
+		// rejects the page, which is worse than it sounds — it stops the
+		// caller re-opening its own output to check it.
+		out = appendSeparated(out, s.repl)
+		// And the mirror at the far end. Comparing what is now the last
+		// byte written covers an empty replacement too, where the bytes
+		// either side of the removed span come to meet each other.
+		if tail := data[s.end:]; len(tail) > 0 && len(out) > 0 &&
+			isRegular(out[len(out)-1]) && isRegular(tail[0]) {
+			out = append(out, ' ')
+		}
 		prev = s.end
 	}
 	return append(out, data[prev:]...), nil
+}
+
+// appendSeparated appends add to out, putting a space between them when
+// the two would otherwise fuse into one token.
+//
+// Two regular characters meeting is the whole of the problem: whitespace
+// and delimiters already end a token, so only a regular character
+// following a regular character changes what the stream says.
+func appendSeparated(out, add []byte) []byte {
+	if len(out) > 0 && len(add) > 0 &&
+		isRegular(out[len(out)-1]) && isRegular(add[0]) {
+		out = append(out, ' ')
+	}
+	return append(out, add...)
 }
 
 // codeStepFor returns how many bytes one character code occupies.
