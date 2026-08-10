@@ -161,6 +161,7 @@ footer { border-top: 1px solid var(--border); margin-top: 4rem; padding-top: 1.5
     <li><a href="#pageops">Page operations</a></li>
     <li><a href="#update">Incremental update</a></li>
     <li><a href="#redaction">Redaction</a></li>
+    <li><a href="#pseudonymize">Pseudonymization</a></li>
     <li><a href="#rewrite">Rewriting &amp; repair</a></li>
   </ul>
 
@@ -739,6 +740,59 @@ name, an embedded file's name. Those are left alone. Check
 <code>Marks()</code> before writing and, where it matters, search the
 output.</p>
 </div>
+
+<h2 id="pseudonymize">Pseudonymization</h2>
+<p>Redaction takes text out and leaves a gap. Pseudonymization puts
+something in its place — a stable token, so the same person can be
+followed through a document, or a plain <code>[REDACTED]</code> marker
+where that reads better than a blank.</p>
+<pre><code>r, _ := gopdf.<span class="f">Open</span>(<span class="s">"case.pdf"</span>)
+out, _ := os.<span class="f">Create</span>(<span class="s">"anonymous.pdf"</span>)
+
+res, err := gopdf.<span class="f">Pseudonymize</span>(r, out, []gopdf.Pseudonym{
+	{From: <span class="s">"Ada Lovelace"</span>,    To: <span class="s">"[[PII_NAME_1]]"</span>},
+	{From: <span class="s">"Charles Babbage"</span>, To: <span class="s">"[[PII_NAME_2]]"</span>},
+	{From: <span class="s">"12 Dorset Street"</span>, To: <span class="s">"[REDACTED]"</span>},
+})
+fmt.<span class="f">Println</span>(res.<span class="f">Total</span>(), <span class="s">"paragraphs across"</span>, res.Pages, <span class="s">"pages"</span>)</code></pre>
+<p><code>PseudonymizeFile</code> does the same between two paths, writing
+to disk only once the result has proved itself.</p>
+
+<h3>The token need not be the same length</h3>
+<p>The paragraph is re-wrapped around it by the <a href="#flow">flow
+engine</a>, measuring each piece in its own font and taking however many
+lines it needs. Every part keeps the styling it had, so replacing a name
+inside a bold phrase leaves the phrase bold and the sentence around it
+alone.</p>
+
+<h3>Where it looks</h3>
+<p>Page text is the visible half. The same name sits in places nothing
+draws and everything reads, and all of them are rewritten: the
+information dictionary, the XMP packet, annotation notes and their
+authors, bookmark titles, form field values and tooltips, attachment
+names and descriptions.</p>
+
+<h3>Not recoverable</h3>
+<p>The output is a complete file with one revision, so there is no
+earlier state to roll back to — which is the whole reason this is not an
+edit. Substituting text through an ordinary edit <em>appends</em>, and
+truncating the file at its first <code>%%EOF</code> hands the original
+straight back.</p>
+<p>Before you get the file it is read back and searched: the page text,
+every string in every object still reachable, and any metadata packet. If
+an original is still findable, <code>Pseudonymize</code> reports it and
+writes nothing.</p>
+<pre><code><span class="c">// gopdf: "Ada Lovelace" survives in a string (object 42);</span>
+<span class="c">// the output has been withheld</span></code></pre>
+<div class="note warn">
+<p><strong>Two rules worth knowing.</strong> Mappings are applied longest
+first, so a rule for <code>Ada Lovelace</code> is not pre-empted by one
+for <code>Ada</code>; and a token may not contain its own original, which
+would leave the name in place. Text baked into a scanned image is pixels
+— use <a href="#redaction">an area redaction</a> for that.</p>
+</div>
+<p>The full guide, including how to choose between the two, is in
+<a href="https://github.com/SalvioniDigitalSolutions/gopdf/blob/main/docs/REDACTION.md">docs/REDACTION.md</a>.</p>
 
 <h2 id="rewrite">Rewriting &amp; repair</h2>
 <p><code>Rewrite</code> emits a document as a fresh file holding only the

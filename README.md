@@ -91,6 +91,9 @@ go get github.com/SalvioniDigitalSolutions/gopdf
   stream, pixels out of the image, annotations out of the page, and the
   result is a fresh file rather than an appended revision — then read back
   and checked, so a document that still shows the text is withheld
+- **Pseudonymization**: swap identifying text for tokens of any length,
+  reflowing the paragraph and reaching the copies in metadata, annotations,
+  bookmarks and form fields — then proving none of the original is left
 - **Repairs damaged files**: a wrong `startxref`, bytes before the header
   or a broken table are recovered by scanning for the objects
 - Reads encrypted files (RC4, AES-128, AES-256) with either password
@@ -300,6 +303,23 @@ line rather than one operation at a time. Second, the output is a
 **complete rewrite**, not an incremental update: an update appends, and
 everything it replaced stays readable in the bytes underneath it.
 
+### Pseudonymize, when a marker beats a gap
+
+```go
+res, _ := gopdf.PseudonymizeFile("case.pdf", "anonymous.pdf", []gopdf.Pseudonym{
+	{From: "Ada Lovelace", To: "[[PII_NAME_1]]"},
+	{From: "12 Dorset Street", To: "[REDACTED]"},
+})
+```
+
+The token need not be the same length — the paragraph re-wraps around it
+and keeps its styling. It reaches the copies of a name that nothing draws
+but everything reads: the metadata, the XMP packet, annotation notes,
+bookmark titles, form field values. Then it reads the result back and
+withholds it if any original is still findable.
+
+Full guide: **[docs/REDACTION.md](docs/REDACTION.md)**.
+
 ### Sign a document, and check the ones already on it
 
 ```go
@@ -358,7 +378,7 @@ go run ./examples/redact -in case.pdf -list -text "Ada Lovelace"
 Coordinates are in points (1/72 inch) with the origin at the **top-left**
 of the page; `Mm`, `Cm` and `Inch` convert other units.
 
-- **227 tests** at **86% statement coverage**, covering the writer, the
+- **235 tests** at **86% statement coverage**, covering the writer, the
   parser, the font subsetter, the filters, encryption, editing, reflow,
   flow, forms, signatures and redaction
 - **Text extraction measured against `pdftotext`** over 918 real
