@@ -1,6 +1,6 @@
 # gopdf
 
-**Create, read, edit and fill PDFs — in pure Go, with nothing but the standard library.**
+**Create, read, edit, fill and sign PDFs — in pure Go, with nothing but the standard library.**
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/SalvioniDigitalSolutions/gopdf.svg)](https://pkg.go.dev/github.com/SalvioniDigitalSolutions/gopdf)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -77,6 +77,9 @@ go get github.com/SalvioniDigitalSolutions/gopdf
 - **Incremental update**: edit text, draw, annotate and reorder, appended
   so the original file survives byte for byte — including everything the
   library does not model
+- **Digital signatures**: sign a document with an X.509 certificate, read
+  the signatures already on one, and tell whether a file was changed after
+  it was signed
 - Reads encrypted files (RC4, AES-128, AES-256) with either password
 
 ## Highlights
@@ -204,6 +207,35 @@ doc.Encrypt("", "owner-password", gopdf.AllowPrint, gopdf.AES256)
 doc.Save("watermarked.pdf")
 ```
 
+### Sign a document, and check the ones already on it
+
+```go
+r, _ := gopdf.Open("contract.pdf")
+u := gopdf.Update(r)
+u.Sign(gopdf.SignOptions{
+	Certificate: cert,           // *x509.Certificate
+	Key:         key,            // any crypto.Signer, including an HSM
+	Name:        "Ada Lovelace",
+	Reason:      "Approval",
+})
+u.Save("signed.pdf")
+```
+
+The signature is a detached PKCS#7 blob covering every byte of the file
+except itself, written as an incremental update — so signing a document
+twice leaves the first signature intact and still valid. Reading works on
+anything, not just files gopdf wrote:
+
+```go
+for _, s := range r.Signatures() {
+	fmt.Println(s.Signer, s.When, s.CoversWholeFile)
+}
+```
+
+`CoversWholeFile` is the one that matters: a signature whose byte range
+stops short of the end of the file was signed before something else was
+appended.
+
 Full guides, the complete API tour and the design notes are in the
 **[documentation](https://salvionidigitalsolutions.github.io/gopdf/)**.
 
@@ -228,14 +260,16 @@ go run ./examples/edit -in report.pdf -out final.pdf -replace "DRAFT=FINAL"
 Coordinates are in points (1/72 inch) with the origin at the **top-left**
 of the page; `Mm`, `Cm` and `Inch` convert other units.
 
-- **143 tests** covering the writer, the parser, the font subsetter, the
-  filters, encryption, editing, reflow and forms
+- **150 tests** covering the writer, the parser, the font subsetter, the
+  filters, encryption, editing, reflow, forms and signatures
 - **Fuzz targets** for the PDF reader and the TrueType parser, with a
-  checked-in regression corpus of 600+ inputs. Fuzzing has found and fixed
+  checked-in regression corpus of 700+ inputs. Fuzzing has found and fixed
   real bugs, including a denial-of-service in `cmap` parsing
 - **Validated against Poppler** in both directions: files gopdf writes are
   read by an independent implementation, and files other tools wrote are
-  read, edited and rewritten by gopdf with their text preserved
+  read, edited and rewritten by gopdf with their text preserved.
+  Signatures are checked with `pdfsig`, which reports them valid and the
+  document wholly covered, and the CMS blob parses under OpenSSL
 - Unencrypted output is byte-for-byte **deterministic**
 - Stream decoding is bounded against decompression bombs
 
@@ -255,16 +289,16 @@ Stated plainly, because they matter when choosing a library:
   font kind is subset.
 - Permission flags on encrypted documents are advisory, as the PDF
   specification defines them — they are not a security boundary.
+- Signatures are `adbe.pkcs7.detached` with SHA-256. Signing produces the
+  blob and the byte range; obtaining a timestamp from a TSA, and deciding
+  whether a certificate is one you trust, are left to the caller.
 
 ## Roadmap
 
 Nothing outstanding from the original plan. Candidates, in no order:
-CID-keyed CFF subsetting, digital signatures, public-key security
-handlers, mesh shadings and tiling patterns, PDF/A conformance,
+CID-keyed CFF subsetting, PAdES timestamps, public-key (certificate)
+security handlers, mesh shadings and tiling patterns, PDF/A conformance,
 linearization, and reflow that cascades across pages.
-- Cascading reflow that pushes later content down the page
-- Public-key (certificate) security handlers
-- PDF/A conformance
 
 ## License
 

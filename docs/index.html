@@ -171,6 +171,7 @@ footer { border-top: 1px solid var(--border); margin-top: 4rem; padding-top: 1.5
   <h4>More</h4>
   <ul>
     <li><a href="#encryption">Encryption</a></li>
+    <li><a href="#signatures">Digital signatures</a></li>
     <li><a href="#design">Design notes</a></li>
     <li><a href="#limits">Limitations</a></li>
     <li><a href="https://pkg.go.dev/github.com/SalvioniDigitalSolutions/gopdf">API reference ↗</a></li>
@@ -182,7 +183,7 @@ footer { border-top: 1px solid var(--border); margin-top: 4rem; padding-top: 1.5
 
 <header class="hero">
   <h1>gopdf</h1>
-  <p class="lead">Create, read, edit and fill PDF files in pure Go — with nothing but the standard library.</p>
+  <p class="lead">Create, read, edit, fill and sign PDF files in pure Go — with nothing but the standard library.</p>
   <div class="badges">
     <span class="badge">No cgo</span>
     <span class="badge">Zero dependencies</span>
@@ -699,6 +700,70 @@ honour them; they do not protect content from anyone who can open the
 document.</p>
 </div>
 
+<h2 id="signatures">Digital signatures</h2>
+<p>A signature is applied through an <a href="#update">incremental update</a>,
+which is what makes signing safe: the original bytes are never touched, so a
+signature already on the document keeps covering exactly what it signed.</p>
+<pre><code>r, _ := gopdf.<span class="f">Open</span>(<span class="s">"contract.pdf"</span>)
+u := gopdf.<span class="f">Update</span>(r)
+
+<span class="k">if</span> err := u.<span class="f">Sign</span>(gopdf.SignOptions{
+	Certificate: cert,                 <span class="c">// *x509.Certificate</span>
+	Key:         key,                  <span class="c">// any crypto.Signer</span>
+	Name:        <span class="s">"Ada Lovelace"</span>,
+	Reason:      <span class="s">"Approval"</span>,
+	Location:    <span class="s">"London"</span>,
+}); err != <span class="k">nil</span> {
+	<span class="k">return</span> err
+}
+u.<span class="f">Save</span>(<span class="s">"signed.pdf"</span>)</code></pre>
+<p><code>Key</code> is a <code>crypto.Signer</code>, not a concrete key type, so
+the private key can live in an HSM, a smartcard or a KMS and never enter the
+process. Only its <code>Sign</code> method is called, once, over a SHA-256
+digest.</p>
+
+<h3>What actually gets signed</h3>
+<p>The signature blob is detached PKCS#7 (<code>adbe.pkcs7.detached</code>) over
+a SHA-256 digest of the whole file <em>except the blob itself</em>. That
+exclusion is the awkward part of signing a PDF: the file has to be laid out
+first, the signature computed over the finished bytes, and the result patched
+back in without moving anything. gopdf writes fixed-width placeholders for
+<code>/ByteRange</code> and <code>/Contents</code>, measures the file, then
+overwrites the placeholders in place — the length never changes, so every
+offset the cross-reference table records stays correct.</p>
+<p><code>ReservedBytes</code> sizes the placeholder and defaults to 8&nbsp;KiB,
+which fits an ordinary certificate chain. If the blob does not fit, signing
+fails with a message telling you the size it needed rather than producing a
+truncated signature.</p>
+
+<h3>Reading signatures</h3>
+<p>Reading works on any file, not just ones gopdf wrote.</p>
+<pre><code><span class="k">for</span> _, s := <span class="k">range</span> r.<span class="f">Signatures</span>() {
+	fmt.<span class="f">Printf</span>(<span class="s">"%s signed %s at %s\n"</span>, s.Signer, s.Reason, s.When)
+	<span class="k">if</span> !s.CoversWholeFile {
+		fmt.<span class="f">Println</span>(<span class="s">"  ⚠ the file was changed after this signature"</span>)
+	}
+	<span class="k">if</span> s.Certified {
+		fmt.<span class="f">Printf</span>(<span class="s">"  certifying, DocMDP level %d\n"</span>, s.Permissions)
+	}
+}</code></pre>
+<p><code>CoversWholeFile</code> is the field to check. A signature whose
+<code>ByteRange</code> stops short of the end of the file was signed before
+something else was appended, and only vouches for the part it covers.
+<code>Certified</code> marks a <code>/DocMDP</code> signature that also
+restricts later changes; gopdf refuses to modify a document certified at level
+1, which forbids any change at all.</p>
+<div class="note warn">
+<p><strong>Validity is not trust.</strong> <code>Signatures</code> reports what
+a document claims and whether the bytes still match it. Deciding whether the
+signing certificate is one you trust — chain building, revocation, policy — is
+your application's job, with <code>crypto/x509</code>. gopdf hands you the
+certificate; it does not vouch for it.</p>
+</div>
+<p>Signing adds no timestamp from a time-stamping authority: the recorded time
+is what the signer claimed. A signature is <code>adbe.pkcs7.detached</code>
+with SHA-256, which every current viewer understands.</p>
+
 <h2 id="design">Design notes</h2>
 <ul>
 <li>The writer emits objects in a single pass with pre-assigned object
@@ -747,10 +812,12 @@ fields editable.</li>
 <code>.otf</code> embeds are larger than TrueType ones.</li>
 <li>Encrypted files are read, but public-key (certificate) security
 handlers are not supported.</li>
+<li>Signing produces the blob and the byte range; trust decisions and
+timestamps from a TSA are left to the caller.</li>
 </ul>
 
 <h3>Roadmap</h3>
-<p>CID-keyed CFF subsetting · digital signatures · certificate security
+<p>CID-keyed CFF subsetting · PAdES timestamps · certificate security
 handlers · mesh shadings and tiling patterns · PDF/A conformance ·
 linearization · reflow that cascades across pages.</p>
 

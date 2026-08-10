@@ -44,6 +44,11 @@ type Updater struct {
 
 	// pageOrder, when set, is the document's new page order.
 	pageOrder []int
+
+	// signing holds a pending signature; sigValueNum and sigFieldNum are
+	// the objects created for it.
+	signing                  *SignOptions
+	sigValueNum, sigFieldNum int
 }
 
 // Update opens a parsed document for incremental modification.
@@ -461,6 +466,25 @@ func (u *Updater) Save(path string) error {
 
 // WriteTo writes the original file followed by the appended changes.
 func (u *Updater) WriteTo(w io.Writer) (int64, error) {
+	if u.signing != nil {
+		// A signature covers the finished file, so it is laid out in
+		// memory, measured, and patched before anything is emitted.
+		var buf bytes.Buffer
+		if _, err := u.writeAll(&buf); err != nil {
+			return 0, err
+		}
+		signed, err := u.signBuffer(buf.Bytes(), len(u.r.data))
+		if err != nil {
+			return 0, err
+		}
+		n, err := w.Write(signed)
+		return int64(n), err
+	}
+	return u.writeAll(w)
+}
+
+// writeAll emits the original bytes followed by the update.
+func (u *Updater) writeAll(w io.Writer) (int64, error) {
 	// Drawing resources need object numbers before the pages that name
 	// them are rebuilt.
 	if u.needsResources() {
@@ -469,6 +493,11 @@ func (u *Updater) WriteTo(w io.Writer) (int64, error) {
 			u.nextID++
 			return n
 		})
+	}
+	if u.signing != nil && u.sigValueNum == 0 {
+		if err := u.prepareSignature(); err != nil {
+			return 0, err
+		}
 	}
 	if err := u.materialize(); err != nil {
 		return 0, err
@@ -514,6 +543,11 @@ func (u *Updater) WriteTo(w io.Writer) (int64, error) {
 		offsets[num] = ow.n
 		ow.obj = num
 		ow.printf("%d 0 obj\n", num)
+		if num == u.sigValueNum && u.signing != nil {
+			u.writeSignatureValue(ow, ctx, u.changed[num].(Dict))
+			ow.str("endobj\n")
+			continue
+		}
 		switch v := u.changed[num].(type) {
 		case *rawStream:
 			data := v.data
