@@ -34,6 +34,10 @@ type Reader struct {
 
 	// pageRefs holds each page's object number, in page order.
 	pageRefs []int
+
+	// repaired records that the file's cross-reference table was unusable
+	// and the objects were found by scanning instead.
+	repaired bool
 }
 
 // maxObjectNumber returns the highest object number the file defines.
@@ -126,9 +130,55 @@ func NewReaderPassword(data []byte, password string) (*Reader, error) {
 		loading: make(map[int]bool),
 		objStms: make(map[int]*objStm),
 	}
-	if err := r.parseXrefChain(); err != nil {
+	if err := r.load(password); err != nil {
 		return nil, err
 	}
+	return r, nil
+}
+
+// load reads the cross-reference table and the page tree. A file whose
+// table is missing, unparseable or simply wrong is repaired by scanning
+// for the objects, which is the only way some real files can be read at
+// all. The error reported on total failure is the first one, since it
+// describes the file as its producer left it.
+func (r *Reader) load(password string) error {
+	err := r.parseXrefChain()
+	if err == nil {
+		if r.patchXref() {
+			r.repaired = true
+		}
+		err = r.finishLoad(password)
+	}
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, ErrPasswordRequired) {
+		return err // repairing cannot supply a password
+	}
+	if rerr := r.repair(password); rerr != nil {
+		return err
+	}
+	r.repaired = true
+	return nil
+}
+
+// repair throws away what was read and rebuilds it from a scan.
+func (r *Reader) repair(password string) error {
+	r.xref = make(map[int]xrefEntry)
+	r.trailer = make(Dict)
+	r.cache = make(map[int]any)
+	r.loading = make(map[int]bool)
+	r.objStms = make(map[int]*objStm)
+	r.crypt, r.encryptNum = nil, 0
+	r.pages, r.pageRefs = nil, nil
+	if err := r.reconstructXref(); err != nil {
+		return err
+	}
+	return r.finishLoad(password)
+}
+
+// finishLoad sets up decryption and walks the page tree.
+func (r *Reader) finishLoad(password string) error {
 	if encRef := r.trailer["Encrypt"]; encRef != nil {
 		if ref, ok := encRef.(Ref); ok {
 			r.encryptNum = ref.Num
@@ -137,11 +187,11 @@ func NewReaderPassword(data []byte, password string) (*Reader, error) {
 		// strings are read (and cached) undecrypted, as required.
 		encDict, ok := r.resolve(encRef).(Dict)
 		if !ok {
-			return nil, errors.New("gopdf: malformed /Encrypt entry")
+			return errors.New("gopdf: malformed /Encrypt entry")
 		}
 		crypt, err := r.newStdCrypt(encDict, password)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		r.crypt = crypt
 		// Objects cached during setup were read without decryption.
@@ -152,14 +202,17 @@ func NewReaderPassword(data []byte, password string) (*Reader, error) {
 		}
 		r.objStms = make(map[int]*objStm)
 	}
-	if err := r.loadPages(); err != nil {
-		return nil, err
-	}
-	return r, nil
+	return r.loadPages()
 }
 
 // IsEncrypted reports whether the source file was encrypted.
 func (r *Reader) IsEncrypted() bool { return r.crypt != nil }
+
+// Repaired reports whether the file's cross-reference table was missing
+// or wrong, and the objects had to be found by scanning the file. Such a
+// document reads normally, but it was damaged, and anything the scan
+// could not reach is gone.
+func (r *Reader) Repaired() bool { return r.repaired }
 
 func head(b []byte, n int) []byte {
 	if len(b) < n {
@@ -327,6 +380,12 @@ func (r *Reader) parseClassicXref(p *parser) (Dict, error) {
 			}
 			switch kind {
 			case opKeyword("n"):
+				// Offset zero is where the header lives, so an in-use
+				// entry pointing there names an object that does not
+				// exist. Quartz writes these; they read as null.
+				if off == 0 {
+					off = -1
+				}
 				r.setEntry(int(start+i), xrefEntry{offset: off})
 			case opKeyword("f"):
 				r.setEntry(int(start+i), xrefEntry{offset: -1})
@@ -595,38 +654,47 @@ func followedByEndstream(data []byte, pos int) bool {
 	return bytes.HasPrefix(data[pos:], []byte("endstream"))
 }
 
+// loadObjStm decodes an /ObjStm container and indexes the objects in it.
+func (r *Reader) loadObjStm(stmNum int) (*objStm, error) {
+	if stm, ok := r.objStms[stmNum]; ok {
+		return stm, nil
+	}
+	obj, err := r.object(stmNum)
+	if err != nil {
+		return nil, err
+	}
+	raw, isStm := obj.(*rawStream)
+	if !isStm {
+		return nil, errors.New("gopdf: object stream not found")
+	}
+	data, err := r.decodeStream(raw.dict, raw.data)
+	if err != nil {
+		return nil, err
+	}
+	n, _ := toInt(r.resolve(raw.dict["N"]))
+	first, _ := toInt(r.resolve(raw.dict["First"]))
+	if n < 0 || n > maxObjects || first < 0 || first > len(data) {
+		return nil, errSyntax
+	}
+	stm := &objStm{data: data, first: first, offsets: make(map[int]int, n)}
+	hp := &parser{data: data[:first]}
+	for i := 0; i < n; i++ {
+		num, err1 := hp.expectInt()
+		off, err2 := hp.expectInt()
+		if err1 != nil || err2 != nil {
+			break
+		}
+		stm.offsets[int(num)] = int(off)
+	}
+	r.objStms[stmNum] = stm
+	return stm, nil
+}
+
 // objStmObject extracts an object from an /ObjStm container.
 func (r *Reader) objStmObject(stmNum, objNum int) (any, error) {
-	stm, ok := r.objStms[stmNum]
-	if !ok {
-		obj, err := r.object(stmNum)
-		if err != nil {
-			return nil, err
-		}
-		raw, isStm := obj.(*rawStream)
-		if !isStm {
-			return nil, errors.New("gopdf: object stream not found")
-		}
-		data, err := r.decodeStream(raw.dict, raw.data)
-		if err != nil {
-			return nil, err
-		}
-		n, _ := toInt(r.resolve(raw.dict["N"]))
-		first, _ := toInt(r.resolve(raw.dict["First"]))
-		if n < 0 || n > maxObjects || first < 0 || first > len(data) {
-			return nil, errSyntax
-		}
-		stm = &objStm{data: data, first: first, offsets: make(map[int]int, n)}
-		hp := &parser{data: data[:first]}
-		for i := 0; i < n; i++ {
-			num, err1 := hp.expectInt()
-			off, err2 := hp.expectInt()
-			if err1 != nil || err2 != nil {
-				break
-			}
-			stm.offsets[int(num)] = int(off)
-		}
-		r.objStms[stmNum] = stm
+	stm, err := r.loadObjStm(stmNum)
+	if err != nil {
+		return nil, err
 	}
 	off, ok := stm.offsets[objNum]
 	if !ok || stm.first+off >= len(stm.data) {
