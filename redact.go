@@ -98,8 +98,11 @@ type Redactor struct {
 	labelColor   Color
 	labelFontRef Ref
 
-	fill         Color
-	verify       bool
+	fill   Color
+	verify bool
+	// substrings relaxes matching so a literal is found inside a longer
+	// word, which is what this package used to do.
+	substrings   bool
 	overlay      bool
 	stripMeta    bool
 	keepAnnots   bool
@@ -140,12 +143,40 @@ func (rd *Redactor) Area(page int, x, y, w, h float64) {
 // Text marks every occurrence of a literal string, on every page. The
 // match is made against the text as extracted, so it sees the document's
 // reading order rather than its visual layout.
+// Text marks every occurrence of a literal string, on every page.
+//
+// An occurrence counts where the literal stands on its own: "Rossi" is
+// found in "Sig. Rossi," and not inside "Rossini". For personal data
+// removing too much is the lesser mistake, but removing the wrong thing
+// is still a mistake, and a surname inside a longer surname is the wrong
+// thing. MatchSubstrings turns that off.
+//
+// The literal is also sought in the spellings a document might have used
+// instead — a non-breaking space for a space, a soft hyphen for a hyphen
+// — so a caller need not know which the producer chose.
 func (rd *Redactor) Text(s string) {
 	if s == "" {
 		return
 	}
-	rd.literals = append(rd.literals, s)
+	for _, v := range expandVariants(Pseudonym{From: s}) {
+		rd.literals = append(rd.literals, v.From)
+	}
 	rd.planned = false
+}
+
+// MatchSubstrings finds a literal wherever it appears, including inside a
+// longer word. It is off by default.
+func (rd *Redactor) MatchSubstrings(on bool) {
+	rd.substrings = on
+	rd.planned = false
+}
+
+// mode returns how strictly this redaction matches.
+func (rd *Redactor) mode() matchMode {
+	if rd.substrings {
+		return matchAnywhere
+	}
+	return matchWords
 }
 
 // Pattern marks every match of a regular expression. Use it for the
@@ -269,10 +300,17 @@ func (rd *Redactor) checkRemoved(out []byte) error {
 		}
 		text.WriteString(t)
 		text.WriteString("\n")
+		// Annotations draw their words as well as holding them.
+		text.WriteString(r.annotationText(i))
+		text.WriteString("\n")
 	}
 	got := text.String()
+	// A word split across a line break reads as one word, so the check
+	// looks at both readings; otherwise a survivor hides in the split.
+	readings := []string{got, dehyphenate(got)}
 	for _, lit := range rd.literals {
-		if strings.Contains(got, lit) {
+		if containsBounded(readings[0], lit, rd.mode()) ||
+			containsBounded(readings[1], lit, rd.mode()) {
 			return fmt.Errorf("gopdf: %q is still readable after redaction; "+
 				"the document draws it in a way this could not reach, and the "+
 				"output has been withheld", lit)
@@ -788,19 +826,6 @@ func runeAdvance(run *TextRun, ch rune) (float64, bool) {
 		scale = run.FontSize
 	}
 	return em / 1000 * scale * run.horizScale, true
-}
-
-// literalRanges finds every occurrence of a literal in a run's text.
-func literalRanges(text, lit string) [][2]int {
-	var out [][2]int
-	for at := 0; ; {
-		i := strings.Index(text[at:], lit)
-		if i < 0 {
-			return out
-		}
-		out = append(out, [2]int{at + i, at + i + len(lit)})
-		at += i + len(lit)
-	}
 }
 
 // mergeRanges sorts and merges overlapping character ranges.

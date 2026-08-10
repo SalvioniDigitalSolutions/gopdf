@@ -286,3 +286,225 @@ func readFileOrFail(t *testing.T, path string) []byte {
 	}
 	return b
 }
+
+//  4. A document that writes non-breaking spaces and soft hyphens must
+//     still match a mapping typed with an ordinary space and hyphen. Swiss
+//     and German legal documents do this throughout.
+func TestPseudonymizeCharacterVariants(t *testing.T) {
+	cases := []struct {
+		name    string
+		written string // as the document draws it
+		from    string // as the caller types it
+	}{
+		{"non-breaking space", "Ada Lovelace", "Ada Lovelace"},
+		{"soft hyphen", "Basel­Stadt", "Basel-Stadt"},
+		{"both", "Basel­Stadt Kanton", "Basel-Stadt Kanton"},
+		{"plain, unchanged", "Ada Lovelace", "Ada Lovelace"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			doc := New()
+			p := doc.AddPage()
+			p.SetFont(Helvetica, 11)
+			p.Text(60, 100, "Concerning "+c.written+" of this parish.")
+			src := docBytes(t, doc)
+			if !strings.Contains(extractAll(t, src), c.written) {
+				t.Fatalf("the fixture does not read back as written")
+			}
+
+			var out bytes.Buffer
+			res, err := Pseudonymize(NewReaderOrFail(t, src), &out,
+				[]Pseudonym{{From: c.from, To: "[[P1]]"}})
+			if err != nil {
+				t.Fatalf("the variant was not matched: %v", err)
+			}
+			if res.Total() == 0 {
+				t.Fatal("nothing was replaced")
+			}
+			got := collapse(extractAll(t, out.Bytes()))
+			if !strings.Contains(got, "[[P1]]") {
+				t.Errorf("the token is missing: %q", got)
+			}
+			if strings.Contains(got, c.written) {
+				t.Errorf("the original spelling survived: %q", got)
+			}
+			// And the check covers the variant, not just what was typed.
+			if bytes.Contains(out.Bytes(), []byte(c.written)) {
+				t.Error("the original spelling survives in the bytes")
+			}
+		})
+	}
+}
+
+func TestExpandVariants(t *testing.T) {
+	got := expandVariants(Pseudonym{From: "Basel-Stadt Kanton", To: "X"})
+	forms := map[string]bool{}
+	for _, v := range got {
+		if v.To != "X" {
+			t.Errorf("a variant lost its token: %+v", v)
+		}
+		if forms[v.From] {
+			t.Errorf("duplicate variant %q", v.From)
+		}
+		forms[v.From] = true
+	}
+	for _, want := range []string{
+		"Basel-Stadt Kanton", // as typed
+		"Basel-Stadt Kanton", // nbsp
+		"Basel­Stadt Kanton", // soft hyphen
+		"Basel­Stadt Kanton", // both
+	} {
+		if !forms[want] {
+			t.Errorf("missing variant %q; got %v", want, forms)
+		}
+	}
+	// The caller's own spelling comes first, so ordering is stable.
+	if got[0].From != "Basel-Stadt Kanton" {
+		t.Errorf("first variant = %q", got[0].From)
+	}
+	// Nothing to vary expands to itself alone.
+	if only := expandVariants(Pseudonym{From: "Ada", To: "X"}); len(only) != 1 {
+		t.Errorf("expandVariants(%q) = %+v", "Ada", only)
+	}
+}
+
+func TestExpandAllVariantsDedupes(t *testing.T) {
+	got := expandAllVariants([]Pseudonym{
+		{From: "Ada Lovelace", To: "[[P1]]"},
+		{From: "Ada Lovelace", To: "[[P2]]"}, // a repeat must not win
+	})
+	seen := map[string]string{}
+	for _, v := range got {
+		if prev, dup := seen[v.From]; dup {
+			t.Errorf("%q mapped twice: %q and %q", v.From, prev, v.To)
+		}
+		seen[v.From] = v.To
+	}
+	if seen["Ada Lovelace"] != "[[P1]]" {
+		t.Errorf("the first mapping should win, got %q", seen["Ada Lovelace"])
+	}
+}
+
+// TestPseudonymizeAnnotationAppearance covers the one combination that
+// must never happen: text missed by the matcher and by the check. An
+// annotation holds its words twice — as a string, and as drawing
+// operators in an appearance stream — and scrubbing the string alone
+// leaves the drawing showing the name.
+func TestPseudonymizeAnnotationAppearance(t *testing.T) {
+	src := annotWithAppearance(t, "Spoke to "+pseudoName+" today")
+
+	// The fixture really does draw the name in an appearance.
+	r0 := NewReaderOrFail(t, src)
+	if got := r0.annotationText(0); !strings.Contains(got, pseudoName) {
+		t.Fatalf("the fixture's note draws no text: %q", got)
+	}
+
+	var out bytes.Buffer
+	if _, err := Pseudonymize(NewReaderOrFail(t, src), &out,
+		[]Pseudonym{{From: pseudoName, To: "[[P1]]"}}); err != nil {
+		t.Fatalf("the appearance should be handled, not refused: %v", err)
+	}
+	r := NewReaderOrFail(t, out.Bytes())
+	if got := r.annotationText(0); strings.Contains(got, pseudoName) {
+		t.Errorf("the name is still drawn by an annotation: %q", got)
+	}
+	if bytes.Contains(out.Bytes(), []byte(pseudoName)) {
+		t.Error("the name survives in the bytes")
+	}
+}
+
+// A stale appearance must be dropped when the strings behind it change,
+// so a viewer draws the annotation from what it now says.
+func TestPseudonymizeDropsStaleAppearance(t *testing.T) {
+	doc := New()
+	page := doc.AddPage()
+	page.SetFont(Helvetica, 11)
+	page.Text(60, 200, "See the note.")
+	page.AddNote(60, 100, "About "+pseudoName, NoteOptions{})
+	src := docBytes(t, doc)
+
+	var out bytes.Buffer
+	if _, err := Pseudonymize(NewReaderOrFail(t, src), &out,
+		[]Pseudonym{{From: pseudoName, To: "[[P1]]"}}); err != nil {
+		t.Fatal(err)
+	}
+	r := NewReaderOrFail(t, out.Bytes())
+	annots, err := r.Annotations(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(annots) == 0 {
+		t.Fatal("the annotation was removed entirely")
+	}
+	if !strings.Contains(annots[0].Contents, "[[P1]]") {
+		t.Errorf("the note text was not substituted: %q", annots[0].Contents)
+	}
+	// And no appearance is left drawing the old wording.
+	if got := r.annotationText(0); strings.Contains(got, pseudoName) {
+		t.Errorf("a stale appearance survived: %q", got)
+	}
+}
+
+func TestAnnotationTextReadsAppearances(t *testing.T) {
+	doc := New()
+	page := doc.AddPage()
+	page.SetFont(Helvetica, 11)
+	page.Text(60, 200, "Body text only.")
+	page.AddNote(60, 100, "a note about something", NoteOptions{})
+	src := docBytes(t, doc)
+	r := NewReaderOrFail(t, src)
+
+	// Whatever the note draws, it is not the page's own text.
+	body, _ := r.PageText(0)
+	if strings.Contains(body, "a note about") {
+		t.Skip("this build draws notes into the page content")
+	}
+	if r.annotationText(-1) != "" || r.annotationText(99) != "" {
+		t.Error("an out-of-range page should read as empty")
+	}
+}
+
+// annotWithAppearance builds a FreeText annotation that both holds its
+// words in /Contents and draws them in an appearance stream, which is how
+// a real one arrives.
+func annotWithAppearance(t *testing.T, note string) []byte {
+	t.Helper()
+	doc := New()
+	page := doc.AddPage()
+	page.SetFont(Helvetica, 11)
+	page.Text(60, 200, "See the note.")
+	src := docBytes(t, doc)
+
+	r := NewReaderOrFail(t, src)
+	u := Update(r)
+	fontNum := u.add(Dict{
+		"Type": Name("Font"), "Subtype": Name("Type1"),
+		"BaseFont": Name("Helvetica"), "Encoding": Name("WinAnsiEncoding"),
+	})
+	ap := u.add(&rawStream{
+		dict: Dict{
+			"Type": Name("XObject"), "Subtype": Name("Form"),
+			"BBox":      Array{float64(0), float64(0), float64(240), float64(30)},
+			"Resources": Dict{"Font": Dict{"H": Ref{Num: fontNum}}},
+		},
+		data: []byte("BT /H 11 Tf 2 10 Td (" + note + ") Tj ET\n"),
+	})
+	annot := u.add(Dict{
+		"Type": Name("Annot"), "Subtype": Name("FreeText"),
+		"Rect":     Array{float64(60), float64(700), float64(300), float64(730)},
+		"Contents": String(textStringBytes(note)),
+		"AP":       Dict{"N": Ref{Num: ap}},
+	})
+	pi := r.pages[0]
+	pd := cloneDict(pi.dict)
+	annots, _ := r.resolve(pd["Annots"]).(Array)
+	pd["Annots"] = append(append(Array{}, annots...), Ref{Num: annot})
+	num, _ := r.pageObjectNumber(0)
+	u.set(num, pd)
+
+	var buf bytes.Buffer
+	if _, err := u.WriteTo(&buf); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}

@@ -121,7 +121,7 @@ func (rd *Redactor) ocrRegions(img ImageRef) ([]rect, []OCRWord, error) {
 func (rd *Redactor) matchesAnyRule(text string) bool {
 	word := strings.Trim(text, ".,;:()[]{}\"'`?!")
 	for _, lit := range rd.literals {
-		if strings.Contains(text, lit) {
+		if containsBounded(text, lit, rd.mode()) {
 			return true
 		}
 		for _, part := range strings.Fields(lit) {

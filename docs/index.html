@@ -177,6 +177,7 @@ footer { border-top: 1px solid var(--border); margin-top: 4rem; padding-top: 1.5
     <li><a href="#encryption">Encryption</a></li>
     <li><a href="#signatures">Digital signatures</a></li>
     <li><a href="#design">Design notes</a></li>
+    <li><a href="#apimap">API map</a></li>
     <li><a href="#limits">Limitations</a></li>
     <li><a href="https://pkg.go.dev/github.com/SalvioniDigitalSolutions/gopdf">API reference ↗</a></li>
     <li><a href="https://github.com/SalvioniDigitalSolutions/gopdf">GitHub ↗</a></li>
@@ -805,6 +806,53 @@ information dictionary, the XMP packet, annotation notes and their
 authors, bookmark titles, form field values and tooltips, attachment
 names and descriptions.</p>
 
+<h3>A token the document's font cannot set</h3>
+<p>A subset font carries the glyphs its document draws and no others, so
+asking it for <code>[[PII_NAME_1]]</code> very likely fails on the
+bracket. Inserted text falls back to one of the standard fourteen, added
+to the page under a collision-free name, with the face matched from the
+original — bold text gets Helvetica-Bold, italic gets Oblique.</p>
+<div class="note warn">
+<p><strong>Only inserted text may change font.</strong> Text the document
+already drew keeps its own whatever happens: restyling that would change a
+page you did not ask to change. A token holding a character even Helvetica
+cannot set — anything outside cp1252 — is still refused rather than drawn
+as a blank box.</p>
+</div>
+
+<h3>What counts as a match</h3>
+<p>One definition, shared by the matcher, the redactor and the read-back
+that proves nothing survived. A check stricter than the matcher reports a
+correct pass as a failure; a looser one lets a survivor through.</p>
+<table>
+<thead><tr><th>Rule</th><th>Effect</th></tr></thead>
+<tbody>
+<tr><td>Word boundaries</td><td><code>Rossi</code> matches in <code>Sig. Rossi,</code> and not inside <code>Rossini</code>. Digits count, so <code>123</code> is not found in <code>5123</code>. Punctuation does not block a match, leaving reference numbers, emails and IBANs alone.</td></tr>
+<tr><td>Hyphen at a line break</td><td>A word justified across two lines — <code>Bian-</code> then <code>chi</code> — reads and is replaced as one, taking the dangling hyphen with it. A hyphen mid-line is real text: <code>CHE-290</code> stays whole.</td></tr>
+<tr><td>Fragmented lines</td><td>A document setting a line one piece at a time, with the gaps carried by positioning rather than spaces, still reads as words.</td></tr>
+<tr><td>Spelling variants</td><td>Non-breaking spaces and soft hyphens are matched from a mapping typed with ordinary ones.</td></tr>
+</tbody>
+</table>
+<p><code>MatchSubstrings(true)</code> on a redactor turns the boundary rule
+off.</p>
+
+<h3>Spelling variants</h3>
+<p>Swiss and German legal documents set every gap as a non-breaking space
+and every compound hyphen as a soft hyphen. Extraction reports the
+characters the file holds, so a mapping typed with an ordinary space would
+match nothing. Each mapping is expanded into the spellings a document
+might have used — U+00A0, U+00AD, U+2011 and the combinations — all
+replaced by the same token, and all covered by the check.</p>
+
+<h3>Fitting</h3>
+<p>A token can be wider than the space it has —
+<code>[[PII_REG_NUMBER_001]]</code> in a one-line table cell has nowhere
+to wrap to. <code>SetShrinkToFit(true, 6)</code> sets it smaller instead,
+down to a floor below which it is left alone rather than made unreadable.
+And a paragraph that grows pushes the ones below it down, which at the
+foot of a page pushes them off it: <code>OverflowsPage</code> answers that
+before you write, rather than clipping silently.</p>
+
 <h3>Not recoverable</h3>
 <p>The output is a complete file with one revision, so there is no
 earlier state to roll back to — which is the whole reason this is not an
@@ -1049,6 +1097,79 @@ written in the clear, as the specification requires.</li>
 <li>Stream decoding is bounded against decompression bombs, and the reader
 and font parser are continuously fuzzed with a checked-in corpus.</li>
 </ul>
+
+<h2 id="apimap">API map</h2>
+<p>What to reach for, by task. Every signature is on
+<a href="https://pkg.go.dev/github.com/SalvioniDigitalSolutions/gopdf">pkg.go.dev</a>;
+this is the shape of it.</p>
+
+<h3>Making a document</h3>
+<table>
+<tbody>
+<tr><td><code>New</code>, <code>AddPage</code>, <code>AddPageSize</code>, <code>SetPageSize</code></td><td>A document and its pages.</td></tr>
+<tr><td><code>Save</code>, <code>WriteTo</code>, <code>SetInfo</code></td><td>Write it out, with metadata.</td></tr>
+<tr><td><code>Document.Compress</code>, <code>CompressObjects</code>, <code>CreationDate</code></td><td>Fields, not methods: stream compression, object streams, the timestamp.</td></tr>
+<tr><td><code>LoadFont</code>, <code>ParseFont</code></td><td>A TrueType or OpenType face from a path or from memory.</td></tr>
+<tr><td><code>AddImage</code>, <code>AddImageFile</code>, <code>AddImageReader</code></td><td>An image from an <code>image.Image</code>, a path or a reader.</td></tr>
+<tr><td><code>Push</code>, <code>Pop</code>, <code>Translate</code>, <code>Scale</code>, <code>RotateAt</code></td><td>Scoped transforms.</td></tr>
+<tr><td><code>SetLineCap</code>, <code>SetLineJoin</code>, <code>SetDash</code>, <code>SetAlpha</code></td><td>Stroke and transparency state.</td></tr>
+<tr><td><code>AddOutline</code></td><td>A bookmark tree.</td></tr>
+</tbody>
+</table>
+
+<h3>Reading one</h3>
+<table>
+<tbody>
+<tr><td><code>Open</code>, <code>OpenPassword</code>, <code>NewReader</code>, <code>NewReaderPassword</code></td><td>From a path or from memory, with or without a password.</td></tr>
+<tr><td><code>NumPages</code>, <code>PageSize</code>, <code>PageText</code>, <code>Info</code></td><td>The basics.</td></tr>
+<tr><td><code>IsEncrypted</code>, <code>Repaired</code>, <code>HasForm</code>, <code>HasSignatures</code></td><td>What kind of file this is.</td></tr>
+<tr><td><code>Annotations</code>, <code>PageImages</code>, <code>FormFields</code>, <code>Signatures</code></td><td>What it holds.</td></tr>
+</tbody>
+</table>
+
+<h3>Changing one</h3>
+<table>
+<tbody>
+<tr><td><code>Update</code> → <code>Updater</code></td><td>Edit in place, appended. Keeps everything the library does not model.</td></tr>
+<tr><td><code>EditPage</code> → <code>EditablePage</code></td><td>Rebuild into a new document, keeping the original operators editable.</td></tr>
+<tr><td><code>ImportPage</code></td><td>Bring a page in as a form XObject, to stamp or watermark.</td></tr>
+<tr><td><code>Runs</code>, <code>ExtractText</code></td><td>The text on a page, operation by operation.</td></tr>
+<tr><td><code>ReplaceText</code>, <code>Blocks</code> + <code>ReplaceTextReflow</code>, <code>Flows</code> + <code>ReplaceTextFlow</code></td><td>In-line, re-wrapped within a paragraph, and re-wrapped at any length.</td></tr>
+<tr><td><code>Restyle</code></td><td>Change a run's typeface, size or colour.</td></tr>
+<tr><td><code>ReplaceImage</code>, <code>RemoveAnnotations</code>, <code>SetFormValues</code></td><td>Images, annotations, fields.</td></tr>
+<tr><td><code>SetPageOrder</code>, <code>RemovePage</code>, <code>MovePage</code>, <code>SetPageRotation</code></td><td>Page operations.</td></tr>
+<tr><td><code>SetFitMode</code>, <code>SetMaxExtraLines</code>, <code>SetCompress</code></td><td>How an edit is allowed to behave.</td></tr>
+</tbody>
+</table>
+
+<h3>Whole files</h3>
+<table>
+<tbody>
+<tr><td><code>Merge</code>, <code>ExtractPages</code></td><td>Join documents, or pull pages out.</td></tr>
+<tr><td><code>Rewrite</code></td><td>Emit only what the document still reaches, dropping superseded objects.</td></tr>
+<tr><td><code>Encrypt</code></td><td>AES-128 or AES-256 with per-field permissions.</td></tr>
+<tr><td><code>Updater.Sign</code>, <code>SignOptions</code>, <code>Signature</code></td><td>Sign, and read the signatures already there.</td></tr>
+</tbody>
+</table>
+
+<h3>Removing and replacing</h3>
+<table>
+<tbody>
+<tr><td><code>Redact</code> → <code>Redactor</code></td><td><code>Text</code>, <code>Pattern</code>, <code>Area</code>, <code>Match</code>, <code>Image</code>, <code>Substitute</code>.</td></tr>
+<tr><td><code>Marks</code>, <code>RedactionMark</code>, <code>RedactionKind</code>, <code>PartialArtwork</code></td><td>Review before writing.</td></tr>
+<tr><td><code>SetFill</code>, <code>SetLabel</code>, <code>SetLabelColor</code>, <code>SetOverlay</code>, <code>SetVerify</code>, <code>StripMetadata</code>, <code>KeepAnnotations</code></td><td>How it looks and how hard it checks.</td></tr>
+<tr><td><code>Pseudonymize</code>, <code>PseudonymizeFile</code>, <code>Pseudonym</code>, <code>PseudonymizeResult</code></td><td>Substitute rather than blank.</td></tr>
+<tr><td><code>Reverse</code>, <code>Key</code></td><td>Undo a substitution, where the pixels were not destroyed.</td></tr>
+<tr><td><code>SetOCR</code>, <code>SetOCRConfidence</code>, <code>OCREngine</code>, <code>OCRWord</code></td><td>Reach text inside a scan; the engine is yours to supply.</td></tr>
+</tbody>
+</table>
+
+<h3>The object model</h3>
+<p>For anything this package does not model, the parsed objects are
+exposed directly: <code>Dict</code>, <code>Array</code>, <code>Name</code>,
+<code>Ref</code>, <code>String</code>. A <code>Reader</code> resolves
+references and an <code>Updater</code> writes replacements back, so a
+caller can reach entries the API has no opinion about.</p>
 
 <h2 id="limits">Limitations</h2>
 <ul>

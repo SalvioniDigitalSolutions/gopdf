@@ -78,6 +78,11 @@ func Pseudonymize(r *Reader, w io.Writer, subs []Pseudonym) (PseudonymizeResult,
 	if len(clean) == 0 {
 		return out, fmt.Errorf("gopdf: no substitutions given")
 	}
+	// A document may have written the same words with a non-breaking
+	// space or a soft hyphen, which extraction reports as it finds them.
+	// Each mapping is expanded into those spellings, so a caller need not
+	// know which one the producer chose.
+	clean = expandAllVariants(clean)
 	// Longer originals first, so replacing "Ada Lovelace" is not
 	// pre-empted by a rule for "Ada".
 	sort.SliceStable(clean, func(i, j int) bool {

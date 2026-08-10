@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // Reaching the copies of a name that are not page text.
@@ -80,6 +81,15 @@ func substituteStrings(v any, subs []Pseudonym, depth int) (any, bool) {
 		}
 		if out == nil {
 			return t, false
+		}
+		// An annotation's appearance stream is a rendering of the very
+		// strings just rewritten. Keeping it would leave the old text
+		// drawn on the page under the new text in the dictionary, which
+		// is the worst of both. Dropping it asks the viewer to draw the
+		// annotation again from what it now says.
+		if isAnnotation(t) {
+			delete(out, "AP")
+			out["NeedAppearances"] = true
 		}
 		return out, true
 
@@ -167,15 +177,25 @@ func (rw *rewriter) reachableFromTrailer() (map[int]bool, error) {
 // It is the check behind the promise that the original is not
 // recoverable, so it looks past the page text at the places a name hides.
 func findResidue(r *Reader, subs []Pseudonym) (string, error) {
-	// The pages, as anyone reading the document would see them.
+	// The pages, as anyone reading the document would see them — which
+	// includes reading a word hyphenated across a line break as one
+	// word. The check and the matcher have to agree on that, or a
+	// correctly replaced split word looks like a survivor, and a real
+	// survivor passes unseen.
 	for i := 0; i < r.NumPages(); i++ {
 		text, err := r.PageText(i)
 		if err != nil {
 			return "", fmt.Errorf("gopdf: page %d could not be read back: %w", i, err)
 		}
-		for _, s := range subs {
-			if strings.Contains(text, s.From) {
-				return fmt.Sprintf("%q is still readable on page %d", s.From, i+1), nil
+		// An annotation draws its words in an appearance stream as well
+		// as holding them in a string. Scrubbing the string leaves the
+		// drawing, which nothing else here reads.
+		text += "\n" + r.annotationText(i)
+		for _, reading := range []string{text, dehyphenate(text)} {
+			for _, s := range subs {
+				if containsBounded(reading, s.From, matchWords) {
+					return fmt.Sprintf("%q is still readable on page %d", s.From, i+1), nil
+				}
 			}
 		}
 	}
@@ -208,7 +228,7 @@ func residueIn(v any, subs []Pseudonym, depth int) string {
 	case String:
 		text := decodeTextString(t)
 		for _, s := range subs {
-			if strings.Contains(text, s.From) {
+			if containsBounded(text, s.From, matchWords) {
 				return fmt.Sprintf("%q survives in a string", s.From)
 			}
 		}
@@ -238,4 +258,51 @@ func residueIn(v any, subs []Pseudonym, depth int) string {
 		}
 	}
 	return ""
+}
+
+// dehyphenate joins words a line break split, so the check reads a page
+// the way the matcher does.
+func dehyphenate(text string) string {
+	var b strings.Builder
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimRight(line, " \t")
+		if i+1 < len(lines) && endsWithWordHyphen(trimmed) {
+			b.WriteString(trimmed[:len(trimmed)-hyphenLen(trimmed)])
+			continue
+		}
+		b.WriteString(line)
+		if i+1 < len(lines) {
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
+// endsWithWordHyphen reports whether a line ends in a hyphen that follows
+// a letter or digit, which is a word split rather than a dash.
+func endsWithWordHyphen(line string) bool {
+	r, size := utf8.DecodeLastRuneInString(line)
+	if !isHyphen(r) {
+		return false
+	}
+	before, _ := utf8.DecodeLastRuneInString(line[:len(line)-size])
+	return isWordRune(before)
+}
+
+func hyphenLen(line string) int {
+	_, size := utf8.DecodeLastRuneInString(line)
+	return size
+}
+
+// isAnnotation reports whether a dictionary is an annotation, which is
+// what makes its /AP a cache of its strings rather than content of its
+// own.
+func isAnnotation(d Dict) bool {
+	if d["Type"] == Name("Annot") {
+		return true
+	}
+	_, hasSubtype := d["Subtype"]
+	_, hasRect := d["Rect"]
+	return hasSubtype && hasRect
 }

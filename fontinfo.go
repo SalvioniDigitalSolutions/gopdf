@@ -34,6 +34,15 @@ type fontInfo struct {
 	// exist at all.
 	type3 bool
 	procs map[uint32]bool
+
+	// builtin is set when this describes one of the standard fourteen
+	// rather than a font read out of the document, which is how a
+	// substituted token is measured when the document's own font cannot
+	// set it.
+	builtin *Font
+	// bold and italic describe the original's face, so a fallback can be
+	// chosen to match it.
+	bold, italic bool
 }
 
 // newFontInfo builds encoding and metric tables for one font resource.
@@ -52,7 +61,44 @@ func newFontInfo(r *Reader, name Name, dict Dict, decoder *fontDecoder) *fontInf
 		fi.loadSimpleWidths(r, dict)
 	}
 	fi.loadEmbedded(r, dict)
+	fi.loadFace(r, dict)
 	return fi
+}
+
+// loadFace works out whether the font is bold or italic, from the
+// descriptor where it says so and from the name where it does not. It is
+// what lets a substituted token be set in a face that matches.
+func (fi *fontInfo) loadFace(r *Reader, dict Dict) {
+	target := dict
+	if fi.cid {
+		if desc, ok := r.resolve(dict["DescendantFonts"]).(Array); ok && len(desc) > 0 {
+			if d, ok := r.resolve(desc[0]).(Dict); ok {
+				target = d
+			}
+		}
+	}
+	if fd, ok := r.resolve(target["FontDescriptor"]).(Dict); ok {
+		if flags, ok := toInt(r.resolve(fd["Flags"])); ok {
+			const italicFlag = 1 << 6 // bit 7, counting from one
+			const forceBold = 1 << 18 // bit 19
+			fi.italic = flags&italicFlag != 0
+			fi.bold = flags&forceBold != 0
+		}
+		if sw, ok := toFloat(r.resolve(fd["StemV"])); ok && sw >= 120 {
+			fi.bold = true
+		}
+	}
+	// The name is the more reliable signal in practice: producers set the
+	// flags inconsistently but almost always name the face.
+	base, _ := r.resolve(target["BaseFont"]).(Name)
+	name := strings.ToLower(string(base))
+	if strings.Contains(name, "bold") || strings.Contains(name, "black") ||
+		strings.Contains(name, "heavy") {
+		fi.bold = true
+	}
+	if strings.Contains(name, "italic") || strings.Contains(name, "oblique") {
+		fi.italic = true
+	}
 }
 
 // loadEmbedded records whether the font program travels with the file and,

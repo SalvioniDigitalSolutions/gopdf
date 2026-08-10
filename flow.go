@@ -30,6 +30,15 @@ type FlowSpan struct {
 	FontSize float64
 
 	style flowStyle
+	// inserted marks text this edit introduced, as opposed to text the
+	// document already had. Only inserted text may be moved to a
+	// fallback font: restyling what the document itself drew would
+	// change a page the caller did not ask to change.
+	inserted bool
+	// lineBreak marks the space this package puts between two lines of
+	// the same paragraph. It is not a character the document drew, and a
+	// word hyphenated across the break is joined at it.
+	lineBreak bool
 }
 
 // flowStyle is everything needed to draw a span the way the source did.
@@ -117,7 +126,20 @@ type Flow struct {
 	// lastPlan is the rewrite in force, kept so the paragraph can be
 	// re-placed if something above it later changes height.
 	lastPlan *flowPlan
+	// fallback supplies a style that can set text the document's own
+	// font cannot. It is only ever applied to inserted text.
+	fallback func(flowStyle) (flowStyle, bool)
+	// mode is how strictly a literal has to sit in the text.
+	mode matchMode
+	// shrink lets an inserted token be set smaller to fit, down to
+	// shrinkFloor points.
+	shrink      bool
+	shrinkFloor float64
 }
+
+// joinedText returns the paragraph as a person reads it, with words
+// rejoined across the line breaks that hyphenated them.
+func (f *Flow) joinedText() string { return readParagraph(f.spans).text }
 
 // flowLine is one baseline's worth of runs.
 type flowLine struct {
@@ -160,11 +182,10 @@ func (f *Flow) Replace(old, new string) (int, error) {
 	if old == "" {
 		return 0, fmt.Errorf("gopdf: Flow.Replace called with empty search text")
 	}
-	text := f.Text()
-	if !strings.Contains(text, old) {
+	if !containsBounded(f.joinedText(), old, f.mode) {
 		return 0, nil
 	}
-	spans, n := replaceInSpans(f.spans, old, new)
+	spans, n := replaceInSpans(f.spans, old, new, f.mode)
 	if n == 0 {
 		return 0, nil
 	}
@@ -212,6 +233,9 @@ func (f *Flow) planSpans(spans []FlowSpan) (*flowPlan, error) {
 	}
 	if len(clean) == 0 {
 		return nil, fmt.Errorf("gopdf: a paragraph cannot be emptied; replace it with a space")
+	}
+	if shrunk, did := f.shrinkInserted(clean); did {
+		clean = shrunk
 	}
 	lines, err := f.wrap(clean)
 	if err != nil {
@@ -356,7 +380,11 @@ func writeTm(b *strings.Builder, m matrix) {
 func (f *Flow) lineOps(line []FlowSpan) (string, error) {
 	var b strings.Builder
 	var cur flowStyle
-	for i, span := range line {
+	// Whether a span was inserted matters while wrapping, because only
+	// inserted text may change font. By the time it is written the
+	// distinction is spent, so neighbours in one style become one
+	// show-text operation again rather than several.
+	for i, span := range coalesceForOutput(line) {
 		st := span.style
 		if i == 0 || !st.sameAs(cur) {
 			if i == 0 || st.fontName != cur.fontName || st.fontSizeRaw != cur.fontSizeRaw {
@@ -388,7 +416,7 @@ func (f *Flow) lineOps(line []FlowSpan) (string, error) {
 // wrap breaks styled spans into lines no wider than the column, measuring
 // each piece in its own font.
 func (f *Flow) wrap(spans []FlowSpan) ([][]FlowSpan, error) {
-	words, err := flowWords(spans)
+	words, err := flowWords(spans, f.fallback)
 	if err != nil {
 		return nil, err
 	}
@@ -452,7 +480,7 @@ type flowWord struct {
 }
 
 // flowWords splits styled spans into words, keeping each word's styling.
-func flowWords(spans []FlowSpan) ([]flowWord, error) {
+func flowWords(spans []FlowSpan, fallback func(flowStyle) (flowStyle, bool)) ([]flowWord, error) {
 	var out []flowWord
 	var cur flowWord
 	flush := func() {
@@ -463,6 +491,19 @@ func flowWords(spans []FlowSpan) ([]flowWord, error) {
 	}
 	var last flowStyle
 	for _, span := range spans {
+		// The decision to fall back is made once for the whole span, not
+		// word by word. A token set partly in the document's font and
+		// partly in another is encoded against two different tables, and
+		// the join between them is where a character comes out wrong.
+		if span.inserted && fallback != nil {
+			if _, ok := span.style.advance(span.Text); !ok {
+				if alt, made := fallback(span.style); made {
+					if _, ok := alt.advance(span.Text); ok {
+						span.style = alt
+					}
+				}
+			}
+		}
 		last = span.style
 		for _, chunk := range splitKeepingBreaks(span.Text) {
 			switch {
@@ -472,18 +513,30 @@ func flowWords(spans []FlowSpan) ([]flowWord, error) {
 			case strings.TrimSpace(chunk) == "":
 				flush()
 			default:
-				w, ok := span.style.advance(chunk)
+				style := span.style
+				w, ok := style.advance(chunk)
+				if !ok && span.inserted && fallback != nil {
+					// The span as a whole could not be set in either
+					// font — a token with a rune outside both — so each
+					// word is given its best chance before refusing.
+					if alt, made := fallback(style); made {
+						if w2, ok2 := alt.advance(chunk); ok2 {
+							style, w, ok = alt, w2, true
+						}
+					}
+				}
 				if !ok {
 					return nil, fmt.Errorf("gopdf: font /%s cannot measure %q",
 						span.style.fontName, chunk)
 				}
 				if len(cur.parts) == 0 {
-					cur.styleOfHead = span.style
+					cur.styleOfHead = style
 				}
 				cur.parts = append(cur.parts, FlowSpan{
-					Text: chunk, style: span.style,
-					FontName: string(span.style.fontName),
+					Text: chunk, style: style,
+					FontName: string(style.fontName),
 					FontSize: span.FontSize,
+					inserted: span.inserted,
 				})
 				cur.width += w
 			}
@@ -537,7 +590,12 @@ func splitKeepingBreaks(s string) []string {
 func mergeSpans(in []FlowSpan) []FlowSpan {
 	var out []FlowSpan
 	for _, s := range in {
-		if n := len(out); n > 0 && out[n-1].style.sameAs(s.style) {
+		// Inserted and original text never merge, even in the same
+		// style: merging would spread the flag onto text the document
+		// already had, and with it permission to restyle that text.
+		if n := len(out); n > 0 && out[n-1].style.sameAs(s.style) &&
+			out[n-1].inserted == s.inserted &&
+			!out[n-1].lineBreak && !s.lineBreak {
 			out[n-1].Text += s.Text
 			continue
 		}
@@ -549,17 +607,35 @@ func mergeSpans(in []FlowSpan) []FlowSpan {
 // replaceInSpans applies a string replacement across styled spans. Text
 // that stays keeps its style, and inserted text takes the style of the
 // first character it replaces.
-func replaceInSpans(spans []FlowSpan, old, new string) ([]FlowSpan, int) {
-	// Work on the flattened text, remembering which span each byte is in.
-	var b strings.Builder
+//
+// Matching reads the paragraph as a person would: a word hyphenated
+// across a line break is one word, and a literal counts only where it
+// stands on its own. A replacement covers the whole of what it matched,
+// so a split word takes its dangling hyphen and the break with it and the
+// paragraph re-wraps without either.
+func replaceInSpans(spans []FlowSpan, old, new string, mode matchMode) ([]FlowSpan, int) {
+	reading := readParagraph(spans)
+	text := reading.flat
+
+	// Which bytes of the flattened text belong to which span.
 	var owner []int
 	for i, s := range spans {
-		b.WriteString(s.Text)
 		for range []byte(s.Text) {
 			owner = append(owner, i)
 		}
 	}
-	text := b.String()
+
+	// Matches are sought in the joined reading and mapped back.
+	var hits [][2]int
+	for _, rg := range literalRanges(reading.text, old, mode) {
+		lo, hi, ok := reading.rangeInOriginal(rg[0], rg[1])
+		if ok {
+			hits = append(hits, [2]int{lo, hi})
+		}
+	}
+	if len(hits) == 0 {
+		return spans, 0
+	}
 
 	var out []FlowSpan
 	emit := func(from, to int) {
@@ -572,36 +648,36 @@ func replaceInSpans(spans []FlowSpan, old, new string) ([]FlowSpan, int) {
 			out = append(out, FlowSpan{
 				Text: text[at:end], style: spans[s].style,
 				FontName: spans[s].FontName, FontSize: spans[s].FontSize,
+				inserted:  spans[s].inserted,
+				lineBreak: spans[s].lineBreak && at == 0 && end == len(spans[s].Text),
 			})
 			at = end
 		}
 	}
 
-	count, at := 0, 0
-	for {
-		i := strings.Index(text[at:], old)
-		if i < 0 {
-			break
+	at := 0
+	for _, h := range hits {
+		if h[0] < at {
+			continue // overlaps one already taken
 		}
-		i += at
-		emit(at, i)
-		host := spans[owner[i]]
+		emit(at, h[0])
+		host := spans[owner[h[0]]]
 		if new != "" {
 			out = append(out, FlowSpan{Text: new, style: host.style,
-				FontName: host.FontName, FontSize: host.FontSize})
+				FontName: host.FontName, FontSize: host.FontSize,
+				inserted: true})
 		}
-		at = i + len(old)
-		count++
+		at = h[1]
 	}
 	emit(at, len(text))
-	return mergeSpans(out), count
+	return mergeSpans(out), len(hits)
 }
 
 // --- building flows from a page ---
 
 // buildFlows groups runs into paragraphs that may mix styles within a
 // line, which is what separates a flow from the stricter TextBlock.
-func buildFlows(runs []*TextRun, onChange func()) []*Flow {
+func buildFlows(runs []*TextRun, onChange func(), fallback func(flowStyle) (flowStyle, bool)) []*Flow {
 	lines := groupLines(runs)
 	var out []*Flow
 	for i := 0; i < len(lines); {
@@ -616,6 +692,7 @@ func buildFlows(runs []*TextRun, onChange func()) []*Flow {
 			j++
 		}
 		if f := newFlow(lines[i:j], onChange); f != nil {
+			f.fallback = fallback
 			out = append(out, f)
 		}
 		i = j
@@ -710,17 +787,32 @@ func newFlow(lines []flowLine, onChange func()) *Flow {
 	// explicit so a re-wrap can put the break somewhere else.
 	for i, line := range lines {
 		if i > 0 {
-			f.spans = append(f.spans, FlowSpan{Text: " ",
+			f.spans = append(f.spans, FlowSpan{Text: " ", lineBreak: true,
 				style: styleOf(line.runs[0]), FontName: line.runs[0].FontName})
 		}
+		var prev *TextRun
 		for _, run := range line.runs {
 			if run.Text == "" {
 				continue
+			}
+			// A document may set a line one fragment at a time, with the
+			// gaps that make the words carried by positioning rather than
+			// by spaces. Reading those runs straight through gives
+			// "ContractwithMarcoBianchi" and nothing matches. The gap is
+			// judged by the rule extraction uses, so a paragraph reads
+			// here the way PageText reports it.
+			if prev != nil {
+				gap := run.X - (prev.X + prev.Width)
+				if needsSpace(run.Text, gap, prev.spaceWidthPts()) {
+					f.spans = append(f.spans, FlowSpan{Text: " ",
+						style: styleOf(prev), FontName: prev.FontName})
+				}
 			}
 			f.spans = append(f.spans, FlowSpan{
 				Text: run.Text, style: styleOf(run),
 				FontName: run.FontName, FontSize: run.FontSize,
 			})
+			prev = run
 		}
 	}
 	f.spans = mergeSpans(f.spans)
@@ -751,7 +843,7 @@ func styleOf(run *TextRun) flowStyle {
 // instead of two calls fighting over the same operators.
 func (e *EditablePage) Flows() []*Flow {
 	if e.flows == nil {
-		e.flows = buildFlows(e.runs, nil)
+		e.flows = buildFlows(e.runs, nil, fallbackFor(e))
 	}
 	return e.flows
 }
@@ -760,7 +852,7 @@ func (e *EditablePage) Flows() []*Flow {
 // any length, keeping each part's styling.
 func (p *UpdatablePage) Flows() []*Flow {
 	if p.flows == nil {
-		p.flows = buildFlows(p.runs, nil)
+		p.flows = buildFlows(p.runs, nil, fallbackFor(p))
 	}
 	return p.flows
 }
@@ -794,10 +886,10 @@ func replaceFlows(flows []*Flow, old, new string) (int, error) {
 	plans := make([]*flowPlan, len(flows))
 	n := 0
 	for i, f := range flows {
-		if !strings.Contains(f.Text(), old) {
+		if !containsBounded(f.joinedText(), old, f.mode) {
 			continue
 		}
-		spans, count := replaceInSpans(f.spans, old, new)
+		spans, count := replaceInSpans(f.spans, old, new, f.mode)
 		if count == 0 {
 			continue
 		}
@@ -823,4 +915,18 @@ func replaceFlows(flows []*Flow, old, new string) (int, error) {
 		f.place(shift)
 	}
 	return n, nil
+}
+
+// coalesceForOutput joins neighbouring spans that share a style,
+// disregarding whether the edit inserted them.
+func coalesceForOutput(in []FlowSpan) []FlowSpan {
+	var out []FlowSpan
+	for _, s := range in {
+		if n := len(out); n > 0 && out[n-1].style.sameAs(s.style) {
+			out[n-1].Text += s.Text
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
 }

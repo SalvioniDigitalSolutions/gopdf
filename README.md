@@ -294,6 +294,13 @@ What gets removed, and how:
 | Metadata | The information dictionary and XMP stream go by default. |
 | Second copies | `/Thumb`, `/Alternates` and `/PieceInfo` are dropped: each can hold the page as it was before redaction. |
 | Scans | With an OCR engine set, words inside images are found, their pixels overwritten, and every image read again to prove it. |
+| Annotations | Their appearance streams are read as well as their strings, and a stale appearance is dropped when the strings change. |
+
+Matching is word-bounded (`Rossi` not inside `Rossini`), joins words
+hyphenated across a line break, reads lines a document set one fragment at
+a time, and matches non-breaking-space and soft-hyphen spellings — with
+the same definition used by the read-back, so the check and the matcher
+never disagree.
 
 The output is read back before you get it. If a document draws text in a
 way redaction could not reach, `WriteTo` reports it and writes nothing,
@@ -318,7 +325,11 @@ res, _ := gopdf.PseudonymizeFile("case.pdf", "anonymous.pdf", []gopdf.Pseudonym{
 ```
 
 The token need not be the same length — the paragraph re-wraps around it
-and keeps its styling. It reaches the copies of a name that nothing draws
+and keeps its styling. Where the document's own subset font cannot set the
+token (no `[` in it), the inserted text falls back to a standard font
+matched to the face, and only ever the inserted text. Mappings are also
+expanded into the spellings a document might have used, so a name typed
+with an ordinary space still matches one written with a non-breaking one. It reaches the copies of a name that nothing draws
 but everything reads: the metadata, the XMP packet, annotation notes,
 bookmark titles, form field values. Then it reads the result back and
 withholds it if any original is still findable.
@@ -383,7 +394,7 @@ go run ./examples/redact -in case.pdf -list -text "Ada Lovelace"
 Coordinates are in points (1/72 inch) with the origin at the **top-left**
 of the page; `Mm`, `Cm` and `Inch` convert other units.
 
-- **253 tests** at **86% statement coverage**, covering the writer, the
+- **287 tests** at **86% statement coverage**, covering the writer, the
   parser, the font subsetter, the filters, encryption, editing, reflow,
   flow, forms, signatures and redaction
 - **Text extraction measured against `pdftotext`** over 918 real

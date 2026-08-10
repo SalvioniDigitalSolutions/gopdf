@@ -1,6 +1,9 @@
 package gopdf
 
-import "strings"
+import (
+	"strings"
+	"unicode/utf8"
+)
 
 // Matching text that a content stream broke up.
 //
@@ -23,6 +26,11 @@ type runChain struct {
 	runs  []*TextRun
 	start []int // byte offset of each run's text within text
 	end   []int
+	// elided[i] is how many trailing bytes of run i were left out of
+	// text: the hyphen of a word broken across a line break. A match
+	// reaching the end of that run takes the hyphen with it, so the
+	// replacement does not leave one dangling.
+	elided []int
 }
 
 // buildChains groups a page's runs into chains of continuous text.
@@ -44,18 +52,30 @@ func buildChains(runs []*TextRun) []runChain {
 		if run.Text == "" {
 			continue
 		}
+		dropped := 0
 		if len(cur.runs) > 0 {
 			prev := cur.runs[len(cur.runs)-1]
-			switch joinKind(prev, run) {
+			kind := joinKind(prev, run)
+			// A line break where the last word ends in a hyphen is a
+			// word split in two, not two words. The hyphen comes out of
+			// the reading and the chain carries on, so "Bian-" and "chi"
+			// are matched as "Bianchi".
+			if kind == joinBreak && continuesHyphenated(b.String(), prev, run) {
+				dropped = trimChainHyphen(&b, &cur)
+				kind = joinTight
+			}
+			switch kind {
 			case joinBreak:
 				flush()
 			case joinSpace:
 				b.WriteByte(' ')
 			}
 		}
+		_ = dropped
 		cur.start = append(cur.start, b.Len())
 		b.WriteString(run.Text)
 		cur.end = append(cur.end, b.Len())
+		cur.elided = append(cur.elided, 0)
 		cur.runs = append(cur.runs, run)
 	}
 	flush()
@@ -121,6 +141,11 @@ func (c runChain) chainRanges(lo, hi int) map[*TextRun][][2]int {
 			continue
 		}
 		from, to := maxI(lo, s)-s, minI(hi, e)-s
+		// A match reaching the end of a run whose hyphen was left out of
+		// the reading takes that hyphen too.
+		if i < len(c.elided) && c.elided[i] > 0 && minI(hi, e) == e {
+			to += c.elided[i]
+		}
 		if from < to {
 			out[run] = append(out[run], [2]int{from, to})
 		}
@@ -142,7 +167,7 @@ func (rd *Redactor) matchesInChains(runs []*TextRun) map[*TextRun][][2]int {
 	}
 	for _, chain := range buildChains(runs) {
 		for _, lit := range rd.literals {
-			for _, rg := range literalRanges(chain.text, lit) {
+			for _, rg := range literalRanges(chain.text, lit, rd.mode()) {
 				add(chain.chainRanges(rg[0], rg[1]))
 			}
 		}
@@ -153,4 +178,50 @@ func (rd *Redactor) matchesInChains(runs []*TextRun) map[*TextRun][][2]int {
 		}
 	}
 	return found
+}
+
+// continuesHyphenated reports whether the chain so far ends in a hyphen
+// that a word on the next line continues.
+//
+// The test is on the chain's text rather than on the previous run's,
+// because justified documents often set the hyphen as an operation of its
+// own: the runs read "Akteu", "-", "ren", and asking the run before the
+// break whether it ends in a hyphen would find only the hyphen.
+func continuesHyphenated(chain string, prev, next *TextRun) bool {
+	if chain == "" || next.Text == "" {
+		return false
+	}
+	r, size := utf8.DecodeLastRuneInString(chain)
+	if !isHyphen(r) {
+		return false
+	}
+	before, _ := utf8.DecodeLastRuneInString(chain[:len(chain)-size])
+	after, _ := utf8.DecodeRuneInString(next.Text)
+	if !isWordRune(before) || !isWordRune(after) {
+		return false
+	}
+	// Only downwards, and only back to about the same left edge: a run
+	// further right is another column, not the next line.
+	size2 := prev.FontSize
+	if size2 <= 0 {
+		size2 = next.FontSize
+	}
+	return next.Y > prev.Y && next.Y-prev.Y <= size2*2.5
+}
+
+// trimChainHyphen removes the hyphen just written from the chain's text
+// and records how many bytes went, returning that count.
+func trimChainHyphen(b *strings.Builder, cur *runChain) int {
+	text := b.String()
+	r, size := utf8.DecodeLastRuneInString(text)
+	if !isHyphen(r) {
+		return 0
+	}
+	b.Reset()
+	b.WriteString(text[:len(text)-size])
+	if n := len(cur.end); n > 0 {
+		cur.end[n-1] -= size
+		cur.elided[n-1] = size
+	}
+	return size
 }

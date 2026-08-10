@@ -752,7 +752,7 @@ func TestRedactRotatedTextIsRemovedWhole(t *testing.T) {
 }
 
 func TestRedactLiteralRanges(t *testing.T) {
-	got := literalRanges("abcabcabc", "abc")
+	got := literalRanges("abcabcabc", "abc", matchAnywhere)
 	want := [][2]int{{0, 3}, {3, 6}, {6, 9}}
 	if len(got) != len(want) {
 		t.Fatalf("literalRanges = %v, want %v", got, want)
@@ -762,7 +762,7 @@ func TestRedactLiteralRanges(t *testing.T) {
 			t.Fatalf("literalRanges = %v, want %v", got, want)
 		}
 	}
-	if r := literalRanges("abc", "zzz"); len(r) != 0 {
+	if r := literalRanges("abc", "zzz", matchAnywhere); len(r) != 0 {
 		t.Errorf("a missing literal should match nothing, got %v", r)
 	}
 }
@@ -977,5 +977,60 @@ func TestRedactVerifiesPatterns(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "still matches") {
 		t.Errorf("unhelpful error: %v", err)
+	}
+}
+
+// TestRedactMatchesCharacterVariants gives the redactor the same variant
+// parity pseudonymization has: a document writing non-breaking spaces
+// must match a literal typed with an ordinary one, or placeholder mode
+// fails exactly where substitution now works.
+func TestRedactMatchesCharacterVariants(t *testing.T) {
+	for _, c := range []struct{ name, written, typed string }{
+		{"nbsp", "Ada Lovelace", "Ada Lovelace"},
+		{"soft hyphen", "Basel­Stadt", "Basel-Stadt"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			doc := New()
+			p := doc.AddPage()
+			p.SetFont(Helvetica, 11)
+			p.Text(60, 100, "Concerning "+c.written+" of this parish.")
+			src := docBytes(t, doc)
+
+			r, _ := NewReader(src)
+			rd := Redact(r)
+			rd.Text(c.typed)
+			out := redactTo(t, rd)
+			got := collapse(extractAll(t, out))
+			if strings.Contains(got, c.written) {
+				t.Errorf("the variant spelling was not removed: %q", got)
+			}
+			if !strings.Contains(got, "of this parish.") {
+				t.Errorf("the rest of the line was lost: %q", got)
+			}
+		})
+	}
+}
+
+// A word split across a line break must be caught by the redactor's own
+// verification even when it is not matched, rather than passing unseen.
+func TestRedactVerificationSeesSplitWords(t *testing.T) {
+	doc := New()
+	doc.Compress = false
+	page := doc.AddPage()
+	page.SetFont(Helvetica, 11)
+	page.Text(60, 100, "Contract with Marco Bian-")
+	page.Text(60, 114, "chi of this parish.")
+	src := docBytes(t, doc)
+
+	r, _ := NewReader(src)
+	rd := Redact(r)
+	rd.Text("Bianchi")
+	var buf bytes.Buffer
+	if _, err := rd.WriteTo(&buf); err != nil {
+		t.Fatalf("a split word the matcher reaches should not refuse: %v", err)
+	}
+	got := collapse(extractAll(t, buf.Bytes()))
+	if strings.Contains(got, "Bianchi") || strings.Contains(got, "Bian-") {
+		t.Errorf("the split word survived: %q", got)
 	}
 }

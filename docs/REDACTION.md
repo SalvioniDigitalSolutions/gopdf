@@ -130,14 +130,70 @@ draws but everything reads, and all of them are rewritten:
 - form field values, defaults and tooltips
 - file attachment names and descriptions
 
+### The token is set even when the document's font cannot
+
+A subset font carries the glyphs its document draws and no others. Ask it
+for `[[PII_NAME_1]]` and it very likely has no `[`, which would once have
+refused the substitution.
+
+Inserted text now falls back to one of the standard fourteen, added to the
+page under a collision-free resource name. The face is matched from the
+original — bold text gets Helvetica-Bold, italic gets Oblique — so the
+token reads like its surroundings.
+
+The permission is deliberately narrow: **only text the edit inserted may
+change font.** Text the document already drew keeps its own whatever
+happens, because restyling that would change a page you did not ask to
+change. A token holding a character even Helvetica cannot set — anything
+outside cp1252, an arrow say — is still refused rather than drawn as a
+blank box.
+
+### Spelling variants are matched for you
+
+Swiss and German legal documents routinely set every gap as U+00A0, the
+non-breaking space, and every compound hyphen as U+00AD, the soft hyphen.
+Extraction reports the characters the file holds, so `"Ada Lovelace"`
+typed with an ordinary space would match nothing at all.
+
+Each mapping is therefore expanded into the spellings a document might
+have used — non-breaking space, soft hyphen, non-breaking hyphen, and the
+combinations — all replaced by the same token. They become ordinary
+substitutions, so the check that nothing survives covers them without
+knowing they exist.
+
+```go
+// Matches "Basel-Stadt", "Basel[nbsp]Stadt", "Basel[shy]Stadt", ...
+{From: "Basel-Stadt", To: "[[REGION_1]]"}
+```
+
+### What counts as a match
+
+One definition, shared by the matcher, the redactor and the read-back
+that proves nothing survived — because a check stricter than the matcher
+reports a correct pass as a failure, and a looser one lets a survivor
+through.
+
+| Rule | Effect |
+|---|---|
+| **Word boundaries** | `Rossi` matches in `Sig. Rossi,` and not inside `Rossini`. Digits count as word characters, so `123` is not found in `5123`. Punctuation and symbols do not block a match, so reference numbers, emails and IBANs are unaffected. |
+| **Hyphen at a line break** | A word justified across two lines — `Bian-` then `chi` — is read as one word and replaced as one, taking the dangling hyphen with it. A hyphen in the middle of a line is real text: `CHE-290` stays whole. |
+| **Fragmented lines** | A document that sets a line one piece at a time, carrying the gaps by positioning rather than by spaces, still reads as words. |
+| **Spelling variants** | Non-breaking spaces and soft hyphens are matched from a mapping typed with ordinary ones. |
+
+`MatchSubstrings(true)` on a `Redactor` turns the boundary rule off.
+
 ### Rules
 
 - **Longest first.** Mappings are sorted so a rule for `Ada Lovelace` is
   not pre-empted by one for `Ada`.
 - **A token may not contain its own original.** `{From: "Ada", To: "Ada L."}`
   is refused rather than leaving the name in place.
-- **Fonts must be able to set the token.** A document whose subset font
-  has no `[` will be declined, not drawn with blank boxes.
+- **Fonts must be able to set the token.** Where the document's own
+  subset cannot — no `[` in it — the inserted text falls back to a
+  standard font, matched to the face, and the whole token is set in that
+  one font. Only inserted text ever changes font. A token holding a
+  character even Helvetica cannot set is still declined rather than drawn
+  with blank boxes.
 
 ### It proves the result
 
@@ -252,6 +308,10 @@ page as it was), `/Alternates` (another version of the same image), and
 processor, the text it laid out). Each is reported as a `RedactCopy` mark.
 ✅ With an engine set, every image in the finished document is read again
 and the output withheld if a marked word survives
+✅ **Annotation appearances** are read as well as annotation strings. An
+annotation holds its words twice — as a string and as drawing operators —
+and a stale appearance is dropped when the strings behind it change, so
+the old wording cannot stay drawn under the new
 
 ### What it does not cover
 
@@ -267,6 +327,33 @@ and the output withheld if a marked word survives
   area.
 
 ---
+
+## Fitting
+
+Two things a paragraph can do that are worth deciding about rather than
+discovering.
+
+**A token wider than its space.** `[[PII_REG_NUMBER_001]]` dropped into a
+one-line table cell has nowhere to wrap to. Off by default it simply
+overruns; `SetShrinkToFit(true, 6)` sets it smaller instead, down to a
+floor in points below which it is left alone rather than made unreadable.
+
+```go
+for _, f := range page.Flows() {
+    f.SetShrinkToFit(true, 6)
+}
+```
+
+**Growth past the bottom of the page.** A paragraph that grows pushes the
+ones below it down, and at the foot of a page that pushes them off it.
+Nothing clips silently, but nothing refuses on your behalf either — ask
+before writing:
+
+```go
+if f.OverflowsPage(pageHeight) {
+    // shorten the replacement, or cap it with SetMaxExtraLines
+}
+```
 
 ## Choosing between them
 
