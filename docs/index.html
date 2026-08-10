@@ -733,6 +733,39 @@ in a way redaction could not reach — <code>WriteTo</code> reports that and
 writes nothing, rather than handing back a file that looks redacted and is
 not. <code>SetVerify(false)</code> turns the check off.</p>
 </div>
+<h3>Text inside a scan</h3>
+<p>A scanned letterhead is pixels, and every rule above walks straight
+past it. Plug in an engine and the text rules reach words inside images
+too: the pixels are overwritten, the image re-encoded, and a bar drawn
+with a token set into it. This library ships no engine — a poor one would
+be worse than none — but an adapter for tesseract is in the repository and
+shells out to the binary, so nothing joins your Go dependencies.</p>
+<pre><code>engine, _ := tesseract.<span class="f">New</span>(tesseract.Options{Languages: []<span class="k">string</span>{<span class="s">"eng"</span>}})
+rd.<span class="f">SetOCR</span>(engine)
+rd.<span class="f">Text</span>(<span class="s">"Ada Lovelace"</span>)
+rd.<span class="f">Substitute</span>(<span class="s">"4815162342"</span>, <span class="s">"[[ACCOUNT_1]]"</span>)</code></pre>
+<p>Nothing extracts text from an image, so the ordinary read-back cannot
+check it. The engine is run again instead, over every image the finished
+document still reaches — which is what catches a thumbnail or an
+alternate — and the output is withheld if a word can still be read.</p>
+<div class="note warn">
+<p><strong>Recognition is not exhaustive.</strong> An engine misses words,
+especially on a poor scan, and a word it misses stays in the document.
+Review <code>Marks()</code>, and prefer an area where you know the region.
+A literal of several words is matched one word at a time, so redacting
+<code>Ada Lovelace</code> also removes a lone <code>Ada</code> — more than
+asked, which is the right way round.</p>
+</div>
+
+<h3>Second copies of the page</h3>
+<p>Scrubbing what a page draws is necessary and not sufficient. A file may
+carry the same picture somewhere else: <code>/Thumb</code> is a rendering
+of the page made before the redaction, <code>/Alternates</code> offers
+another version of an image, and <code>/PieceInfo</code> holds whatever
+the producing application cached. None is drawn, all travel with the file,
+and any will hand back what the redaction was for. They are dropped, and
+reported as <code>RedactCopy</code> marks.</p>
+
 <div class="note warn">
 <p><strong>Redaction removes content, not structure.</strong> A string can
 also live somewhere that is not content — a font's <code>/BaseFont</code>

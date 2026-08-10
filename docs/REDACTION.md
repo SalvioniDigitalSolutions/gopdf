@@ -156,6 +156,86 @@ failure cannot leave a half-anonymous file behind.
 
 ---
 
+## 3. Text inside a scan (OCR)
+
+A scanned letterhead is pixels. Nothing in the content stream says the
+name, so every rule above walks straight past it. Plug in an engine and
+`Text`, `Pattern` and `Substitute` also reach words inside images.
+
+The library ships no engine — recognising text well is a large problem
+with mature solutions, and a poor one here would be worse than none. The
+adapter for [tesseract](https://github.com/tesseract-ocr/tesseract) is in
+this repo and shells out to the binary, so nothing is added to your Go
+dependencies.
+
+```bash
+brew install tesseract        # or: apt install tesseract-ocr
+```
+
+```go
+import "github.com/SalvioniDigitalSolutions/gopdf/ocr/tesseract"
+
+engine, err := tesseract.New(tesseract.Options{Languages: []string{"eng"}})
+if err != nil {
+    log.Fatal(err)  // tesseract is not installed
+}
+
+rd := gopdf.Redact(r)
+rd.SetOCR(engine)
+rd.Text("Ada Lovelace")                      // black bar over the pixels
+rd.Substitute("4815162342", "[[ACCOUNT_1]]") // or a token in its place
+rd.Save("redacted.pdf")
+```
+
+A matched word has its **pixels overwritten** and the image re-encoded,
+then a bar is drawn over it with the token set into it.
+
+```go
+rd.SetLabel("[REDACTED]")             // one token for every bar
+rd.SetLabelColor(gopdf.White)         // default
+rd.SetOCRConfidence(0.5)              // ignore doubtful reads (default 0)
+```
+
+### It is checked by reading the pixels again
+
+Nothing extracts text from an image, so the ordinary read-back cannot see
+it. Instead the engine is run again over **every image the finished
+document still reaches** — not only the ones a page draws, which is what
+catches a thumbnail or an alternate. If a word can still be read, the
+output is withheld.
+
+### Two honest limits
+
+- **Recognition is not exhaustive.** An engine misses words, especially on
+  a poor scan, and a word it misses stays in the document. Review
+  `Marks()`; prefer `Area` where you know the region.
+- **A literal of several words is matched a word at a time**, since an
+  engine reports one box per word. Redacting `Ada Lovelace` therefore also
+  removes a lone `Ada`. That removes slightly more than asked, which is
+  the right way round here.
+
+---
+
+## 4. Undoing it
+
+Substitutions in **text** are reversible if you keep the key:
+
+```go
+key := []gopdf.Pseudonym{{From: "Ada Lovelace", To: "[[PII_NAME_1]]"}}
+
+gopdf.Pseudonymize(r, anon, key)                  // anonymize
+gopdf.Pseudonymize(r2, back, gopdf.Reverse(key))  // and back
+```
+
+`Reverse` swaps each `From` and `To`. Keep the key somewhere the
+pseudonymized document is not, or there was no point.
+
+**Pixels are not reversible.** A word an OCR engine found in a picture was
+removed by overwriting it; the token drawn over the hole is all that is
+left. `Key.Reversible()` reports `false` once any pixels went.
+
+---
+
 ## What "not recoverable" covers
 
 ✅ Not in the page text, as any reader or `pdftotext` sees it
@@ -166,14 +246,20 @@ bookmarks, field values
 nothing to roll back to
 ✅ Superseded objects from the source document's own earlier edits are
 dropped too
+✅ **Second copies of the page are dropped**: `/Thumb` (a rendering of the
+page as it was), `/Alternates` (another version of the same image), and
+`/PieceInfo` (whatever the producing application cached — for a word
+processor, the text it laid out). Each is reported as a `RedactCopy` mark.
+✅ With an engine set, every image in the finished document is read again
+and the output withheld if a marked word survives
 
 ### What it does not cover
 
 - **Structural names.** A string can also be a font's `/BaseFont` or an
   embedded file's name. Those are structure, not content, and are left
   alone — check `Marks()` if that matters for your document.
-- **Text inside an image.** A scan of a letterhead is pixels. Use `Area`
-  or `Image` to remove the region; the library does not run OCR.
+- **Text inside an image** is only reached when you plug in an engine —
+  see above — and then only as well as that engine reads.
 - **Encryption.** A rewrite writes an encrypted source out unencrypted,
   since re-encrypting is a decision to take deliberately.
 - **Artwork that straddles a redaction area** is covered by the bar but

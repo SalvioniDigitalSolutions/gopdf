@@ -171,3 +171,41 @@ func checkPseudonymized(out []byte, subs []Pseudonym) error {
 	}
 	return nil
 }
+
+// Reverse returns the mappings that undo a substitution, for a caller
+// holding the key.
+//
+// Feed them back through Pseudonymize to restore the original text:
+//
+//	key := []gopdf.Pseudonym{{From: "Ada Lovelace", To: "[[PII_NAME_1]]"}}
+//	gopdf.Pseudonymize(r, w, key)                 // anonymize
+//	gopdf.Pseudonymize(r2, w2, gopdf.Reverse(key)) // and back
+//
+// Only text is restored. A word an OCR engine found in a picture was
+// removed by overwriting the pixels, and no key brings those back: the
+// token drawn over the hole is all there is. Keep the key somewhere the
+// pseudonymized document is not, or there was no point.
+func Reverse(subs []Pseudonym) []Pseudonym {
+	out := make([]Pseudonym, 0, len(subs))
+	for _, s := range subs {
+		out = append(out, Pseudonym{From: s.To, To: s.From})
+	}
+	return out
+}
+
+// Key is the record needed to undo a substitution: the mappings, and a
+// note of what cannot be undone.
+type Key struct {
+	// Mappings are the substitutions as they were applied.
+	Mappings []Pseudonym
+	// PixelsDestroyed counts the words removed from images, which no key
+	// restores.
+	PixelsDestroyed int
+}
+
+// Reverse returns the mappings that undo this key's substitutions.
+func (k Key) Reverse() []Pseudonym { return Reverse(k.Mappings) }
+
+// Reversible reports whether everything this key describes can be undone.
+// It is false once any pixels were overwritten.
+func (k Key) Reversible() bool { return k.PixelsDestroyed == 0 }

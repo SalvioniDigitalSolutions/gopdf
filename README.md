@@ -94,6 +94,9 @@ go get github.com/SalvioniDigitalSolutions/gopdf
 - **Pseudonymization**: swap identifying text for tokens of any length,
   reflowing the paragraph and reaching the copies in metadata, annotations,
   bookmarks and form fields — then proving none of the original is left
+- **OCR-driven redaction**: plug in an engine (a tesseract adapter ships
+  in the repo) and text rules also reach words inside a scan — pixels
+  overwritten, a token drawn in their place, then read again to prove it
 - **Repairs damaged files**: a wrong `startxref`, bytes before the header
   or a broken table are recovered by scanning for the objects
 - Reads encrypted files (RC4, AES-128, AES-256) with either password
@@ -289,6 +292,8 @@ What gets removed, and how:
 | Vector artwork | A path lying entirely inside the area is deleted. One that straddles the edge is reported by `PartialArtwork`, not silently kept. |
 | Annotations | Removed, along with whatever text they hold. |
 | Metadata | The information dictionary and XMP stream go by default. |
+| Second copies | `/Thumb`, `/Alternates` and `/PieceInfo` are dropped: each can hold the page as it was before redaction. |
+| Scans | With an OCR engine set, words inside images are found, their pixels overwritten, and every image read again to prove it. |
 
 The output is read back before you get it. If a document draws text in a
 way redaction could not reach, `WriteTo` reports it and writes nothing,
@@ -378,7 +383,7 @@ go run ./examples/redact -in case.pdf -list -text "Ada Lovelace"
 Coordinates are in points (1/72 inch) with the origin at the **top-left**
 of the page; `Mm`, `Cm` and `Inch` convert other units.
 
-- **235 tests** at **86% statement coverage**, covering the writer, the
+- **253 tests** at **86% statement coverage**, covering the writer, the
   parser, the font subsetter, the filters, encryption, editing, reflow,
   flow, forms, signatures and redaction
 - **Text extraction measured against `pdftotext`** over 918 real

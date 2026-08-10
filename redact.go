@@ -34,6 +34,12 @@ const (
 	RedactAnnotation RedactionKind = "annotation"
 	// RedactPath marks vector artwork.
 	RedactPath RedactionKind = "path"
+	// RedactImageText marks words an OCR engine read inside an image.
+	RedactImageText RedactionKind = "image-text"
+	// RedactCopy marks a second copy of the page or an image — a
+	// thumbnail, an alternate, a producer's private cache — dropped
+	// because it would still show what was removed.
+	RedactCopy RedactionKind = "copy"
 )
 
 // RedactionMark describes one piece of content that will be removed.
@@ -76,11 +82,21 @@ type Redactor struct {
 	r *Reader
 
 	areas    map[int][]rect
-	bars     map[int][]rect // boxes to paint, derived while planning
+	bars     map[int][]redactBar // boxes to paint, derived while planning
 	literals []string
 	patterns []*regexp.Regexp
 	matchFn  func(*TextRun) bool
 	images   []ImageRef
+
+	// ocr, when set, reads the text in images so the literal and pattern
+	// rules also reach words in a scan.
+	ocr        OCREngine
+	ocrMinConf float64
+	// label is written into each bar, and labelColor is its colour.
+	label        string
+	tokens       []Pseudonym
+	labelColor   Color
+	labelFontRef Ref
 
 	fill         Color
 	verify       bool
@@ -99,13 +115,14 @@ type Redactor struct {
 // Redact opens a document for redaction.
 func Redact(r *Reader) *Redactor {
 	return &Redactor{
-		r:         r,
-		areas:     make(map[int][]rect),
-		bars:      make(map[int][]rect),
-		fill:      Black,
-		overlay:   true,
-		verify:    true,
-		stripMeta: true,
+		r:          r,
+		areas:      make(map[int][]rect),
+		bars:       make(map[int][]redactBar),
+		fill:       Black,
+		labelColor: White,
+		overlay:    true,
+		verify:     true,
+		stripMeta:  true,
 	}
 }
 
@@ -223,6 +240,9 @@ func (rd *Redactor) WriteTo(w io.Writer) (int64, error) {
 	if err := rd.checkRemoved(buf.Bytes()); err != nil {
 		return 0, err
 	}
+	if err := rd.verifyOCR(buf.Bytes()); err != nil {
+		return 0, err
+	}
 	n, err := w.Write(buf.Bytes())
 	return int64(n), err
 }
@@ -276,7 +296,7 @@ func (rd *Redactor) plan() error {
 	}
 	rd.marks = nil
 	rd.removedText = nil
-	rd.bars = make(map[int][]rect)
+	rd.bars = make(map[int][]redactBar)
 	rd.partialPaths = 0
 	rd.rw = newRewriter(rd.r)
 	rd.nextNum = rd.r.maxObjectNumber() + 1
@@ -370,6 +390,34 @@ func (rd *Redactor) planPage(page int, byImage map[Ref][]rect) error {
 		}
 	}
 
+	// Words an engine reads inside an image, where a rule matches them.
+	if rd.ocr != nil {
+		imgs, err := rd.r.PageImages(page)
+		if err == nil {
+			for _, img := range imgs {
+				regions, matched, err := rd.ocrRegions(img)
+				if err != nil {
+					return err
+				}
+				for i, reg := range regions {
+					if _, whole := byImage[img.ref]; whole && byImage[img.ref] == nil {
+						break // already going entirely
+					}
+					byImage[img.ref] = append(byImage[img.ref], reg)
+					box := pageRectFor(img, reg)
+					rd.marks = append(rd.marks, RedactionMark{
+						Kind: RedactImageText, Page: page,
+						X: box.x0, Y: box.y0,
+						W: box.x1 - box.x0, H: box.y1 - box.y0,
+						Text: matched[i].Text, Partial: true,
+					})
+					rd.bars[page] = append(rd.bars[page],
+						redactBar{box: box, label: rd.tokenFor(matched[i].Text)})
+				}
+			}
+		}
+	}
+
 	// Images drawn on this page that fall inside an area.
 	if len(areas) > 0 {
 		imgs, err := rd.r.PageImages(page)
@@ -408,11 +456,25 @@ func (rd *Redactor) planPage(page int, byImage map[Ref][]rect) error {
 	if err != nil {
 		return err
 	}
-	if boxes := append(append([]rect(nil), areas...), rd.bars[page]...); rd.overlay && len(boxes) > 0 {
-		newContent = append(newContent, rd.overlayOps(boxes, pi.mediaBox)...)
+	bars := rd.bars[page]
+	for _, a := range areas {
+		bars = append(bars, redactBar{box: a, label: rd.label})
+	}
+	needFont := false
+	for _, bar := range bars {
+		if bar.label != "" {
+			needFont = true
+			break
+		}
+	}
+	if rd.overlay && len(bars) > 0 {
+		newContent = append(newContent, rd.labelOps(bars, pi.mediaBox, needFont)...)
 	}
 	pageDict := cloneDict(pi.dict)
 	pageDict["Contents"] = rd.newObject(compressedStream(newContent))
+	if rd.overlay && needFont {
+		pageDict["Resources"] = rd.withLabelFont(pi.resources)
+	}
 
 	// Each form XObject the scan descended into carries its own splices
 	// and becomes a fresh object in the rewritten file.
@@ -434,6 +496,7 @@ func (rd *Redactor) planPage(page int, byImage map[Ref][]rect) error {
 	if !rd.keepAnnots && len(areas) > 0 {
 		rd.dropAnnotations(page, pageDict, areas)
 	}
+	rd.hardenPage(page, pageDict)
 	num, ok := rd.r.pageObjectNumber(page)
 	if !ok {
 		return fmt.Errorf("the page is not an indirect object")
@@ -508,7 +571,7 @@ func (rd *Redactor) redactRun(page int, run *TextRun, areas []rect, matched [][2
 			Text:    run.Text[rg[0]:rg[1]],
 			Partial: removed != run.Text,
 		})
-		rd.bars[page] = append(rd.bars[page], box)
+		rd.bars[page] = append(rd.bars[page], redactBar{box: box, label: rd.label})
 	}
 	return nil
 }
@@ -538,22 +601,6 @@ func prefixWidth(run *TextRun, s string) float64 {
 }
 
 func (rd *Redactor) mark(m RedactionMark) { rd.marks = append(rd.marks, m) }
-
-// overlayOps paints a box over each redacted area.
-func (rd *Redactor) overlayOps(areas []rect, box [4]float64) []byte {
-	var b strings.Builder
-	height := box[3] - box[1]
-	b.WriteString("\nq ")
-	fmt.Fprintf(&b, "%s rg\n", rd.fill.components())
-	for _, a := range areas {
-		// Content-stream coordinates have their origin at the bottom.
-		fmt.Fprintf(&b, "%s %s %s %s re f\n",
-			fl(a.x0+box[0]), fl(height-a.y1+box[1]),
-			fl(a.x1-a.x0), fl(a.y1-a.y0))
-	}
-	b.WriteString("Q\n")
-	return []byte(b.String())
-}
 
 // dropAnnotations removes annotations that fall inside a redacted area.
 func (rd *Redactor) dropAnnotations(page int, pageDict Dict, areas []rect) {
@@ -924,7 +971,9 @@ func encodeRGBStream(m *image.RGBA, old *rawStream, r *Reader) *rawStream {
 		"BitsPerComponent": int64(8),
 		"Filter":           Name("FlateDecode"),
 	}
-	// A mask would let the original show through the scrubbed area.
+	// Only the plainest entries carry over. A mask would let the
+	// original show through the scrubbed area, and /Alternates offers a
+	// second, unscrubbed version of the very same picture.
 	for _, keep := range []Name{"Intent"} {
 		if v, ok := old.dict[keep]; ok {
 			dict[keep] = v
