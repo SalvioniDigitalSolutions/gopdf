@@ -1,6 +1,6 @@
 # gopdf
 
-**Create, read, edit, fill and sign PDFs — in pure Go, with nothing but the standard library.**
+**Create, read, edit, fill, sign and redact PDFs — in pure Go, with nothing but the standard library.**
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/SalvioniDigitalSolutions/gopdf.svg)](https://pkg.go.dev/github.com/SalvioniDigitalSolutions/gopdf)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -80,6 +80,11 @@ go get github.com/SalvioniDigitalSolutions/gopdf
 - **Digital signatures**: sign a document with an X.509 certificate, read
   the signatures already on one, and tell whether a file was changed after
   it was signed
+- **Redaction** that actually removes: glyphs come out of the content
+  stream, pixels out of the image, annotations out of the page, and the
+  result is a fresh file rather than an appended revision
+- **Repairs damaged files**: a wrong `startxref`, bytes before the header
+  or a broken table are recovered by scanning for the objects
 - Reads encrypted files (RC4, AES-128, AES-256) with either password
 
 ## Highlights
@@ -207,6 +212,46 @@ doc.Encrypt("", "owner-password", gopdf.AllowPrint, gopdf.AES256)
 doc.Save("watermarked.pdf")
 ```
 
+### Redact, and mean it
+
+Covering something with a black rectangle hides it from a reader and
+leaves it in the file. This removes it.
+
+```go
+r, _ := gopdf.Open("case-file.pdf")
+rd := gopdf.Redact(r)
+
+rd.Text("Ada Lovelace")                                  // every occurrence
+rd.Pattern(regexp.MustCompile(`\d{3}-\d{2}-\d{4}`))      // every match
+rd.Area(2, 60, 200, 180, 40)                             // a rectangle on page 2
+rd.Match(func(run *gopdf.TextRun) bool {                 // anything else
+	return run.FontName == "F3"
+})
+
+marks, _ := rd.Marks()          // review before committing to it
+for _, m := range marks {
+	fmt.Printf("%s p%d %q\n", m.Kind, m.Page, m.Text)
+}
+rd.Save("redacted.pdf")
+```
+
+What gets removed, and how:
+
+| Content | What happens |
+| --- | --- |
+| Text | The glyphs are cut out of the content stream. A gap the same width is left behind, so nothing on the line moves. |
+| Images | The pixels in the area are overwritten and the image re-encoded. One that cannot be decoded is dropped whole rather than left. |
+| Vector artwork | A path lying entirely inside the area is deleted. One that straddles the edge is reported by `PartialArtwork`, not silently kept. |
+| Annotations | Removed, along with whatever text they hold. |
+| Metadata | The information dictionary and XMP stream go by default. |
+
+Two properties it is built around. First, a word a content stream split
+in two — `Administra` then `tion`, or one glyph at a time, as justified
+documents often are — is still matched, because matching runs over a whole
+line rather than one operation at a time. Second, the output is a
+**complete rewrite**, not an incremental update: an update appends, and
+everything it replaced stays readable in the bytes underneath it.
+
 ### Sign a document, and check the ones already on it
 
 ```go
@@ -246,6 +291,7 @@ Full guides, the complete API tour and the design notes are in the
 | [`examples/demo`](examples/demo) | Every drawing feature on three pages |
 | [`examples/stamp`](examples/stamp) | Watermarking an existing PDF |
 | [`examples/edit`](examples/edit) | Listing and rewriting text in place |
+| [`examples/redact`](examples/redact) | Removing text permanently, with a dry run first |
 
 ```bash
 go run ./examples/edit -in report.pdf -list
@@ -255,13 +301,25 @@ go run ./examples/edit -in report.pdf -list
 go run ./examples/edit -in report.pdf -out final.pdf -replace "DRAFT=FINAL"
 ```
 
+```bash
+go run ./examples/redact -in case.pdf -list -text "Ada Lovelace"
+```
+
 ## Correctness
 
 Coordinates are in points (1/72 inch) with the origin at the **top-left**
 of the page; `Mm`, `Cm` and `Inch` convert other units.
 
-- **150 tests** covering the writer, the parser, the font subsetter, the
-  filters, encryption, editing, reflow, forms and signatures
+- **182 tests** at **85% statement coverage**, covering the writer, the
+  parser, the font subsetter, the filters, encryption, editing, reflow,
+  forms, signatures and redaction
+- **Swept against 4,635 real PDFs** — macOS and application resources, Go
+  module fixtures, and a 130,000-file legal corpus spanning Word,
+  StarOffice, LibreOffice, iText, Aspose, Quartz, groff and TeX, PDF 1.1
+  through 2.0. Every one opens, extracts and round-trips. A further
+  **3,613-file redaction sweep** removed a word from each and confirmed it
+  was gone from both the text and the raw bytes; it found two real bugs,
+  both fixed and now regression-tested
 - **Fuzz targets** for the PDF reader and the TrueType parser, with a
   checked-in regression corpus of 700+ inputs. Fuzzing has found and fixed
   real bugs, including a denial-of-service in `cmap` parsing
@@ -292,6 +350,12 @@ Stated plainly, because they matter when choosing a library:
 - Signatures are `adbe.pkcs7.detached` with SHA-256. Signing produces the
   blob and the byte range; obtaining a timestamp from a TSA, and deciding
   whether a certificate is one you trust, are left to the caller.
+- Redaction removes *content*. A string can also live somewhere
+  structural — a font's `/BaseFont` name, an embedded file's name — and
+  those are not content to remove. Vector artwork that straddles the edge
+  of an area is covered but not deleted; `PartialArtwork` reports it so
+  you can enlarge the area. A rewrite writes an encrypted source out
+  unencrypted, since re-encrypting is a decision to take deliberately.
 
 ## Roadmap
 

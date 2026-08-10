@@ -159,6 +159,8 @@ footer { border-top: 1px solid var(--border); margin-top: 4rem; padding-top: 1.5
     <li><a href="#annotations">Annotations</a></li>
     <li><a href="#pageops">Page operations</a></li>
     <li><a href="#update">Incremental update</a></li>
+    <li><a href="#redaction">Redaction</a></li>
+    <li><a href="#rewrite">Rewriting &amp; repair</a></li>
   </ul>
 
   <h4>Forms</h4>
@@ -183,7 +185,7 @@ footer { border-top: 1px solid var(--border); margin-top: 4rem; padding-top: 1.5
 
 <header class="hero">
   <h1>gopdf</h1>
-  <p class="lead">Create, read, edit, fill and sign PDF files in pure Go — with nothing but the standard library.</p>
+  <p class="lead">Create, read, edit, fill, sign and redact PDF files in pure Go — with nothing but the standard library.</p>
   <div class="badges">
     <span class="badge">No cgo</span>
     <span class="badge">Zero dependencies</span>
@@ -603,6 +605,89 @@ original content stream is never rewritten at all.</p>
 objects it supersedes remain in place. Use <code>Document.EditPage</code>
 when you would rather have a compact, fully rewritten file.</p>
 
+<h2 id="redaction">Redaction</h2>
+<p>Covering something with a black rectangle hides it from a reader and
+leaves it in the file, where any parser will still hand it over. This
+removes it: the glyphs come out of the content stream, the pixels out of
+the image, the annotation off the page.</p>
+<pre><code>r, _ := gopdf.<span class="f">Open</span>(<span class="s">"case-file.pdf"</span>)
+rd := gopdf.<span class="f">Redact</span>(r)
+
+rd.<span class="f">Text</span>(<span class="s">"Ada Lovelace"</span>)                             <span class="c">// every occurrence</span>
+rd.<span class="f">Pattern</span>(regexp.<span class="f">MustCompile</span>(<span class="s">`\d{3}-\d{2}-\d{4}`</span>))   <span class="c">// every match</span>
+rd.<span class="f">Area</span>(<span class="n">2</span>, <span class="n">60</span>, <span class="n">200</span>, <span class="n">180</span>, <span class="n">40</span>)                    <span class="c">// a rectangle on page 2</span>
+rd.<span class="f">Match</span>(<span class="k">func</span>(run *gopdf.TextRun) <span class="k">bool</span> {        <span class="c">// anything else</span>
+	<span class="k">return</span> run.FontName == <span class="s">"F3"</span>
+})
+
+marks, _ := rd.<span class="f">Marks</span>()        <span class="c">// review before committing to it</span>
+<span class="k">for</span> _, m := <span class="k">range</span> marks {
+	fmt.<span class="f">Printf</span>(<span class="s">"%s p%d %q\n"</span>, m.Kind, m.Page, m.Text)
+}
+rd.<span class="f">Save</span>(<span class="s">"redacted.pdf"</span>)</code></pre>
+
+<h3>What is removed, and how</h3>
+<table>
+<thead><tr><th>Content</th><th>What happens</th></tr></thead>
+<tbody>
+<tr><td>Text</td><td>The glyphs are cut out of the content stream, and the characters kept are written back as the very codes that drew them. A gap of the same width is left in their place, so nothing else on the line moves.</td></tr>
+<tr><td>Images</td><td>The pixels inside the area are overwritten and the image re-encoded, so the original samples do not survive. One whose pixels cannot be decoded — fax, JBIG2, JPEG 2000 — is dropped whole rather than left in.</td></tr>
+<tr><td>Vector artwork</td><td>A path lying entirely inside the area is deleted. One that straddles the edge is reported by <code>PartialArtwork</code> rather than silently kept. A path that establishes a clip is never removed.</td></tr>
+<tr><td>Annotations</td><td>Removed along with whatever text they hold, unless <code>KeepAnnotations(true)</code>.</td></tr>
+<tr><td>Metadata</td><td>The information dictionary and the XMP stream are discarded by default: they carry author names and earlier titles the visible content no longer does.</td></tr>
+</tbody>
+</table>
+
+<h3>Two things it is built around</h3>
+<p><strong>A word the content stream broke up is still matched.</strong>
+Kerning, a colour change or a producer's whim can split
+<code>Administration</code> into two operations, or draw it one glyph at a
+time as justified documents often do. Matching happens over a whole line
+rather than one operation at a time, so the word is found either way. Runs
+are only joined when they continue each other — same baseline, starting
+about where the last one ended — so a match never runs across a line break
+or into the next column.</p>
+<p><strong>The output is a complete rewrite.</strong> An
+<a href="#update">incremental update</a> appends, which is right for
+editing a signed document and precisely wrong here: everything it replaced
+stays readable in the bytes underneath. A redacted file is written afresh
+from the objects the document still reaches, so what is not written is
+gone.</p>
+<div class="note warn">
+<p><strong>Redaction removes content, not structure.</strong> A string can
+also live somewhere that is not content — a font's <code>/BaseFont</code>
+name, an embedded file's name. Those are left alone. Check
+<code>Marks()</code> before writing and, where it matters, search the
+output.</p>
+</div>
+
+<h2 id="rewrite">Rewriting &amp; repair</h2>
+<p><code>Rewrite</code> emits a document as a fresh file holding only the
+objects it still reaches. Superseded objects left behind by earlier
+incremental updates are dropped, which shrinks the file and removes
+content that was replaced but never deleted.</p>
+<pre><code>r, _ := gopdf.<span class="f">Open</span>(<span class="s">"grown-by-updates.pdf"</span>)
+out, _ := os.<span class="f">Create</span>(<span class="s">"clean.pdf"</span>)
+gopdf.<span class="f">Rewrite</span>(r, out)</code></pre>
+<p>An encrypted source is written out unencrypted: the objects are
+decrypted in order to be read, and re-encrypting them is a decision to
+take deliberately rather than a side effect.</p>
+
+<h3>Damaged files</h3>
+<p>Real files get their offsets wrong — a producer miscounts a header, a
+transfer rewrites line endings, bytes arrive in front of
+<code>%PDF</code>. Every offset the cross-reference table gives is checked
+against the bytes it points at, and the ones that are wrong are corrected
+from a scan of the file. Entries are corrected individually, so whatever
+the table got right is kept; when it cannot be parsed at all, the whole
+table is rebuilt from the scan and object streams are expanded to recover
+what they hold.</p>
+<pre><code>r, _ := gopdf.<span class="f">Open</span>(<span class="s">"damaged.pdf"</span>)
+<span class="k">if</span> r.<span class="f">Repaired</span>() {
+	<span class="c">// The file's table was unusable and the objects were found by</span>
+	<span class="c">// scanning. It reads, but anything the scan could not reach is gone.</span>
+}</code></pre>
+
 <h2 id="forms-read">Reading form fields</h2>
 <pre><code>r, _ := gopdf.<span class="f">Open</span>(<span class="s">"application.pdf"</span>)
 <span class="k">if</span> r.<span class="f">HasForm</span>() {
@@ -812,6 +897,9 @@ fields editable.</li>
 <code>.otf</code> embeds are larger than TrueType ones.</li>
 <li>Encrypted files are read, but public-key (certificate) security
 handlers are not supported.</li>
+<li>Redaction removes content, not structural names such as a font's
+<code>/BaseFont</code>. Vector artwork straddling the edge of an area is
+covered but not deleted; <code>PartialArtwork</code> reports it.</li>
 <li>Signing produces the blob and the byte range; trust decisions and
 timestamps from a TSA are left to the caller.</li>
 </ul>

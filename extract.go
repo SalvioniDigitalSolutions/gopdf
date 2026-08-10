@@ -298,6 +298,16 @@ func (fd *fontDecoders) get(name Name) *fontDecoder {
 // decode converts a content-stream string to text using ToUnicode when
 // available, falling back to the font's simple encoding.
 func (d *fontDecoder) decode(s String) string {
+	text, _ := d.decodeSpans(s)
+	return text
+}
+
+// decodeSpans decodes a string and also reports how many bytes of text
+// each character code produced. Mapping a range of the text back to the
+// codes that drew it is what lets a caller remove some characters of a
+// run without re-encoding the ones it keeps.
+func (d *fontDecoder) decodeSpans(s String) (string, []int) {
+	var spans []int
 	var sb strings.Builder
 	step := 1
 	if d.cid {
@@ -308,23 +318,20 @@ func (d *fontDecoder) decode(s String) string {
 		for k := 0; k < step; k++ {
 			code = code<<8 | uint32(s[i+k])
 		}
-		if d.toUnicode != nil {
-			if t, ok := d.toUnicode[code]; ok {
-				sb.WriteString(t)
-				continue
-			}
-		}
-		if d.encoding != nil {
+		before := sb.Len()
+		switch {
+		case d.toUnicode != nil && d.toUnicode[code] != "":
+			sb.WriteString(d.toUnicode[code])
+		case d.encoding != nil:
 			if r := d.encoding[byte(code)]; r != 0 {
 				sb.WriteRune(r)
 			}
-			continue
-		}
-		if !d.cid && code >= 32 && code < 127 {
+		case !d.cid && code >= 32 && code < 127:
 			sb.WriteByte(byte(code)) // last-resort ASCII assumption
 		}
+		spans = append(spans, sb.Len()-before)
 	}
-	return sb.String()
+	return sb.String(), spans
 }
 
 // parseToUnicodeCMap extracts bfchar and bfrange mappings from a ToUnicode

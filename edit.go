@@ -56,6 +56,14 @@ type TextRun struct {
 	fillOp      string  // the fill-colour operation in force, verbatim
 	replaced    bool
 
+	// codes holds the character codes the run originally drew, and
+	// codeText how many bytes of Text each of them produced. Together
+	// they let a range of the text be mapped back to the codes behind
+	// it, so characters can be removed without re-encoding the rest.
+	codes    []byte
+	codeStep int
+	codeText []int
+
 	// style carries a pending restyle, applied when the run is written.
 	style *TextStyle
 	// owner registers new fonts when a restyle changes the typeface.
@@ -365,10 +373,13 @@ func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth
 		var text strings.Builder
 		var advanceEm float64
 		var encoded []byte
+		var codeText []int
 		for _, piece := range pieces {
 			switch v := piece.(type) {
 			case String:
-				text.WriteString(fi.decoder.decode(v))
+				part, spans := fi.decoder.decodeSpans(v)
+				text.WriteString(part)
+				codeText = append(codeText, spans...)
 				encoded = append(encoded, v...)
 				fi.observe(v)
 				advanceEm += fi.stringWidth(v, st.charSpacing, st.wordSpacing, st.fontSize)
@@ -400,6 +411,9 @@ func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth
 			FontSize:    st.fontSize * scale,
 			FontName:    string(st.fontName),
 			Width:       widthText * math.Hypot(full[0], full[1]),
+			codes:       encoded,
+			codeStep:    codeStepFor(fi),
+			codeText:    codeText,
 			target:      target,
 			start:       opStart,
 			end:         end,
@@ -765,4 +779,12 @@ func applySplices(data []byte, splices []splice) ([]byte, error) {
 		prev = s.end
 	}
 	return append(out, data[prev:]...), nil
+}
+
+// codeStepFor returns how many bytes one character code occupies.
+func codeStepFor(fi *fontInfo) int {
+	if fi != nil && fi.cid {
+		return 2
+	}
+	return 1
 }
