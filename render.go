@@ -40,6 +40,12 @@ type RenderOpts struct {
 	// IncludeVector draws paths — fills, strokes and shadings. This is
 	// the point; with everything off the result is blank.
 	IncludeVector bool
+	// IncludeAnnotations draws the appearance streams of the page's
+	// annotations: a filled form field, a signature block, a stamp, a
+	// highlight, a sticky note. Much of what a reader sees is not in the
+	// content stream at all, so a render of a form without this is a
+	// render of an empty form.
+	IncludeAnnotations bool
 	// Transparent leaves untouched pixels clear instead of white.
 	Transparent bool
 	// SubstituteFont supplies a font program for a font the document
@@ -121,7 +127,8 @@ func (r *Reader) RenderPageDetail(page int, opts RenderOpts) (img image.Image, r
 	if !opts.Transparent {
 		fillWhite(dst)
 	}
-	if !opts.IncludeVector && !opts.IncludeRasterImages && !opts.IncludeText {
+	if !opts.IncludeVector && !opts.IncludeRasterImages && !opts.IncludeText &&
+		!opts.IncludeAnnotations {
 		return dst, rep, nil
 	}
 
@@ -137,8 +144,12 @@ func (r *Reader) RenderPageDetail(page int, opts RenderOpts) (img image.Image, r
 		base = rotationMatrix(pi.rotate, size, scale).mul(base)
 	}
 
-	rn := &renderer{r: r, dst: dst, w: w, h: h, opts: opts, baseCTM: base}
+	rn := &renderer{r: r, dst: dst, w: w, h: h, opts: opts, baseCTM: base,
+		hidden: hiddenLayers(r)}
 	rn.run(content, pi.resources, base, newRenderState(), 0)
+	if opts.IncludeAnnotations {
+		rn.drawAnnotations(pi.dict, base, 0)
+	}
 	rep = RenderReport{Glyphs: rn.text.drawn, Missing: rn.text.missing}
 	return dst, rep, nil
 }
@@ -219,6 +230,9 @@ type renderer struct {
 	// pattern is placed in however deep it is used.
 	baseCTM   matrix
 	maskDepth int
+	// hidden holds the optional-content groups the document switches
+	// off, by object number.
+	hidden map[int]bool
 	// text carries the font cache and the pending text clip across a
 	// content stream.
 	text textRenderer
@@ -252,6 +266,9 @@ func (rn *renderer) run(content []byte, resources any, base matrix, gs renderSta
 	pendingClip := 0 // 0 none, 1 nonzero, 2 even-odd
 	ts := newGlyphState()
 	var tsStack []glyphState
+	// mcDepth counts marked-content nesting; hideFrom is the depth a
+	// hidden layer began at, and everything until its EMC is skipped.
+	mcDepth, hideFrom := 0, 0
 
 	tokens := tokenizeContent(content)
 	var operands []contentToken
@@ -281,6 +298,35 @@ func (rn *renderer) run(content []byte, resources any, base matrix, gs renderSta
 				operands = append(operands, tok)
 			}
 			continue
+		}
+		// A layer switched off is not drawn, but its state still has to
+		// be followed: what it leaves behind applies to what comes after.
+		if hideFrom != 0 {
+			switch string(op) {
+			case "BDC", "BMC":
+				mcDepth++
+				operands = operands[:0]
+				continue
+			case "EMC":
+				if hideFrom == mcDepth {
+					hideFrom = 0
+				}
+				if mcDepth > 0 {
+					mcDepth--
+				}
+				operands = operands[:0]
+				continue
+			case "f", "F", "f*", "S", "s", "B", "B*", "b", "b*", "sh", "Do",
+				"Tj", "TJ", "'", "\"", "EI":
+				// The painting operators are the ones to drop. A path
+				// operator that also ends a path still has to end it.
+				switch string(op) {
+				case "f", "F", "f*", "S", "s", "B", "B*", "b", "b*":
+					rn.endPath(&path, &gs, &pendingClip)
+				}
+				operands = operands[:0]
+				continue
+			}
 		}
 		switch string(op) {
 		case "q":
@@ -434,6 +480,21 @@ func (rn *renderer) run(content []byte, resources any, base matrix, gs renderSta
 				if n, ok := operands[0].val.(Name); ok {
 					rn.doXObject(res, n, gs, depth)
 				}
+			}
+
+		// --- marked content ---
+		case "BDC", "BMC":
+			mcDepth++
+			if hideFrom == 0 && len(operands) >= 2 &&
+				operands[0].val == Name("OC") && rn.ocHidden(res, operands[1].val) {
+				hideFrom = mcDepth
+			}
+		case "EMC":
+			if hideFrom == mcDepth {
+				hideFrom = 0
+			}
+			if mcDepth > 0 {
+				mcDepth--
 			}
 
 		// --- text ---
@@ -683,6 +744,9 @@ func (rn *renderer) doXObject(res Dict, name Name, gs renderState, depth int) {
 	entry := xobjects[name]
 	stm, ok := rn.r.resolve(entry).(*rawStream)
 	if !ok {
+		return
+	}
+	if rn.layerHidden(stm.dict["OC"]) {
 		return
 	}
 	switch rn.r.resolve(stm.dict["Subtype"]) {

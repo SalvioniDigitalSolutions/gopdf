@@ -1514,3 +1514,281 @@ func TestRadialParam(t *testing.T) {
 		t.Error("a circle of negative radius was painted")
 	}
 }
+
+// TestRenderAnnotations: much of what a reader sees is not in the content
+// stream. A page rendered without its annotations is a form with nothing
+// filled in.
+func TestRenderAnnotations(t *testing.T) {
+	doc := New()
+	doc.Compress = false
+	doc.AddPage()
+	src := docBytes(t, doc)
+
+	r := NewReaderOrFail(t, src)
+	u := Update(r)
+	// A stamp drawn in its own space, placed by its rectangle.
+	ap := u.AddObject(NewStream(Dict{
+		"Type": Name("XObject"), "Subtype": Name("Form"),
+		"BBox": Array{0.0, 0.0, 10.0, 10.0},
+	}, []byte("0 0 0 rg 0 0 10 10 re f\n")))
+	annot := u.AddObject(Dict{
+		"Type": Name("Annot"), "Subtype": Name("Square"),
+		"Rect": Array{100.0, 600.0, 200.0, 700.0},
+		"AP":   Dict{"N": ap},
+	})
+	if err := u.SetPageEntry(0, "Annots", Array{annot}); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if _, err := u.WriteTo(&buf); err != nil {
+		t.Fatal(err)
+	}
+	out := NewReaderOrFail(t, buf.Bytes())
+
+	// Without the switch the page is blank.
+	off, err := out.RenderPage(0, RenderOpts{DPI: 100, IncludeVector: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inkFraction(off) != 0 {
+		t.Error("an annotation was drawn without being asked for")
+	}
+
+	img, err := out.RenderPage(0, RenderOpts{
+		DPI: 100, IncludeVector: true, IncludeAnnotations: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The 10-by-10 stamp is stretched to fill the 100-by-100 rectangle,
+	// which is the placement rule that matters: drawing it at its own
+	// size would leave a tenth of the area painted.
+	if v, _, _, _ := at(t, img, 100, 150, 841.89-650); v != 0 {
+		t.Errorf("the middle of the annotation = %d, want it painted", v)
+	}
+	if v, _, _, _ := at(t, img, 100, 105, 841.89-605); v != 0 {
+		t.Errorf("the corner of the annotation = %d, want it painted", v)
+	}
+	if v, _, _, _ := at(t, img, 100, 250, 841.89-650); v != 255 {
+		t.Errorf("outside the rectangle = %d, want the page untouched", v)
+	}
+}
+
+// TestRenderAnnotationsSkipped covers the ones never drawn: hidden, not
+// for the screen, and the popup window behind a sticky note.
+func TestRenderAnnotationsSkipped(t *testing.T) {
+	const (
+		hidden = 1 << 1
+		noView = 1 << 5
+	)
+	for _, c := range []struct {
+		name    string
+		subtype Name
+		flags   int64
+	}{
+		{"hidden", "Square", hidden},
+		{"not for the screen", "Square", noView},
+		{"a popup window", "Popup", 0},
+		{"a link", "Link", 0},
+	} {
+		doc := New()
+		doc.Compress = false
+		doc.AddPage()
+		r := NewReaderOrFail(t, docBytes(t, doc))
+		u := Update(r)
+		ap := u.AddObject(NewStream(Dict{
+			"Type": Name("XObject"), "Subtype": Name("Form"),
+			"BBox": Array{0.0, 0.0, 10.0, 10.0},
+		}, []byte("0 0 0 rg 0 0 10 10 re f\n")))
+		annot := u.AddObject(Dict{
+			"Type": Name("Annot"), "Subtype": c.subtype,
+			"Rect": Array{100.0, 600.0, 200.0, 700.0},
+			"F":    c.flags, "AP": Dict{"N": ap},
+		})
+		if err := u.SetPageEntry(0, "Annots", Array{annot}); err != nil {
+			t.Fatal(err)
+		}
+		var buf bytes.Buffer
+		if _, err := u.WriteTo(&buf); err != nil {
+			t.Fatal(err)
+		}
+		img, err := NewReaderOrFail(t, buf.Bytes()).RenderPage(0, RenderOpts{
+			DPI: 100, IncludeVector: true, IncludeAnnotations: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ink := inkFraction(img); ink != 0 {
+			t.Errorf("%s was drawn (%.4f of the page)", c.name, ink)
+		}
+	}
+}
+
+// TestRenderAnnotationState: a checkbox carries an appearance per state
+// and /AS says which one it is in.
+func TestRenderAnnotationState(t *testing.T) {
+	render := func(as any) float64 {
+		doc := New()
+		doc.Compress = false
+		doc.AddPage()
+		r := NewReaderOrFail(t, docBytes(t, doc))
+		u := Update(r)
+		on := u.AddObject(NewStream(Dict{
+			"Type": Name("XObject"), "Subtype": Name("Form"),
+			"BBox": Array{0.0, 0.0, 10.0, 10.0},
+		}, []byte("0 0 0 rg 0 0 10 10 re f\n")))
+		off := u.AddObject(NewStream(Dict{
+			"Type": Name("XObject"), "Subtype": Name("Form"),
+			"BBox": Array{0.0, 0.0, 10.0, 10.0},
+		}, []byte("\n")))
+		a := Dict{
+			"Type": Name("Annot"), "Subtype": Name("Widget"),
+			"Rect": Array{100.0, 600.0, 200.0, 700.0},
+			"AP":   Dict{"N": Dict{"On": on, "Off": off}},
+		}
+		if as != nil {
+			a["AS"] = as
+		}
+		annot := u.AddObject(a)
+		if err := u.SetPageEntry(0, "Annots", Array{annot}); err != nil {
+			t.Fatal(err)
+		}
+		var buf bytes.Buffer
+		if _, err := u.WriteTo(&buf); err != nil {
+			t.Fatal(err)
+		}
+		img, err := NewReaderOrFail(t, buf.Bytes()).RenderPage(0, RenderOpts{
+			DPI: 100, IncludeVector: true, IncludeAnnotations: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return inkFraction(img)
+	}
+	if ink := render(Name("On")); ink == 0 {
+		t.Error("the On state drew nothing")
+	}
+	if ink := render(Name("Off")); ink != 0 {
+		t.Errorf("the Off state painted %.4f of the page", ink)
+	}
+	// With two states and no /AS there is no way to know which; drawing
+	// neither is the answer that cannot be wrong.
+	if ink := render(nil); ink != 0 {
+		t.Errorf("an ambiguous state painted %.4f of the page", ink)
+	}
+}
+
+// TestRenderOptionalContentOff: a layer the document switches off must
+// not be painted. Ignoring that does not miss a nicety — it paints a
+// draft stamp over the page the author meant to be seen.
+func TestRenderOptionalContentOff(t *testing.T) {
+	build := func(off bool) float64 {
+		doc := New()
+		doc.Compress = false
+		p := doc.AddPage()
+		p.op("/OC /L1 BDC 0 0 0 rg 100 600 200 100 re f EMC")
+		p.op("0 0 0 rg 100 400 50 50 re f") // always visible
+		src := docBytes(t, doc)
+
+		r := NewReaderOrFail(t, src)
+		u := Update(r)
+		ocg := u.AddObject(Dict{"Type": Name("OCG"), "Name": String("Draft")})
+		cfg := Dict{"Order": Array{ocg}}
+		if off {
+			cfg["OFF"] = Array{ocg}
+		}
+		if err := u.SetCatalogEntry("OCProperties", Dict{
+			"OCGs": Array{ocg}, "D": cfg,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := u.SetPageEntry(0, "Resources", mergeInto(t, r,
+			Dict{"Properties": Dict{"L1": ocg}})); err != nil {
+			t.Fatal(err)
+		}
+		var buf bytes.Buffer
+		if _, err := u.WriteTo(&buf); err != nil {
+			t.Fatal(err)
+		}
+		img, err := NewReaderOrFail(t, buf.Bytes()).RenderPage(0,
+			RenderOpts{DPI: 100, IncludeVector: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return inkFraction(img)
+	}
+	on, off := build(false), build(true)
+	if on <= 0 || off <= 0 {
+		t.Fatalf("ink on=%.4f off=%.4f; the fixture drew nothing", on, off)
+	}
+	if off >= on {
+		t.Errorf("the layer was switched off but the page has as much ink: %.4f vs %.4f",
+			off, on)
+	}
+	// What is left is the rectangle outside the layer, which must survive.
+	if off < 0.001 {
+		t.Errorf("switching the layer off also removed the rest of the page (%.4f)", off)
+	}
+}
+
+// TestRenderOptionalContentXObject: an XObject can carry its own /OC, and
+// a form under a switched-off layer is not drawn however it is reached.
+func TestRenderOptionalContentXObject(t *testing.T) {
+	doc := New()
+	doc.Compress = false
+	p := doc.AddPage()
+	p.op("q /Fm0 Do Q")
+	src := docBytes(t, doc)
+
+	r := NewReaderOrFail(t, src)
+	u := Update(r)
+	ocg := u.AddObject(Dict{"Type": Name("OCG"), "Name": String("Hidden")})
+	form := u.AddObject(NewStream(Dict{
+		"Type": Name("XObject"), "Subtype": Name("Form"),
+		"BBox": Array{0.0, 0.0, 600.0, 800.0},
+		"OC":   ocg,
+	}, []byte("0 0 0 rg 100 600 200 100 re f\n")))
+	if err := u.SetCatalogEntry("OCProperties", Dict{
+		"OCGs": Array{ocg}, "D": Dict{"OFF": Array{ocg}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := u.SetPageEntry(0, "Resources", mergeInto(t, r,
+		Dict{"XObject": Dict{"Fm0": form}})); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if _, err := u.WriteTo(&buf); err != nil {
+		t.Fatal(err)
+	}
+	img, err := NewReaderOrFail(t, buf.Bytes()).RenderPage(0,
+		RenderOpts{DPI: 100, IncludeVector: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ink := inkFraction(img); ink != 0 {
+		t.Errorf("a form on a switched-off layer painted %.4f of the page", ink)
+	}
+}
+
+// mergeInto adds entries to the first page's resource dictionary.
+func mergeInto(t *testing.T, r *Reader, extra Dict) Dict {
+	t.Helper()
+	res, _ := r.InheritedPageValue(0, "Resources").(Dict)
+	merged := res.Clone()
+	if merged == nil {
+		merged = Dict{}
+	}
+	for k, v := range extra {
+		if existing, ok := r.Resolve(merged[k]).(Dict); ok {
+			combined := existing.Clone()
+			for ak, av := range v.(Dict) {
+				combined[ak] = av
+			}
+			merged[k] = combined
+			continue
+		}
+		merged[k] = v
+	}
+	return merged
+}
