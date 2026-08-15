@@ -177,6 +177,7 @@ footer { border-top: 1px solid var(--border); margin-top: 4rem; padding-top: 1.5
     <li><a href="#encryption">Encryption</a></li>
     <li><a href="#signatures">Digital signatures</a></li>
     <li><a href="#design">Design notes</a></li>
+    <li><a href="#render">Rendering the vector layer</a></li>
     <li><a href="#apimap">API map</a></li>
     <li><a href="#limits">Limitations</a></li>
     <li><a href="https://pkg.go.dev/github.com/SalvioniDigitalSolutions/gopdf">API reference ↗</a></li>
@@ -1108,6 +1109,53 @@ written in the clear, as the specification requires.</li>
 and font parser are continuously fuzzed with a checked-in corpus.</li>
 </ul>
 
+<h2 id="render">Rendering the vector layer</h2>
+<p>Some of what a page holds has no other form. Text can be extracted and
+a photograph pulled out and re-anchored, but a logo drawn as two hundred
+Bézier curves, a rule, a checkbox, a watermark across the diagonal —
+those are instructions, and the only way to carry them anywhere else is to
+draw them.</p>
+<pre><code>r, _ := gopdf.<span class="f">Open</span>(<span class="s">"contract.pdf"</span>)
+img, err := r.<span class="f">RenderPage</span>(<span class="n">0</span>, gopdf.RenderOpts{
+	DPI:           <span class="n">150</span>,
+	IncludeVector: <span class="k">true</span>,   <span class="c">// paths, fills, strokes, shadings</span>
+	Transparent:   <span class="k">true</span>,   <span class="c">// clear where nothing was painted</span>
+})</code></pre>
+<p>With text and photographs off, what comes back is the artwork alone —
+a layer that can sit behind live, editable, redactable text rather than
+replacing it.</p>
+
+<h3>What it draws</h3>
+<table>
+<tbody>
+<tr><td>Paths</td><td><code>m l c v y re h</code>, flattened and filled under either winding rule.</td></tr>
+<tr><td>Strokes</td><td>Width, butt/round/square caps, miter/round/bevel joins with the miter limit honoured, and dash patterns with a phase.</td></tr>
+<tr><td>Clipping</td><td><code>W</code> and <code>W*</code>, kept as a coverage mask so a clipped edge is as smooth as a painted one.</td></tr>
+<tr><td>State</td><td><code>q</code>/<code>Q</code>, <code>cm</code>, and the constant alpha an <code>ExtGState</code> sets.</td></tr>
+<tr><td>Colour</td><td>Gray, RGB and CMYK; ICC by component count; indexed palettes; separations through their tint function.</td></tr>
+<tr><td>Shading</td><td>Axial gradients, evaluated through sampled, exponential and stitching functions. Other kinds are painted as one colour from the middle of their own ramp rather than left as a hole.</td></tr>
+<tr><td>Forms</td><td>XObjects recursed into, with their matrix composed and their bounding box clipping what they draw.</td></tr>
+<tr><td>Images</td><td>Off by default; <code>IncludeRasterImages</code> draws them, sampled through the inverse of their placement so a rotated one lands square.</td></tr>
+</tbody>
+</table>
+
+<h3>What it does not</h3>
+<div class="note warn">
+<p><strong>Text is not drawn, and asking for it is an error rather than a
+silent omission.</strong> Rendering type needs a font rasterizer this
+package does not have, and a page quietly missing its words would be
+worse than one that said so. Soft masks, tiling patterns and blend modes
+are also outside this: a page using them renders without them.</p>
+</div>
+
+<h3>How close it is</h3>
+<p>Measured against <code>pdftoppm</code> on a page of fills, strokes,
+dashes, joins, a gradient and a clip, the mean difference is 0.35 of 765
+and fewer than one pixel in five hundred differs enough to see — those
+being the anti-aliased edges. Across 1,200 real documents nothing failed,
+and the one-sided check that matters — ink where the reference has none —
+has a median of zero.</p>
+
 <h2 id="apimap">API map</h2>
 <p>What to reach for, by task. Every signature is on
 <a href="https://pkg.go.dev/github.com/SalvioniDigitalSolutions/gopdf">pkg.go.dev</a>;
@@ -1134,6 +1182,7 @@ this is the shape of it.</p>
 <tr><td><code>NumPages</code>, <code>PageSize</code>, <code>PageText</code>, <code>Info</code></td><td>The basics.</td></tr>
 <tr><td><code>PageTextFragments</code> → <code>TextFragment</code></td><td>Text one show-text operation at a time, with its baseline, advance, <code>/BaseFont</code>, effective size and render mode. Content-stream order, forms composed. <code>Invisible()</code> marks the OCR layer under a scan.</td></tr>
 <tr><td><code>IsEncrypted</code>, <code>Repaired</code>, <code>HasForm</code>, <code>HasSignatures</code></td><td>What kind of file this is.</td></tr>
+<tr><td><code>RenderPage</code> → <code>RenderOpts</code></td><td>Draw the page's vector layer to an image.</td></tr>
 <tr><td><code>Annotations</code>, <code>PageImages</code>, <code>FormFields</code>, <code>Signatures</code></td><td>What it holds. An <code>ImageRef</code> carries its draw <code>Matrix</code>, with <code>Rotation()</code> and <code>Upright()</code>, so a turned image reports its angle rather than a box larger than the picture.</td></tr>
 </tbody>
 </table>

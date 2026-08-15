@@ -102,6 +102,11 @@ go get github.com/SalvioniDigitalSolutions/gopdf
 - **OCR-driven redaction**: plug in an engine (a tesseract adapter ships
   in the repo) and text rules also reach words inside a scan — pixels
   overwritten, a token drawn in their place, then read again to prove it
+- **Vector rendering**: `RenderPage` draws a page's artwork — paths,
+  fills, strokes with caps, joins and dashes, clips, colour spaces and
+  axial shadings — to an image, so a logo or a watermark that exists only
+  as instructions can travel as pixels behind live text. Text is
+  deliberately not drawn
 - **Repairs damaged files**: a wrong `startxref`, bytes before the header
   or a broken table are recovered by scanning for the objects
 - Reads encrypted files (RC4, AES-128, AES-256) with either password
@@ -399,7 +404,7 @@ go run ./examples/redact -in case.pdf -list -text "Ada Lovelace"
 Coordinates are in points (1/72 inch) with the origin at the **top-left**
 of the page; `Mm`, `Cm` and `Inch` convert other units.
 
-- **311 tests** at **86% statement coverage**, covering the writer, the
+- **347 tests** at **85% statement coverage**, covering the writer, the
   parser, the font subsetter, the filters, encryption, editing, reflow,
   flow, forms, signatures and redaction
 - **Text extraction measured against `pdftotext`** over 918 real
