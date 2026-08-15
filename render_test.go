@@ -1,6 +1,7 @@
 package gopdf
 
 import (
+	"bytes"
 	"image"
 	"math"
 	"testing"
@@ -774,5 +775,221 @@ func TestRenderShadingFallsBackToSolid(t *testing.T) {
 	// And it stays inside the clip.
 	if r, _, _, _ := at(t, img, 100, 300, 410); r != 255 {
 		t.Errorf("the fallback escaped the clip: %d", r)
+	}
+}
+
+// TestRenderSoftMask covers a shape faded by a luminosity mask. Drawn
+// without the mask it is a solid slab, which is how a watermark ruins a
+// page.
+func TestRenderSoftMask(t *testing.T) {
+	// The mask is a form painting mid grey over the left half. A stream
+	// has to be an indirect object, so the page is built and then the
+	// objects added to it.
+	doc := New()
+	doc.Compress = false
+	page := doc.AddPage()
+	page.op("/GSm gs 0 0 0 rg 60 600 400 100 re f")
+	src := withResources(t, docBytes(t, doc), func(u *Updater) Dict {
+		g := u.add(&rawStream{
+			dict: Dict{
+				"Type": Name("XObject"), "Subtype": Name("Form"),
+				"BBox":  Array{0.0, 0.0, 600.0, 850.0},
+				"Group": Dict{"S": Name("Transparency")},
+			},
+			data: []byte("0.5 g 0 0 250 850 re f\n"),
+		})
+		return Dict{"ExtGState": Dict{"GSm": Dict{
+			"Type":  Name("ExtGState"),
+			"SMask": Dict{"S": Name("Luminosity"), "G": Ref{Num: g}},
+		}}}
+	})
+
+	r := NewReaderOrFail(t, src)
+	img, err := r.RenderPage(0, RenderOpts{DPI: 100, IncludeVector: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	y := 841.89 - 650
+	// Under the grey half the black shows at about half strength.
+	masked, _, _, _ := at(t, img, 100, 150, y)
+	if masked < 100 || masked > 160 {
+		t.Errorf("under a mid-grey mask = %d, want about 128", masked)
+	}
+	// Beyond the mask nothing was painted: the mask is black there.
+	clear, _, _, _ := at(t, img, 100, 400, y)
+	if clear != 255 {
+		t.Errorf("outside the mask = %d, want the page untouched", clear)
+	}
+}
+
+// withResources rebuilds a document with extra entries merged into the
+// first page's resources, adding whatever indirect objects they need.
+func withResources(t *testing.T, src []byte, build func(*Updater) Dict) []byte {
+	t.Helper()
+	r := NewReaderOrFail(t, src)
+	u := Update(r)
+	extra := build(u)
+	pi := r.pages[0]
+	res, _ := r.resolve(pi.resources).(Dict)
+	merged := cloneDict(res)
+	for k, v := range extra {
+		if existing, ok := r.resolve(merged[k]).(Dict); ok {
+			combined := cloneDict(existing)
+			if add, ok := v.(Dict); ok {
+				for ak, av := range add {
+					combined[ak] = av
+				}
+			}
+			merged[k] = combined
+			continue
+		}
+		merged[k] = v
+	}
+	pd := cloneDict(pi.dict)
+	pd["Resources"] = merged
+	num, _ := r.pageObjectNumber(0)
+	u.set(num, pd)
+	var buf bytes.Buffer
+	if _, err := u.WriteTo(&buf); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestRenderSoftMaskNoneClearsIt(t *testing.T) {
+	doc := New()
+	doc.Compress = false
+	page := doc.AddPage()
+	page.op("/GSm gs /GSn gs 0 0 0 rg 60 600 200 100 re f")
+	src := withResources(t, docBytes(t, doc), func(u *Updater) Dict {
+		g := u.add(&rawStream{
+			dict: Dict{"Type": Name("XObject"), "Subtype": Name("Form"),
+				"BBox": Array{0.0, 0.0, 600.0, 850.0}},
+			data: []byte("0 g 0 0 100 100 re f\n"),
+		})
+		return Dict{"ExtGState": Dict{
+			"GSm": Dict{"SMask": Dict{"S": Name("Luminosity"), "G": Ref{Num: g}}},
+			"GSn": Dict{"SMask": Name("None")},
+		}}
+	})
+	r := NewReaderOrFail(t, src)
+	img, err := r.RenderPage(0, RenderOpts{DPI: 100, IncludeVector: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, _, _, _ := at(t, img, 100, 150, 841.89-650); v != 0 {
+		t.Errorf("after /SMask /None the fill should be solid, got %d", v)
+	}
+}
+
+// TestRenderTilingPattern covers a hatch. Painted as a flat colour it is
+// whatever was set last, which for a light hatch can be solid black.
+func TestRenderTilingPattern(t *testing.T) {
+	doc := New()
+	doc.Compress = false
+	page := doc.AddPage()
+	page.op("/Pattern cs /P1 scn 60 600 200 120 re f")
+	src := withResources(t, docBytes(t, doc), func(u *Updater) Dict {
+		p := u.add(&rawStream{
+			dict: Dict{
+				"Type": Name("Pattern"), "PatternType": int64(1),
+				"PaintType": int64(1), "TilingType": int64(1),
+				"BBox":  Array{0.0, 0.0, 20.0, 20.0},
+				"XStep": 20.0, "YStep": 20.0,
+				"Resources": Dict{},
+			},
+			// A small black square in a mostly empty cell.
+			data: []byte("0 g 0 0 8 8 re f\n"),
+		})
+		return Dict{"Pattern": Dict{"P1": Ref{Num: p}}}
+	})
+	r := NewReaderOrFail(t, src)
+	img, err := r.RenderPage(0, RenderOpts{DPI: 100, IncludeVector: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The area is neither blank nor solid: count how much ink landed.
+	s := 100.0 / 72
+	ink, tot := 0, 0
+	for y := int((841.89 - 720) * s); y < int((841.89-600)*s); y++ {
+		for x := int(60 * s); x < int(260*s); x++ {
+			cr, _, _, _ := img.At(x, y).RGBA()
+			tot++
+			if cr>>8 < 128 {
+				ink++
+			}
+		}
+	}
+	frac := float64(ink) / float64(tot)
+	if frac < 0.05 {
+		t.Errorf("the pattern painted almost nothing (%.3f)", frac)
+	}
+	if frac > 0.60 {
+		t.Errorf("the pattern painted almost everything (%.3f); a hatch is mostly gaps", frac)
+	}
+	// And it stayed inside the path.
+	if v, _, _, _ := at(t, img, 100, 400, 841.89-650); v != 255 {
+		t.Errorf("the pattern escaped its path: %d", v)
+	}
+}
+
+func TestRenderShadingPattern(t *testing.T) {
+	doc := New()
+	doc.Compress = false
+	page := doc.AddPage()
+	page.op("/Pattern cs /S1 scn 60 600 400 100 re f")
+	src := withResources(t, docBytes(t, doc), func(u *Updater) Dict {
+		return Dict{"Pattern": Dict{"S1": Dict{
+			"Type": Name("Pattern"), "PatternType": int64(2),
+			"Shading": Dict{
+				"ShadingType": int64(2),
+				"ColorSpace":  Name("DeviceRGB"),
+				"Coords":      Array{60.0, 0.0, 460.0, 0.0},
+				"Extend":      Array{true, true},
+				"Function": Dict{"FunctionType": int64(2), "Domain": Array{0.0, 1.0},
+					"C0": Array{1.0, 0.0, 0.0}, "C1": Array{0.0, 0.0, 1.0}, "N": 1.0},
+			},
+		}}}
+	})
+	r := NewReaderOrFail(t, src)
+	img, err := r.RenderPage(0, RenderOpts{DPI: 100, IncludeVector: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	y := 841.89 - 650
+	lr, _, lb, _ := at(t, img, 100, 80, y)
+	rr, _, rb, _ := at(t, img, 100, 440, y)
+	if lr < 180 || lb > 80 {
+		t.Errorf("the left of the shading pattern = r%d b%d, want red", lr, lb)
+	}
+	if rr > 80 || rb < 180 {
+		t.Errorf("the right = r%d b%d, want blue", rr, rb)
+	}
+}
+
+func TestCombineMasks(t *testing.T) {
+	a := &clipMask{w: 2, h: 1, a: []float32{1, 0.5}}
+	b := &clipMask{w: 2, h: 1, a: []float32{0.5, 0.5}}
+	if got := combineMasks(nil, b); got != b {
+		t.Error("no clip should give back the mask")
+	}
+	if got := combineMasks(a, nil); got != a {
+		t.Error("no mask should give back the clip")
+	}
+	got := combineMasks(a, b)
+	if got.a[0] != 0.5 || got.a[1] != 0.25 {
+		t.Errorf("combined = %v", got.a)
+	}
+	// Neither original was disturbed.
+	if a.a[0] != 1 || b.a[0] != 0.5 {
+		t.Error("combining changed an input")
+	}
+}
+
+func TestPatternRange(t *testing.T) {
+	// An identity placement, a 10-unit step, a box from 0 to 25.
+	lo, hi := patternRange(identityMatrix, 0, 0, 25, 25, 10, 10)
+	if lo[0] > 0 || lo[1] > 0 || hi[0] < 2 || hi[1] < 2 {
+		t.Errorf("range %v..%v does not cover the box", lo, hi)
 	}
 }

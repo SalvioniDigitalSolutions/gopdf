@@ -212,8 +212,13 @@ func (rn *renderer) shade(res Dict, name Name, gs *renderState) {
 	if !ok {
 		return
 	}
+	rn.shadeDict(shadings[name], gs)
+}
+
+// shadeDict paints whatever shading an object describes.
+func (rn *renderer) shadeDict(v any, gs *renderState) {
 	var d Dict
-	switch t := rn.r.resolve(shadings[name]).(type) {
+	switch t := rn.r.resolve(v).(type) {
 	case Dict:
 		d = t
 	case *rawStream:

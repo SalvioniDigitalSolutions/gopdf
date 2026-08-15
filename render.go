@@ -108,7 +108,7 @@ func (r *Reader) RenderPage(page int, opts RenderOpts) (img image.Image, err err
 		base = rotationMatrix(pi.rotate, size, scale).mul(base)
 	}
 
-	rn := &renderer{r: r, dst: dst, w: w, h: h, opts: opts}
+	rn := &renderer{r: r, dst: dst, w: w, h: h, opts: opts, baseCTM: base}
 	rn.run(content, pi.resources, base, newRenderState(), 0)
 	return dst, nil
 }
@@ -145,6 +145,13 @@ type renderState struct {
 	clip        *clipMask
 	fillSpace   *colorSpace
 	strokeSpace *colorSpace
+	// baseClip is the clip without any soft mask, so a later /SMask
+	// replaces the mask rather than compounding with the last one.
+	baseClip *clipMask
+	softMask *clipMask
+	// fillPattern names the tiling or shading pattern a fill uses, when
+	// the fill colour space is /Pattern.
+	fillPattern Name
 }
 
 func newRenderState() renderState {
@@ -174,11 +181,26 @@ func (c *clipMask) at(x, y int) float64 {
 
 // renderer walks a content stream and paints what it says.
 type renderer struct {
-	r     *Reader
-	dst   *image.NRGBA
-	w, h  int
-	opts  RenderOpts
-	depth int
+	r    *Reader
+	dst  *image.NRGBA
+	w, h int
+	opts RenderOpts
+	// baseCTM is the transform the page began with, which is the space a
+	// pattern is placed in however deep it is used.
+	baseCTM   matrix
+	maskDepth int
+}
+
+// newCanvas makes a surface for a mask group: black where a luminosity
+// mask has drawn nothing, clear where an alpha mask has.
+func newCanvas(w, h int, opaqueBlack bool) *image.NRGBA {
+	m := image.NewNRGBA(image.Rect(0, 0, w, h))
+	if opaqueBlack {
+		for i := 3; i < len(m.Pix); i += 4 {
+			m.Pix[i] = 0xFF
+		}
+	}
+	return m
 }
 
 const maxRenderDepth = 12
@@ -274,7 +296,7 @@ func (rn *renderer) run(content []byte, resources any, base matrix, gs renderSta
 		case "n":
 			rn.endPath(&path, &gs, &pendingClip)
 		case "f", "F", "f*":
-			rn.fill(&path, &gs, string(op) == "f*")
+			rn.fill(&path, &gs, string(op) == "f*", res)
 			rn.endPath(&path, &gs, &pendingClip)
 		case "S":
 			rn.stroke(&path, &gs)
@@ -284,12 +306,12 @@ func (rn *renderer) run(content []byte, resources any, base matrix, gs renderSta
 			rn.stroke(&path, &gs)
 			rn.endPath(&path, &gs, &pendingClip)
 		case "B", "B*":
-			rn.fill(&path, &gs, string(op) == "B*")
+			rn.fill(&path, &gs, string(op) == "B*", res)
 			rn.stroke(&path, &gs)
 			rn.endPath(&path, &gs, &pendingClip)
 		case "b", "b*":
 			path.close()
-			rn.fill(&path, &gs, string(op) == "b*")
+			rn.fill(&path, &gs, string(op) == "b*", res)
 			rn.stroke(&path, &gs)
 			rn.endPath(&path, &gs, &pendingClip)
 		case "W":
@@ -327,31 +349,39 @@ func (rn *renderer) run(content []byte, resources any, base matrix, gs renderSta
 
 		// Colour.
 		case "g":
-			gs.fillSpace = nil
+			gs.fillSpace, gs.fillPattern = nil, ""
 			gs.fill = grayRGB(num(0))
 		case "G":
 			gs.strokeSpace = nil
 			gs.stroke = grayRGB(num(0))
 		case "rg":
-			gs.fillSpace = nil
+			gs.fillSpace, gs.fillPattern = nil, ""
 			gs.fill = [3]float64{clamp01(num(0)), clamp01(num(1)), clamp01(num(2))}
 		case "RG":
 			gs.strokeSpace = nil
 			gs.stroke = [3]float64{clamp01(num(0)), clamp01(num(1)), clamp01(num(2))}
 		case "k":
-			gs.fillSpace = nil
+			gs.fillSpace, gs.fillPattern = nil, ""
 			gs.fill = cmykRGB(num(0), num(1), num(2), num(3))
 		case "K":
 			gs.strokeSpace = nil
 			gs.stroke = cmykRGB(num(0), num(1), num(2), num(3))
 		case "cs":
-			gs.fillSpace = rn.lookupSpace(res, operands)
+			gs.fillSpace, gs.fillPattern = rn.lookupSpace(res, operands), ""
 			gs.fill = gs.fillSpace.initial()
 		case "CS":
 			gs.strokeSpace = rn.lookupSpace(res, operands)
 			gs.stroke = gs.strokeSpace.initial()
 		case "sc", "scn":
-			gs.fill = gs.fillSpace.toRGB(nums(), gs.fill)
+			gs.fillPattern = ""
+			if len(operands) > 0 {
+				if n, ok := operands[len(operands)-1].val.(Name); ok {
+					gs.fillPattern = n
+				}
+			}
+			if gs.fillPattern == "" {
+				gs.fill = gs.fillSpace.toRGB(nums(), gs.fill)
+			}
 		case "SC", "SCN":
 			gs.stroke = gs.strokeSpace.toRGB(nums(), gs.stroke)
 
@@ -384,7 +414,8 @@ func (rn *renderer) run(content []byte, resources any, base matrix, gs renderSta
 // endPath clears the current path and applies any clip it established.
 func (rn *renderer) endPath(path *rasterPath, gs *renderState, pending *int) {
 	if *pending != 0 && !path.empty() {
-		gs.clip = rn.intersectClip(gs.clip, path, *pending == 2)
+		gs.baseClip = rn.intersectClip(gs.baseClip, path, *pending == 2)
+		gs.clip = combineMasks(gs.baseClip, gs.softMask)
 	}
 	*pending = 0
 	*path = rasterPath{}
@@ -410,8 +441,17 @@ func (rn *renderer) intersectClip(old *clipMask, path *rasterPath, evenOdd bool)
 }
 
 // fill paints the current path.
-func (rn *renderer) fill(path *rasterPath, gs *renderState, evenOdd bool) {
+func (rn *renderer) fill(path *rasterPath, gs *renderState, evenOdd bool, res Dict) {
 	if !rn.opts.IncludeVector || path.empty() {
+		return
+	}
+	if gs.fillPattern != "" {
+		if rn.fillWithPattern(path, gs, evenOdd, res, gs.fillPattern) {
+			return
+		}
+		// Too fine to tile, or a kind not drawn: a mid grey says
+		// something is there without claiming to be it.
+		rn.paint(path, evenOdd, [3]float64{0.6, 0.6, 0.6}, gs.fillAlpha, gs.clip)
 		return
 	}
 	rn.paint(path, evenOdd, gs.fill, gs.fillAlpha, gs.clip)
@@ -516,6 +556,9 @@ func (rn *renderer) applyExtGState(gs *renderState, res Dict, name Name) {
 	if v, ok := toFloat(rn.r.resolve(d["LW"])); ok {
 		gs.line.width = v
 	}
+	if sm, has := d["SMask"]; has {
+		rn.applySoftMask(gs, sm)
+	}
 }
 
 // doXObject draws a form or, where asked, an image.
@@ -553,7 +596,8 @@ func (rn *renderer) doXObject(res Dict, name Name, gs renderState, depth int) {
 				}
 			}
 			box.close()
-			sub.clip = rn.intersectClip(gs.clip, &box, false)
+			sub.baseClip = rn.intersectClip(gs.baseClip, &box, false)
+			sub.clip = combineMasks(sub.baseClip, sub.softMask)
 		}
 		formRes := stm.dict["Resources"]
 		if formRes == nil {
