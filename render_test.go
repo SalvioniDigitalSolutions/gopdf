@@ -1391,3 +1391,126 @@ func TestSoftMaskIsClearableOutsideAGroup(t *testing.T) {
 		t.Errorf("outside a group the mask should have been cleared, got %d", v)
 	}
 }
+
+// TestRenderRadialShading: a radial gradient is how a page draws a
+// sphere or a glow, and painting it as one flat colour turns a sphere
+// into a disc.
+func TestRenderRadialShading(t *testing.T) {
+	doc := New()
+	doc.Compress = false
+	page := doc.AddPage()
+	// A circle of radius 100 at (300, 500) in PDF space, red at the
+	// centre fading to blue at the rim.
+	page.op("q 200 400 200 200 re W n /Sh0 sh Q")
+	src := withResources(t, docBytes(t, doc), func(u *Updater) Dict {
+		fn := u.add(Dict{
+			"FunctionType": int64(2), "Domain": Array{0.0, 1.0}, "N": int64(1),
+			"C0": Array{1.0, 0.0, 0.0}, "C1": Array{0.0, 0.0, 1.0},
+		})
+		sh := u.add(Dict{
+			"ShadingType": int64(3), "ColorSpace": Name("DeviceRGB"),
+			"Coords":   Array{300.0, 500.0, 0.0, 300.0, 500.0, 100.0},
+			"Function": Ref{Num: fn},
+		})
+		return Dict{"Shading": Dict{"Sh0": Ref{Num: sh}}}
+	})
+
+	r := NewReaderOrFail(t, src)
+	img, err := r.RenderPage(0, RenderOpts{DPI: 100, IncludeVector: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The sampling helper measures from the top of the page, so the
+	// circle's centre at a PDF y of 500 is that far down from 841.89.
+	mid := 841.89 - 500
+	cr, _, cb, _ := at(t, img, 100, 300, mid)
+	if cr < 200 || cb > 60 {
+		t.Errorf("the centre should be red, got r=%d b=%d", cr, cb)
+	}
+	// Most of the way out it has become the far colour.
+	er, _, eb, _ := at(t, img, 100, 395, mid)
+	if er > 60 || eb < 200 {
+		t.Errorf("the rim should be blue, got r=%d b=%d", er, eb)
+	}
+	// Halfway is a mix, which is what tells a gradient from two discs.
+	mr, _, mb, _ := at(t, img, 100, 350, mid)
+	if mr > 200 || mr < 40 || mb > 200 || mb < 40 {
+		t.Errorf("halfway out should be mixed, got r=%d b=%d", mr, mb)
+	}
+	// And outside the circle nothing is painted, because a point on no
+	// circle of the family is not part of the shading. Without that the
+	// gradient is a rectangle: this corner is inside the clip and
+	// outside the circle.
+	or_, og, ob, _ := at(t, img, 100, 210, 841.89-410)
+	if or_ != 255 || og != 255 || ob != 255 {
+		t.Errorf("outside the circle = %d,%d,%d, want the page untouched",
+			or_, og, ob)
+	}
+}
+
+// TestRenderRadialExtend: with /Extend the last circle keeps going, which
+// is how a background glow fills its box.
+func TestRenderRadialExtend(t *testing.T) {
+	doc := New()
+	doc.Compress = false
+	page := doc.AddPage()
+	page.op("q 200 400 200 200 re W n /Sh0 sh Q")
+	src := withResources(t, docBytes(t, doc), func(u *Updater) Dict {
+		fn := u.add(Dict{
+			"FunctionType": int64(2), "Domain": Array{0.0, 1.0}, "N": int64(1),
+			"C0": Array{1.0, 0.0, 0.0}, "C1": Array{0.0, 0.0, 1.0},
+		})
+		sh := u.add(Dict{
+			"ShadingType": int64(3), "ColorSpace": Name("DeviceRGB"),
+			"Coords":   Array{300.0, 500.0, 0.0, 300.0, 500.0, 50.0},
+			"Function": Ref{Num: fn},
+			"Extend":   Array{false, true},
+		})
+		return Dict{"Shading": Dict{"Sh0": Ref{Num: sh}}}
+	})
+
+	r := NewReaderOrFail(t, src)
+	img, err := r.RenderPage(0, RenderOpts{DPI: 100, IncludeVector: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Beyond the last circle the extend carries its colour outwards, as
+	// far as the clip allows.
+	er, _, eb, _ := at(t, img, 100, 210, 841.89-410)
+	if er > 60 || eb < 200 {
+		t.Errorf("the extended area = r=%d b=%d, want the far colour", er, eb)
+	}
+}
+
+func TestRadialParam(t *testing.T) {
+	// Two concentric circles, radius 0 to 1, centred together: a = -1,
+	// and the parameter is just the distance.
+	both := [2]bool{true, true}
+	none := [2]bool{false, false}
+	for _, c := range []struct {
+		name         string
+		a, b, cc     float64
+		r0, dr       float64
+		ext          [2]bool
+		want         float64
+		wantSolvable bool
+	}{
+		{"centre", -1, 0, 0, 0, 1, none, 0, true},
+		{"beyond the last circle, not extended", -1, 0, 4, 0, 1, none, 0, false},
+		{"beyond the last circle, extended", -1, 0, 4, 0, 1, both, 1, true},
+		{"degenerate with no slope", 0, 0, 1, 0, 0, both, 0, false},
+	} {
+		got, ok := radialParam(c.a, c.b, c.cc, c.r0, c.dr, c.ext)
+		if ok != c.wantSolvable {
+			t.Errorf("%s: solvable = %v, want %v", c.name, ok, c.wantSolvable)
+			continue
+		}
+		if ok && math.Abs(got-c.want) > 1e-6 {
+			t.Errorf("%s: s = %g, want %g", c.name, got, c.want)
+		}
+	}
+	// A negative radius is never drawn, however the arithmetic works out.
+	if _, ok := radialParam(-1, 0, 0, -5, 1, both); ok {
+		t.Error("a circle of negative radius was painted")
+	}
+}
