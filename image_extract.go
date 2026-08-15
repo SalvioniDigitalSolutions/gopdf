@@ -240,16 +240,9 @@ func (im ImageRef) decodeBase() (image.Image, error) {
 	// A JPEG is decoded by the standard library; anything before it in
 	// the chain is unwrapped first.
 	if len(filters) > 0 && (filters[len(filters)-1] == "DCTDecode" || filters[len(filters)-1] == "DCT") {
-		data := im.stream.data
-		if len(filters) > 1 {
-			shorter := cloneDict(im.stream.dict)
-			shorter["Filter"] = Array{}
-			for _, f := range filters[:len(filters)-1] {
-				shorter["Filter"] = append(shorter["Filter"].(Array), f)
-			}
-			if data, err = r.decodeStream(shorter, im.stream.data); err != nil {
-				return nil, err
-			}
+		data, err := im.unwrapOuter(filters)
+		if err != nil {
+			return nil, err
 		}
 		return jpeg.Decode(bytes.NewReader(data))
 	}
@@ -259,6 +252,43 @@ func (im ImageRef) decodeBase() (image.Image, error) {
 		return nil, err
 	}
 	return im.fromSamples(samples)
+}
+
+// unwrapOuter reverses every filter ahead of the last one, which the
+// caller decodes itself (JPEG or fax data).
+func (im ImageRef) unwrapOuter(filters []Name) ([]byte, error) {
+	if len(filters) <= 1 {
+		return im.stream.data, nil
+	}
+	shorter := cloneDict(im.stream.dict)
+	shorter["Filter"] = Array{}
+	for _, f := range filters[:len(filters)-1] {
+		shorter["Filter"] = append(shorter["Filter"].(Array), f)
+	}
+	return im.r.decodeStream(shorter, im.stream.data)
+}
+
+// JPEG returns the image's own JPEG stream when it is stored as one
+// (DCTDecode), unwrapping any outer compression, so callers that keep
+// photographs in their original encoding can embed the bytes untouched.
+// The bool reports whether such a stream exists; images stored any
+// other way return false — decode those with Decode.
+func (im ImageRef) JPEG() ([]byte, bool) {
+	if im.stream == nil || im.r == nil {
+		return nil, false
+	}
+	filters, _, err := im.r.filterChain(im.stream.dict)
+	if err != nil || len(filters) == 0 {
+		return nil, false
+	}
+	if last := filters[len(filters)-1]; last != "DCTDecode" && last != "DCT" {
+		return nil, false
+	}
+	data, err := im.unwrapOuter(filters)
+	if err != nil {
+		return nil, false
+	}
+	return data, true
 }
 
 // fromSamples builds an image from raw component values.

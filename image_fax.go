@@ -14,19 +14,10 @@ import (
 // by the decoder and reports an error.
 func (im ImageRef) decodeFax(filters []Name, parms []any) (image.Image, error) {
 	r := im.r
-	data := im.stream.data
-
 	// Unwrap any filters ahead of the fax codec, as for JPEG.
-	if len(filters) > 1 {
-		shorter := cloneDict(im.stream.dict)
-		shorter["Filter"] = Array{}
-		for _, f := range filters[:len(filters)-1] {
-			shorter["Filter"] = append(shorter["Filter"].(Array), f)
-		}
-		var err error
-		if data, err = r.decodeStream(shorter, im.stream.data); err != nil {
-			return nil, err
-		}
+	data, err := im.unwrapOuter(filters)
+	if err != nil {
+		return nil, err
 	}
 
 	var parm Dict

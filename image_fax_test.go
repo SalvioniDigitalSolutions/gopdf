@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/jpeg"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -189,6 +190,57 @@ func TestImageObjectNumberIdentity(t *testing.T) {
 	}
 	if imgs[2].ObjectNumber() == imgs[0].ObjectNumber() {
 		t.Error("different pictures share an object number")
+	}
+}
+
+func TestImageJPEGPassthrough(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 12, 9))
+	for i := range src.Pix {
+		src.Pix[i] = uint8(i * 7)
+	}
+	var jpg bytes.Buffer
+	if err := jpeg.Encode(&jpg, src, &jpeg.Options{Quality: 90}); err != nil {
+		t.Fatal(err)
+	}
+
+	doc := New()
+	page := doc.AddPage()
+	img, err := doc.AddImageReader(bytes.NewReader(jpg.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	page.DrawImage(img, 50, 50, 120, 90)
+	flate, err := doc.AddImage(image.NewGray(image.Rect(0, 0, 4, 4)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	page.DrawImage(flate, 200, 50, 40, 40)
+
+	r, err := NewReader(docBytes(t, doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	imgs, err := r.PageImages(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(imgs) != 2 {
+		t.Fatalf("found %d images, want 2", len(imgs))
+	}
+
+	raw, ok := imgs[0].JPEG()
+	if !ok {
+		t.Fatal("stored JPEG did not come back as one")
+	}
+	if !bytes.Equal(raw, jpg.Bytes()) {
+		t.Error("JPEG bytes were not passed through untouched")
+	}
+	if m, err := jpeg.Decode(bytes.NewReader(raw)); err != nil || m.Bounds().Dx() != 12 {
+		t.Errorf("returned stream does not decode as the original JPEG: %v", err)
+	}
+
+	if _, ok := imgs[1].JPEG(); ok {
+		t.Error("a Flate-compressed image claims to be a JPEG")
 	}
 }
 
