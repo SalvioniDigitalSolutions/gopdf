@@ -143,11 +143,11 @@ func New() *Document {
 	}
 }
 
-// SetInfo sets the document metadata.
+// SetInfo sets the document metadata, exactly as given: empty fields are
+// left out of the file, so SetInfo(Info{}) — with CreationDate set to the
+// zero time — authors a document with no provenance metadata at all.
+// Documents that never call SetInfo are stamped with Producer "gopdf".
 func (d *Document) SetInfo(info Info) {
-	if info.Producer == "" {
-		info.Producer = "gopdf"
-	}
 	d.info = info
 }
 

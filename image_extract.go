@@ -30,6 +30,13 @@ type ImageRef struct {
 	r      *Reader
 }
 
+// ObjectNumber identifies the image XObject behind this reference, or 0
+// when the image is not an indirect object. Two references with the same
+// non-zero number share one underlying image — a picture drawn several
+// times, or on several pages — so callers processing each image once can
+// key on it.
+func (im ImageRef) ObjectNumber() int { return im.ref.Num }
+
 // PageImages lists the images a page draws, including those inside form
 // XObjects it invokes.
 func (r *Reader) PageImages(page int) ([]ImageRef, error) {
@@ -190,10 +197,11 @@ func colorSpaceName(r *Reader, v any) string {
 
 // Decode returns the image's pixels.
 //
-// JPEG data is handed to the standard decoder; other images are decoded
-// from their samples. Where the image has a soft mask, it is applied as
-// the alpha channel. Fax, JBIG2 and JPEG 2000 images report an error:
-// their codecs are not implemented.
+// JPEG data is handed to the standard decoder, CCITT Group 3/4 fax data
+// to the package's own; other images are decoded from their samples.
+// Where the image has a soft mask, it is applied as the alpha channel.
+// JBIG2 and JPEG 2000 images report an error: their codecs are not
+// implemented.
 func (im ImageRef) Decode() (image.Image, error) {
 	if im.stream == nil || im.r == nil {
 		return nil, fmt.Errorf("gopdf: image reference is not bound to a document")
@@ -212,7 +220,7 @@ func (im ImageRef) Decode() (image.Image, error) {
 // decodeBase decodes the image's own samples, without its soft mask.
 func (im ImageRef) decodeBase() (image.Image, error) {
 	r := im.r
-	filters, _, err := r.filterChain(im.stream.dict)
+	filters, parms, err := r.filterChain(im.stream.dict)
 	if err != nil {
 		return nil, err
 	}
@@ -220,11 +228,14 @@ func (im ImageRef) decodeBase() (image.Image, error) {
 		switch f {
 		case "JPXDecode":
 			return nil, fmt.Errorf("gopdf: JPEG 2000 images are not decoded")
-		case "CCITTFaxDecode":
-			return nil, fmt.Errorf("gopdf: CCITT fax images are not decoded")
 		case "JBIG2Decode":
 			return nil, fmt.Errorf("gopdf: JBIG2 images are not decoded")
 		}
+	}
+	// A fax stream is decoded by the vendored CCITT codec; anything
+	// before it in the chain is unwrapped inside decodeFax.
+	if n := len(filters); n > 0 && (filters[n-1] == "CCITTFaxDecode" || filters[n-1] == "CCF") {
+		return im.decodeFax(filters, parms)
 	}
 	// A JPEG is decoded by the standard library; anything before it in
 	// the chain is unwrapped first.
