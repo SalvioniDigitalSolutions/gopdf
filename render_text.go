@@ -179,7 +179,7 @@ func (rn *renderer) noteClipMode(ts *glyphState) {
 // strokeText outlines a glyph with the current stroke settings.
 func (rn *renderer) strokeText(path *rasterPath, gs *renderState) {
 	outline := strokeOutline(path, gs.line)
-	rn.paint(outline, false, gs.stroke, gs.strokeAlpha, gs.clip)
+	rn.paint(outline, false, gs.stroke, gs.strokeAlpha, gs.clip, gs.mode)
 }
 
 // endTextObject applies whatever the text object added to the clip.

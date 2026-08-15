@@ -193,6 +193,8 @@ type renderState struct {
 	// fillPattern names the tiling or shading pattern a fill uses, when
 	// the fill colour space is /Pattern.
 	fillPattern Name
+	// mode is how a paint combines with what is under it.
+	mode blendMode
 }
 
 func newRenderState() renderState {
@@ -625,10 +627,10 @@ func (rn *renderer) fill(path *rasterPath, gs *renderState, evenOdd bool, res Di
 		}
 		// Too fine to tile, or a kind not drawn: a mid grey says
 		// something is there without claiming to be it.
-		rn.paint(path, evenOdd, [3]float64{0.6, 0.6, 0.6}, gs.fillAlpha, gs.clip)
+		rn.paint(path, evenOdd, [3]float64{0.6, 0.6, 0.6}, gs.fillAlpha, gs.clip, gs.mode)
 		return
 	}
-	rn.paint(path, evenOdd, gs.fill, gs.fillAlpha, gs.clip)
+	rn.paint(path, evenOdd, gs.fill, gs.fillAlpha, gs.clip, gs.mode)
 }
 
 // stroke paints the current path's outline.
@@ -648,7 +650,7 @@ func (rn *renderer) stroke(path *rasterPath, gs *renderState) {
 		st.dashPhase = gs.line.dashPhase * matrixScale(gs.ctm)
 	}
 	outline := strokeOutline(path, st)
-	rn.paint(outline, false, gs.stroke, gs.strokeAlpha, gs.clip)
+	rn.paint(outline, false, gs.stroke, gs.strokeAlpha, gs.clip, gs.mode)
 }
 
 // matrixScale is how much a transform magnifies, as one number.
@@ -659,7 +661,7 @@ func matrixScale(m matrix) float64 {
 
 // paint composites a path's coverage in one colour.
 func (rn *renderer) paint(path *rasterPath, evenOdd bool, rgb [3]float64,
-	alpha float64, clip *clipMask) {
+	alpha float64, clip *clipMask, mode blendMode) {
 	if alpha <= 0 {
 		return
 	}
@@ -679,7 +681,7 @@ func (rn *renderer) paint(path *rasterPath, evenOdd bool, rgb [3]float64,
 			if a <= 0 {
 				continue
 			}
-			rn.blend(x, y, cr, cg, cb, a)
+			rn.blended(x, y, cr, cg, cb, a, mode)
 		}
 	})
 }
@@ -732,6 +734,11 @@ func (rn *renderer) applyExtGState(gs *renderState, res Dict, name Name) {
 	}
 	if sm, has := d["SMask"]; has {
 		rn.applySoftMask(gs, sm)
+	}
+	if bm, has := d["BM"]; has {
+		if m, ok := blendModeByName(rn.r, bm); ok {
+			gs.mode = m
+		}
 	}
 }
 
@@ -854,7 +861,8 @@ func (rn *renderer) drawImage(stm *rawStream, entry any, gs renderState) {
 			if ca == 0 {
 				continue
 			}
-			rn.blend(x, y, uint8(cr>>8), uint8(cg>>8), uint8(cb>>8), a*float64(ca)/65535)
+			rn.blended(x, y, uint8(cr>>8), uint8(cg>>8), uint8(cb>>8),
+				a*float64(ca)/65535, gs.mode)
 		}
 	})
 }

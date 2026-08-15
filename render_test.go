@@ -1792,3 +1792,112 @@ func mergeInto(t *testing.T, r *Reader, extra Dict) Dict {
 	}
 	return merged
 }
+
+// TestRenderBlendModes: a paint does not always replace what is under
+// it. A highlighter is set to Multiply, and drawn normally it is a
+// yellow bar with the words hidden behind it.
+func TestRenderBlendModes(t *testing.T) {
+	// Mid grey under, mid grey over: each mode has a different answer,
+	// and 0.5 against 0.5 tells most of them apart.
+	over := func(mode Name) (uint8, uint8, uint8) {
+		doc := New()
+		doc.Compress = false
+		page := doc.AddPage()
+		page.op("0.5 g 100 600 200 100 re f")         // the backdrop
+		page.op("/GSb gs 0.5 g 100 600 200 100 re f") // the blended paint
+		src := withResources(t, docBytes(t, doc), func(u *Updater) Dict {
+			return Dict{"ExtGState": Dict{"GSb": Dict{
+				"Type": Name("ExtGState"), "BM": mode,
+			}}}
+		})
+		img, err := NewReaderOrFail(t, src).RenderPage(0,
+			RenderOpts{DPI: 100, IncludeVector: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, g, b, _ := at(t, img, 100, 200, 841.89-650)
+		return r, g, b
+	}
+	for _, c := range []struct {
+		mode Name
+		want uint8
+	}{
+		{"Normal", 128},
+		{"Multiply", 64},   // 0.5 * 0.5
+		{"Screen", 191},    // 0.5 + 0.5 - 0.25
+		{"Darken", 128},    // min
+		{"Lighten", 128},   // max
+		{"Difference", 0},  // |0.5 - 0.5|
+		{"Exclusion", 128}, // 0.5 + 0.5 - 0.5
+		{"Overlay", 128},   // hard light of 0.5 on 0.5
+		{"HardLight", 128},
+	} {
+		r, g, b := over(c.mode)
+		if !near(r, c.want, 3) || r != g || g != b {
+			t.Errorf("%s over mid grey = %d,%d,%d, want about %d",
+				c.mode, r, g, b, c.want)
+		}
+	}
+	// A mode nobody has heard of leaves the state alone rather than
+	// blanking it.
+	if r, _, _ := over("NoSuchMode"); !near(r, 128, 3) {
+		t.Errorf("an unknown blend mode gave %d, want the normal 128", r)
+	}
+	// And the non-separable modes fall back to Normal rather than
+	// vanishing.
+	if r, _, _ := over("Luminosity"); !near(r, 128, 3) {
+		t.Errorf("Luminosity gave %d, want the normal 128", r)
+	}
+}
+
+// TestBlendModeArithmetic checks the modes against the definitions,
+// which is easier to be sure of than a rendered pixel.
+func TestBlendModeArithmetic(t *testing.T) {
+	for _, c := range []struct {
+		mode   blendMode
+		cb, cs float64
+		want   float64
+	}{
+		{blendMultiply, 0.4, 0.5, 0.2},
+		{blendScreen, 0.4, 0.5, 0.7},
+		{blendDarken, 0.4, 0.5, 0.4},
+		{blendLighten, 0.4, 0.5, 0.5},
+		{blendDifference, 0.4, 0.5, 0.1},
+		{blendExclusion, 0.4, 0.5, 0.5},
+		{blendColorDodge, 0.5, 0, 0.5},
+		{blendColorDodge, 0, 0.5, 0}, // a black backdrop stays black
+		{blendColorDodge, 0.5, 1, 1}, // a white source blows out
+		{blendColorBurn, 1, 0.5, 1},  // a white backdrop stays white
+		{blendColorBurn, 0.5, 0, 0},  // a black source burns to black
+		{blendHardLight, 0.4, 0.25, 0.2},
+		{blendOverlay, 0.25, 0.4, 0.2}, // the same, reversed
+		{blendNormal, 0.4, 0.5, 0.5},
+	} {
+		if got := c.mode.apply(c.cb, c.cs); math.Abs(got-c.want) > 1e-9 {
+			t.Errorf("mode %d over %g under %g = %g, want %g",
+				c.mode, c.cs, c.cb, got, c.want)
+		}
+	}
+	// Soft light leaves the backdrop alone at the midpoint and moves it
+	// the right way either side.
+	if got := blendSoftLight.apply(0.5, 0.5); math.Abs(got-0.5) > 1e-9 {
+		t.Errorf("soft light at the midpoint = %g, want 0.5", got)
+	}
+	if blendSoftLight.apply(0.5, 0.2) >= 0.5 {
+		t.Error("a dark soft light should darken")
+	}
+	if blendSoftLight.apply(0.5, 0.8) <= 0.5 {
+		t.Error("a light soft light should lighten")
+	}
+	// Every mode has to stay in range, whatever it is given.
+	for m := blendNormal; m <= blendExclusion; m++ {
+		for _, cb := range []float64{0, 0.25, 0.5, 1} {
+			for _, cs := range []float64{0, 0.25, 0.5, 1} {
+				v := m.apply(cb, cs)
+				if v < -1e-9 || v > 1+1e-9 || math.IsNaN(v) {
+					t.Errorf("mode %d over %g under %g = %g, out of range", m, cs, cb, v)
+				}
+			}
+		}
+	}
+}

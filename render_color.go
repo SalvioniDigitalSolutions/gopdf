@@ -319,8 +319,8 @@ func (rn *renderer) shadeRadial(gs *renderState, ramp *shadeRamp,
 				continue
 			}
 			col := ramp.at(s)
-			rn.blend(x, y, uint8(clamp01(col[0])*255+0.5), uint8(clamp01(col[1])*255+0.5),
-				uint8(clamp01(col[2])*255+0.5), alpha)
+			rn.blended(x, y, uint8(clamp01(col[0])*255+0.5), uint8(clamp01(col[1])*255+0.5),
+				uint8(clamp01(col[2])*255+0.5), alpha, gs.mode)
 		}
 	}
 }
@@ -405,8 +405,8 @@ func (rn *renderer) shadeAxial(gs *renderState, ramp *shadeRamp,
 				t = 1
 			}
 			c := ramp.at(t)
-			rn.blend(x, y, uint8(clamp01(c[0])*255+0.5), uint8(clamp01(c[1])*255+0.5),
-				uint8(clamp01(c[2])*255+0.5), a)
+			rn.blended(x, y, uint8(clamp01(c[0])*255+0.5), uint8(clamp01(c[1])*255+0.5),
+				uint8(clamp01(c[2])*255+0.5), a, gs.mode)
 		}
 	}
 }
@@ -428,7 +428,7 @@ func (rn *renderer) shadeSolid(gs *renderState, space *colorSpace, fn pdfFunctio
 	for y := 0; y < rn.h; y++ {
 		for x := 0; x < rn.w; x++ {
 			if a := gs.clip.at(x, y) * gs.fillAlpha; a > 0 {
-				rn.blend(x, y, r8, g8, b8, a)
+				rn.blended(x, y, r8, g8, b8, a, gs.mode)
 			}
 		}
 	}
