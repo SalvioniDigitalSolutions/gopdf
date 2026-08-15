@@ -61,14 +61,23 @@ func (ex *textExtractor) run(content []byte, resources any, base matrix, depth i
 	var cur *fontDecoder
 
 	ctm := base
-	var ctmStack []matrix
 	tm, tlm := identityMatrix, identityMatrix
 	leading := 0.0
-	// The text state that decides how far a string carries the pen.
+	// The text state that decides what a string says and how far it
+	// carries the pen. It is part of the graphics state, so q and Q save
+	// and restore it along with the transform: a footnote set inside
+	// "q /F2 9 Tf ... Q" must leave the font it found.
 	fontSize, charSpacing, wordSpacing := 0.0, 0.0, 0.0
 	horizScale := 1.0
 	// penPos is where the last string left the pen, on the page.
 	penPos := [2]float64{}
+
+	type saved struct {
+		ctm                              matrix
+		font                             *fontDecoder
+		size, charSp, wordSp, hScale, ld float64
+	}
+	var gsStack []saved
 
 	translateLine := func(tx, ty float64) {
 		tlm = matrix{tlm[0], tlm[1], tlm[2], tlm[3],
@@ -145,13 +154,17 @@ func (ex *textExtractor) run(content []byte, resources any, base matrix, depth i
 		}
 		switch string(op) {
 		case "q":
-			if len(ctmStack) < 64 {
-				ctmStack = append(ctmStack, ctm)
+			if len(gsStack) < 64 {
+				gsStack = append(gsStack, saved{ctm, cur, fontSize,
+					charSpacing, wordSpacing, horizScale, leading})
 			}
 		case "Q":
-			if n := len(ctmStack); n > 0 {
-				ctm = ctmStack[n-1]
-				ctmStack = ctmStack[:n-1]
+			if n := len(gsStack); n > 0 {
+				s := gsStack[n-1]
+				gsStack = gsStack[:n-1]
+				ctm, cur = s.ctm, s.font
+				fontSize, charSpacing, wordSpacing = s.size, s.charSp, s.wordSp
+				horizScale, leading = s.hScale, s.ld
 			}
 		case "cm":
 			if len(operands) >= 6 {

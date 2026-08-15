@@ -1,8 +1,11 @@
 package gopdf
 
 import (
+	"bufio"
 	"image"
 	"math"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -275,5 +278,139 @@ func TestUnitSquareBounds(t *testing.T) {
 	lo, hi = unitSquareBounds(matrix{3, 0, 0, 2, 1, 1})
 	if lo != [2]float64{1, 1} || hi != [2]float64{4, 3} {
 		t.Errorf("bounds = %v..%v", lo, hi)
+	}
+}
+
+// TestTextStateIsRestoredByQ is the regression for a decoding bug that
+// only showed on documents with footnotes: q and Q save and restore the
+// graphics state, and the font is part of it. Restoring only the
+// transform left the wrong font current after a footnote marker, so the
+// rest of the paragraph decoded through the wrong table and came out as
+// gibberish.
+func TestTextStateIsRestoredByQ(t *testing.T) {
+	doc := New()
+	doc.Compress = false
+	page := doc.AddPage()
+	page.SetFont(Helvetica, 11)
+	// Two fonts, the second used only inside a q/Q, as a footnote marker
+	// or a small-caps run would be.
+	page.op("BT /F1 11 Tf 1 0 0 1 60 700 Tm (before ) Tj")
+	page.op("q /F2 7 Tf (11) Tj Q")
+	page.op("( after) Tj ET")
+	page.SetFont(HelveticaBold, 7) // registers F2
+	src := docBytes(t, doc)
+
+	r := NewReaderOrFail(t, src)
+	frags, err := r.PageTextFragments(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frags) < 3 {
+		t.Fatalf("got %d fragments, want at least 3: %+v", len(frags), frags)
+	}
+	// The size must go back to what it was before the q.
+	first, last := frags[0], frags[len(frags)-1]
+	if first.FontSize != last.FontSize {
+		t.Errorf("the size was not restored: %v before, %v after",
+			first.FontSize, last.FontSize)
+	}
+	if first.FontName != last.FontName {
+		t.Errorf("the font was not restored: %q before, %q after",
+			first.FontName, last.FontName)
+	}
+	// And the same through PageText, which is where the bug lived.
+	got, err := r.PageText(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(collapse(got), "before 11 after") {
+		t.Errorf("PageText = %q", collapse(got))
+	}
+}
+
+// TestPageTextAgreesWithPdftotext measures extraction against an
+// independent implementation over a corpus named by GOPDF_CORPUS. It is
+// skipped without one, or without pdftotext.
+func TestPageTextAgreesWithPdftotext(t *testing.T) {
+	list := os.Getenv("GOPDF_CORPUS")
+	if list == "" {
+		t.Skip("set GOPDF_CORPUS to a file listing PDFs")
+	}
+	if _, err := exec.LookPath("pdftotext"); err != nil {
+		t.Skip("pdftotext is not installed")
+	}
+	f, err := os.Open(list)
+	if err != nil {
+		t.Skip(err)
+	}
+	defer f.Close()
+
+	words := func(s string) map[string]bool {
+		m := map[string]bool{}
+		for _, w := range strings.Fields(s) {
+			m[w] = true
+		}
+		return m
+	}
+	var files int
+	var total float64
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1<<20), 1<<20)
+	for sc.Scan() && files < 400 {
+		path := strings.TrimSpace(sc.Text())
+		if path == "" {
+			continue
+		}
+		ref, err := exec.Command("pdftotext", path, "-").Output()
+		if err != nil || len(ref) == 0 {
+			continue
+		}
+		r, err := Open(path)
+		if err != nil {
+			continue
+		}
+		var b strings.Builder
+		bad := false
+		for i := 0; i < r.NumPages(); i++ {
+			s, err := r.PageText(i)
+			if err != nil {
+				bad = true
+				break
+			}
+			b.WriteString(s)
+			b.WriteString("\n")
+		}
+		if bad {
+			continue
+		}
+		a, c := words(b.String()), words(string(ref))
+		if len(c) == 0 {
+			continue
+		}
+		inter := 0
+		for w := range a {
+			if c[w] {
+				inter++
+			}
+		}
+		union := len(a) + len(c) - inter
+		if union == 0 {
+			continue
+		}
+		files++
+		total += float64(inter) / float64(union)
+	}
+	if files == 0 {
+		t.Skip("no comparable documents")
+	}
+	mean := total / float64(files)
+	t.Logf("%d files, mean word agreement with pdftotext %.4f", files, mean)
+	// A floor, not a target. The remaining difference is mostly
+	// documents whose fonts carry a built-in encoding this package does
+	// not read, where both tools produce something and only one of them
+	// is right. The floor is here to catch a regression that halves the
+	// agreement, not to chase the last few points.
+	if mean < 0.75 {
+		t.Errorf("agreement fell to %.4f", mean)
 	}
 }
