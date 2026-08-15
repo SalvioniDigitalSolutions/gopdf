@@ -326,13 +326,18 @@ func (rd *Redactor) checkRemoved(out []byte) error {
 		text.WriteString(r.annotationText(i))
 		text.WriteString("\n")
 	}
-	got := text.String()
-	// A word split across a line break reads as one word, so the check
-	// looks at both readings; otherwise a survivor hides in the split.
-	readings := []string{got, dehyphenate(got)}
+	// A word the document split across a line break is one word, and the
+	// matcher joins the halves before deciding anything about them. The
+	// check has to read the page the same way or the two disagree in
+	// both directions: reading the halves apart finds a word the matcher
+	// was right to leave alone and refuses a correct redaction, and it
+	// would miss a survivor that only reads as itself once joined.
+	//
+	// Joining loses nothing. Away from a hyphenated break the reading is
+	// the raw text, so a survivor standing on its own is still found.
+	got := dehyphenate(text.String())
 	for _, lit := range rd.literals {
-		if containsBounded(readings[0], lit, rd.mode()) ||
-			containsBounded(readings[1], lit, rd.mode()) {
+		if containsBounded(got, lit, rd.mode()) {
 			return fmt.Errorf("gopdf: %q is still readable after redaction; "+
 				"the document draws it in a way this could not reach, and the "+
 				"output has been withheld", lit)

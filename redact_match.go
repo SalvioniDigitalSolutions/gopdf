@@ -31,6 +31,11 @@ type runChain struct {
 	// reaching the end of that run takes the hyphen with it, so the
 	// replacement does not leave one dangling.
 	elided []int
+	// inserted[i] holds the offsets within run i's slice of text where a
+	// space was put in that the run's own text does not have — a gap the
+	// operation left between two words. They come out again when a match
+	// is mapped back onto the run, since the run never had them.
+	inserted [][]int
 }
 
 // buildChains groups a page's runs into chains of continuous text.
@@ -73,9 +78,11 @@ func buildChains(runs []*TextRun) []runChain {
 		}
 		_ = dropped
 		cur.start = append(cur.start, b.Len())
-		b.WriteString(run.Text)
+		spaced, at := readRun(run)
+		b.WriteString(spaced)
 		cur.end = append(cur.end, b.Len())
 		cur.elided = append(cur.elided, 0)
+		cur.inserted = append(cur.inserted, at)
 		cur.runs = append(cur.runs, run)
 	}
 	flush()
@@ -141,6 +148,13 @@ func (c runChain) chainRanges(lo, hi int) map[*TextRun][][2]int {
 			continue
 		}
 		from, to := maxI(lo, s)-s, minI(hi, e)-s
+		// The reading may hold spaces the run does not, so the offsets
+		// are shifted back onto the text the run actually carries.
+		var ins []int
+		if i < len(c.inserted) {
+			ins = c.inserted[i]
+		}
+		from, to = withoutInserted(from, ins), withoutInserted(to, ins)
 		// A match reaching the end of a run whose hyphen was left out of
 		// the reading takes that hyphen too.
 		if i < len(c.elided) && c.elided[i] > 0 && minI(hi, e) == e {
@@ -151,6 +165,40 @@ func (c runChain) chainRanges(lo, hi int) map[*TextRun][][2]int {
 		}
 	}
 	return out
+}
+
+// readRun returns a run's text as a reader sees it, with the spaces its
+// own gaps imply, and where each was put in.
+func readRun(run *TextRun) (string, []int) {
+	if len(run.spaceAt) == 0 {
+		return run.Text, nil
+	}
+	var b strings.Builder
+	at := make([]int, 0, len(run.spaceAt))
+	last := 0
+	for _, off := range run.spaceAt {
+		if off <= last-1 || off > len(run.Text) {
+			continue
+		}
+		b.WriteString(run.Text[last:off])
+		at = append(at, b.Len())
+		b.WriteByte(' ')
+		last = off
+	}
+	b.WriteString(run.Text[last:])
+	return b.String(), at
+}
+
+// withoutInserted turns an offset in a run's reading into the offset in
+// the run's own text, by discounting the spaces the reading added.
+func withoutInserted(off int, inserted []int) int {
+	n := 0
+	for _, at := range inserted {
+		if at < off {
+			n++
+		}
+	}
+	return off - n
 }
 
 // matchesInChains finds every literal and pattern match across a page's

@@ -63,6 +63,11 @@ type TextRun struct {
 	codes    []byte
 	codeStep int
 	codeText []int
+	// spaceAt holds the byte offsets in Text where the operation moved
+	// the pen far enough that a reader sees a word break. The text is
+	// left as the document encoded it; anything matching against a run
+	// reads it through these.
+	spaceAt []int
 	// renderMode is the Tr in force, and baseFont the font's /BaseFont
 	// with its subset prefix, which is what identifies the face rather
 	// than the resource name the page happens to give it.
@@ -412,10 +417,27 @@ func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth
 		var advanceEm float64
 		var encoded []byte
 		var codeText []int
+		// A show-text operation can carry gaps of its own. An operation
+		// that draws "9.2.1" and then moves the pen before "Messaggio"
+		// reads on the page as two words, and the extractor puts a space
+		// between them. Where those gaps fall is recorded here so that
+		// everything reading a run reads the same words the page shows;
+		// without it a search for "Messaggio" finds nothing, because in
+		// the run's own text it follows a digit.
+		var spaceAt []int
+		pendingGap := 0.0
 		for _, piece := range pieces {
 			switch v := piece.(type) {
 			case String:
 				part, spans := fi.decoder.decodeSpans(v)
+				if pendingGap > 0 && text.Len() > 0 && part != "" {
+					gap := pendingGap / 1000 * st.fontSize * st.horizScale
+					space := fi.decoder.spaceWidth(st.fontSize, st.horizScale)
+					if needsSpace(part, gap, space) {
+						spaceAt = append(spaceAt, text.Len())
+					}
+				}
+				pendingGap = 0
 				text.WriteString(part)
 				codeText = append(codeText, spans...)
 				encoded = append(encoded, v...)
@@ -424,6 +446,7 @@ func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth
 			default:
 				if f, ok := toFloat(piece); ok {
 					advanceEm -= f
+					pendingGap -= f
 				}
 			}
 		}
@@ -452,6 +475,7 @@ func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth
 			codes:       encoded,
 			codeStep:    codeStepFor(fi),
 			codeText:    codeText,
+			spaceAt:     spaceAt,
 			renderMode:  st.renderMode,
 			baseFont:    fi.baseFont,
 			target:      target,

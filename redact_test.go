@@ -1034,3 +1034,163 @@ func TestRedactVerificationSeesSplitWords(t *testing.T) {
 		t.Errorf("the split word survived: %q", got)
 	}
 }
+
+// TestRedactWordAfterAGapInsideOneOperation is the shape that made a
+// document refuse to redact at all.
+//
+// One show-text operation draws "9.2.1" and then moves the pen before
+// "Messaggio". A reader sees two words and the extractor puts a space
+// between them, but the run's own text has none — so a search for
+// "Messaggio" found it preceded by a digit, decided it was not a whole
+// word, and marked nothing. The verifier then read the page the way a
+// reader does, found the word still there, and withheld the file. Both
+// halves were behaving correctly and disagreeing.
+func TestRedactWordAfterAGapInsideOneOperation(t *testing.T) {
+	doc := New()
+	doc.Compress = false
+	p := doc.AddPage()
+	p.SetFont(Helvetica, 12)
+	p.Text(72, 100, "anchor")
+	// A gap of two ems between the number and the word.
+	p.op("BT /F1 12 Tf 72 200 Td [(9.2.1) -2000 (Messaggio) -2000 (concernente)] TJ ET")
+	src := docBytes(t, doc)
+
+	r := NewReaderOrFail(t, src)
+	txt, err := r.PageText(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(txt, "9.2.1 Messaggio concernente") {
+		t.Fatalf("the fixture does not read as separate words: %q", txt)
+	}
+
+	rd := Redact(NewReaderOrFail(t, src))
+	rd.Text("Messaggio")
+	marks, err := rd.Marks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(marks) != 1 {
+		t.Fatalf("%d marks, want the one word", len(marks))
+	}
+	var buf bytes.Buffer
+	if _, err := rd.WriteTo(&buf); err != nil {
+		t.Fatalf("the redaction was refused: %v", err)
+	}
+	out, err := NewReader(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := out.PageText(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, "Messaggio") {
+		t.Errorf("the word survived: %q", got)
+	}
+	// And only that word: the number and the next word stay.
+	for _, keep := range []string{"9.2.1", "concernente", "anchor"} {
+		if !strings.Contains(got, keep) {
+			t.Errorf("%q was removed too: %q", keep, got)
+		}
+	}
+}
+
+// TestRedactStillRespectsWordBoundariesWithinAWord is the other half:
+// the gap makes a boundary where there is one, and no boundary where
+// there is not. A tight kern inside a word is not a space.
+func TestRedactStillRespectsWordBoundariesWithinAWord(t *testing.T) {
+	doc := New()
+	doc.Compress = false
+	p := doc.AddPage()
+	p.SetFont(Helvetica, 12)
+	p.Text(72, 100, "anchor")
+	// A kern of a fiftieth of an em between the halves of one word.
+	p.op("BT /F1 12 Tf 72 200 Td [(Sunder) -20 (land)] TJ ET")
+	src := docBytes(t, doc)
+
+	if txt, _ := NewReaderOrFail(t, src).PageText(0); !strings.Contains(txt, "Sunderland") {
+		t.Fatalf("the kern was read as a space: %q", txt)
+	}
+	rd := Redact(NewReaderOrFail(t, src))
+	rd.Text("land")
+	var buf bytes.Buffer
+	if _, err := rd.WriteTo(&buf); err != nil {
+		t.Fatal(err)
+	}
+	got, err := NewReaderOrFail(t, buf.Bytes()).PageText(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "Sunderland") {
+		t.Errorf("a kern inside a word was treated as a word break: %q", got)
+	}
+}
+
+// TestRedactHyphenatedBreakIsNotAWordBoundary is the mirror of the gap
+// case, and the other way the matcher and the verifier could disagree.
+//
+// A document breaks "conversione" across a line as "con-" and
+// "versione". The matcher joins the halves and correctly declines to
+// remove "versione", which is not a word of its own here. Reading the
+// halves separately, the verifier found a "versione" still on the page
+// and withheld the file — refusing the document for being right.
+func TestRedactHyphenatedBreakIsNotAWordBoundary(t *testing.T) {
+	doc := New()
+	doc.Compress = false
+	p := doc.AddPage()
+	p.SetFont(Helvetica, 12)
+	p.Text(72, 100, "in particolare la con-")
+	p.Text(72, 116, "versione della misura")
+	p.Text(72, 160, "una versione modificata")
+	src := docBytes(t, doc)
+
+	rd := Redact(NewReaderOrFail(t, src))
+	rd.Text("versione")
+	var buf bytes.Buffer
+	if _, err := rd.WriteTo(&buf); err != nil {
+		t.Fatalf("the redaction was refused: %v", err)
+	}
+	got, err := NewReaderOrFail(t, buf.Bytes()).PageText(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The standalone word goes.
+	if strings.Contains(got, "una versione") {
+		t.Errorf("the standalone word survived: %q", got)
+	}
+	// The half of the hyphenated word stays, because it is not a word.
+	if !strings.Contains(got, "con-") || !strings.Contains(got, "versione della") {
+		t.Errorf("the hyphenated word was broken up: %q", got)
+	}
+}
+
+// TestRedactAcrossAHyphenatedBreak: the other side of the same rule — a
+// word the document split is still one word, and redacting it takes both
+// halves.
+func TestRedactAcrossAHyphenatedBreak(t *testing.T) {
+	doc := New()
+	doc.Compress = false
+	p := doc.AddPage()
+	p.SetFont(Helvetica, 12)
+	p.Text(72, 100, "the con-")
+	p.Text(72, 116, "versione here")
+	src := docBytes(t, doc)
+
+	rd := Redact(NewReaderOrFail(t, src))
+	rd.Text("conversione")
+	var buf bytes.Buffer
+	if _, err := rd.WriteTo(&buf); err != nil {
+		t.Fatalf("redacting across the break: %v", err)
+	}
+	got, err := NewReaderOrFail(t, buf.Bytes()).PageText(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, "con-") || strings.Contains(got, "versione") {
+		t.Errorf("half of the split word survived: %q", got)
+	}
+	if !strings.Contains(got, "here") {
+		t.Errorf("the rest of the line went too: %q", got)
+	}
+}
