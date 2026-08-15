@@ -993,3 +993,106 @@ func TestPatternRange(t *testing.T) {
 		t.Errorf("range %v..%v does not cover the box", lo, hi)
 	}
 }
+
+// TestSoftMaskSurvivesAGroupThatClearsIt is the shape Illustrator writes
+// and the reason a faded logo came out as a solid slab: the outer state
+// sets a soft mask, and the very first thing the form it applies to does
+// is set /SMask /None. A transparency group is composited as a whole and
+// the mask applies to that composite, so the group cannot undo it from
+// the inside.
+func TestSoftMaskSurvivesAGroupThatClearsIt(t *testing.T) {
+	doc := New()
+	doc.Compress = false
+	page := doc.AddPage()
+	page.op("q /GSm gs /Fm0 Do Q")
+	src := withResources(t, docBytes(t, doc), func(u *Updater) Dict {
+		mask := u.add(&rawStream{
+			dict: Dict{
+				"Type": Name("XObject"), "Subtype": Name("Form"),
+				"BBox":  Array{0.0, 0.0, 600.0, 850.0},
+				"Group": Dict{"S": Name("Transparency")},
+			},
+			// Mid grey over the left half, black elsewhere.
+			data: []byte("0.5 g 0 0 250 850 re f\n"),
+		})
+		none := u.add(Dict{"Type": Name("ExtGState"), "SMask": Name("None")})
+		// The artwork: a transparency group that clears the soft mask on
+		// its first line and then paints black across the page.
+		art := u.add(&rawStream{
+			dict: Dict{
+				"Type": Name("XObject"), "Subtype": Name("Form"),
+				"BBox":      Array{0.0, 0.0, 600.0, 850.0},
+				"Group":     Dict{"S": Name("Transparency")},
+				"Resources": Dict{"ExtGState": Dict{"GS0": Ref{Num: none}}},
+			},
+			data: []byte("/GS0 gs 0 0 0 rg 60 600 400 100 re f\n"),
+		})
+		return Dict{
+			"XObject": Dict{"Fm0": Ref{Num: art}},
+			"ExtGState": Dict{"GSm": Dict{
+				"Type":  Name("ExtGState"),
+				"SMask": Dict{"S": Name("Luminosity"), "G": Ref{Num: mask}},
+			}},
+		}
+	})
+
+	r := NewReaderOrFail(t, src)
+	img, err := r.RenderPage(0, RenderOpts{DPI: 100, IncludeVector: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	y := 841.89 - 650
+	if masked, _, _, _ := at(t, img, 100, 150, y); masked < 100 || masked > 160 {
+		t.Errorf("under the mid-grey half of the mask = %d, want about 128", masked)
+	}
+	// The half the mask hides must stay hidden, however the group asked.
+	if clear, _, _, _ := at(t, img, 100, 400, y); clear != 255 {
+		t.Errorf("the group cleared the mask and painted %d, want 255", clear)
+	}
+}
+
+// TestSoftMaskIsClearableOutsideAGroup is the other half of the rule: a
+// form with no transparency group paints straight into the page, so
+// /SMask /None inside it does clear the mask, as it does anywhere else.
+func TestSoftMaskIsClearableOutsideAGroup(t *testing.T) {
+	doc := New()
+	doc.Compress = false
+	page := doc.AddPage()
+	page.op("q /GSm gs /Fm0 Do Q")
+	src := withResources(t, docBytes(t, doc), func(u *Updater) Dict {
+		mask := u.add(&rawStream{
+			dict: Dict{
+				"Type": Name("XObject"), "Subtype": Name("Form"),
+				"BBox":  Array{0.0, 0.0, 600.0, 850.0},
+				"Group": Dict{"S": Name("Transparency")},
+			},
+			data: []byte("0.5 g 0 0 250 850 re f\n"),
+		})
+		none := u.add(Dict{"Type": Name("ExtGState"), "SMask": Name("None")})
+		art := u.add(&rawStream{
+			dict: Dict{
+				"Type": Name("XObject"), "Subtype": Name("Form"),
+				"BBox":      Array{0.0, 0.0, 600.0, 850.0},
+				"Resources": Dict{"ExtGState": Dict{"GS0": Ref{Num: none}}},
+			},
+			data: []byte("/GS0 gs 0 0 0 rg 60 600 400 100 re f\n"),
+		})
+		return Dict{
+			"XObject": Dict{"Fm0": Ref{Num: art}},
+			"ExtGState": Dict{"GSm": Dict{
+				"Type":  Name("ExtGState"),
+				"SMask": Dict{"S": Name("Luminosity"), "G": Ref{Num: mask}},
+			}},
+		}
+	})
+
+	r := NewReaderOrFail(t, src)
+	img, err := r.RenderPage(0, RenderOpts{DPI: 100, IncludeVector: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	y := 841.89 - 650
+	if v, _, _, _ := at(t, img, 100, 400, y); v > 40 {
+		t.Errorf("outside a group the mask should have been cleared, got %d", v)
+	}
+}

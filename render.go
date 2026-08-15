@@ -582,8 +582,22 @@ func (rn *renderer) doXObject(res Dict, name Name, gs renderState, depth int) {
 		if m := floatArray(rn.r, stm.dict["Matrix"]); len(m) == 6 {
 			inner = matrix{m[0], m[1], m[2], m[3], m[4], m[5]}.mul(gs.ctm)
 		}
-		// A form's bounding box clips what it draws.
 		sub := gs
+		// A transparency group is composited as a whole and the soft
+		// mask in force applies to that composite, so the group cannot
+		// undo it from the inside. Illustrator writes exactly that:
+		// /GS0 gs sets a mask, the form it applies to sets /SMask /None
+		// on its first line, and a renderer that treats the mask as
+		// ordinary state throws it away and paints the artwork solid.
+		// Folding the mask into the group's base clip makes it immovable
+		// for everything the group draws.
+		if grp, ok := rn.r.resolve(stm.dict["Group"]).(Dict); ok &&
+			rn.r.resolve(grp["S"]) == Name("Transparency") && sub.softMask != nil {
+			sub.baseClip = combineMasks(sub.baseClip, sub.softMask)
+			sub.softMask = nil
+			sub.clip = sub.baseClip
+		}
+		// A form's bounding box clips what it draws.
 		if bb := floatArray(rn.r, stm.dict["BBox"]); len(bb) == 4 {
 			var box rasterPath
 			corners := [][2]float64{{bb[0], bb[1]}, {bb[2], bb[1]}, {bb[2], bb[3]}, {bb[0], bb[3]}}
@@ -596,7 +610,7 @@ func (rn *renderer) doXObject(res Dict, name Name, gs renderState, depth int) {
 				}
 			}
 			box.close()
-			sub.baseClip = rn.intersectClip(gs.baseClip, &box, false)
+			sub.baseClip = rn.intersectClip(sub.baseClip, &box, false)
 			sub.clip = combineMasks(sub.baseClip, sub.softMask)
 		}
 		formRes := stm.dict["Resources"]
