@@ -61,6 +61,11 @@ go get github.com/SalvioniDigitalSolutions/gopdf
   object streams, hybrid files; Flate (with PNG/TIFF predictors), LZW,
   ASCII85, ASCIIHex and RunLength filters
 - Merge, split, rotate, stamp and watermark
+- **Styled text fragments**: `PageTextFragments` gives every show-text
+  operation with its baseline, advance width, `/BaseFont`, effective size
+  and render mode, in content-stream order, descending into forms —
+  enough to anchor a frame over a word or to feed a detector that reports
+  offsets
 - **Text extraction** through ToUnicode CMaps and simple-font encodings,
   descending into nested form XObjects, with word breaks decided by
   measuring the gap rather than guessing — troff and TeX output reads as
@@ -74,8 +79,8 @@ go get github.com/SalvioniDigitalSolutions/gopdf
   what follows out of the way
 - **Interactive forms**: read fields, fill them (flattened or still
   editable), and author new ones from scratch
-- **Images**: list what a page draws, with placement and colour space,
-  decode the pixels, and replace one in place
+- **Images**: list what a page draws, with placement, draw matrix and
+  colour space, decode the pixels, and replace one in place
 - **Restyling**: change an existing run's typeface, size or colour, not
   just the characters it draws
 - **Annotations**: read, add and remove highlights, underlines,
@@ -394,7 +399,7 @@ go run ./examples/redact -in case.pdf -list -text "Ada Lovelace"
 Coordinates are in points (1/72 inch) with the origin at the **top-left**
 of the page; `Mm`, `Cm` and `Inch` convert other units.
 
-- **294 tests** at **86% statement coverage**, covering the writer, the
+- **311 tests** at **86% statement coverage**, covering the writer, the
   parser, the font subsetter, the filters, encryption, editing, reflow,
   flow, forms, signatures and redaction
 - **Text extraction measured against `pdftotext`** over 918 real

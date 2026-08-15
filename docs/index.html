@@ -1132,8 +1132,9 @@ this is the shape of it.</p>
 <tbody>
 <tr><td><code>Open</code>, <code>OpenPassword</code>, <code>NewReader</code>, <code>NewReaderPassword</code></td><td>From a path or from memory, with or without a password.</td></tr>
 <tr><td><code>NumPages</code>, <code>PageSize</code>, <code>PageText</code>, <code>Info</code></td><td>The basics.</td></tr>
+<tr><td><code>PageTextFragments</code> → <code>TextFragment</code></td><td>Text one show-text operation at a time, with its baseline, advance, <code>/BaseFont</code>, effective size and render mode. Content-stream order, forms composed. <code>Invisible()</code> marks the OCR layer under a scan.</td></tr>
 <tr><td><code>IsEncrypted</code>, <code>Repaired</code>, <code>HasForm</code>, <code>HasSignatures</code></td><td>What kind of file this is.</td></tr>
-<tr><td><code>Annotations</code>, <code>PageImages</code>, <code>FormFields</code>, <code>Signatures</code></td><td>What it holds.</td></tr>
+<tr><td><code>Annotations</code>, <code>PageImages</code>, <code>FormFields</code>, <code>Signatures</code></td><td>What it holds. An <code>ImageRef</code> carries its draw <code>Matrix</code>, with <code>Rotation()</code> and <code>Upright()</code>, so a turned image reports its angle rather than a box larger than the picture.</td></tr>
 </tbody>
 </table>
 

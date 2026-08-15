@@ -63,6 +63,11 @@ type TextRun struct {
 	codes    []byte
 	codeStep int
 	codeText []int
+	// renderMode is the Tr in force, and baseFont the font's /BaseFont
+	// with its subset prefix, which is what identifies the face rather
+	// than the resource name the page happens to give it.
+	renderMode int
+	baseFont   string
 
 	// style carries a pending restyle, applied when the run is written.
 	style *TextStyle
@@ -273,8 +278,16 @@ type runScanner struct {
 	// complete before any replacement is encoded.
 	infos map[any]*fontInfo
 	// adoptForm claims a form XObject for editing and returns the stream
-	// whose data should carry the edits back, or nil to scan read-only.
+	// whose data should carry the edits back. Returning nil declines the
+	// form, which a scanner that edits must respect: runs it cannot write
+	// back are runs it must not offer.
 	adoptForm func(entry any) *rawStream
+	// readOnly descends into a form even when adoptForm declines it,
+	// which is what reading a page wants and editing one must not do.
+	readOnly bool
+	// truncated records that a content stream was too large to lex
+	// whole, so what was collected is a prefix and not the page.
+	truncated bool
 }
 
 // contentToken is a lexed content-stream token with its byte span.
@@ -284,6 +297,23 @@ type contentToken struct {
 }
 
 func tokenizeContent(data []byte) []contentToken {
+	out, _ := tokenizeContentLimited(data)
+	return out
+}
+
+// maxContentTokens bounds how much of a content stream is lexed at once.
+//
+// A token is at least a byte, so the count is bounded by the stream and
+// the stream is bounded already; the cap is on the memory the token list
+// itself takes, which is some thirty times what the bytes take. Pages
+// that draw every glyph of a large font run to a few million tokens, so
+// the limit sits well above that and truncation is reported rather than
+// quietly handing back a prefix.
+const maxContentTokens = 1 << 23
+
+// tokenizeContentLimited lexes a content stream, reporting whether it had
+// to stop early.
+func tokenizeContentLimited(data []byte) ([]contentToken, bool) {
 	var out []contentToken
 	p := &parser{data: data}
 	for {
@@ -291,15 +321,15 @@ func tokenizeContent(data []byte) []contentToken {
 		start := p.pos
 		v, err := p.next()
 		if err == io.EOF {
-			return out
+			return out, false
 		}
 		if err != nil {
 			p.pos = start + 1
 			continue
 		}
 		out = append(out, contentToken{val: v, start: start, end: p.pos})
-		if len(out) > 1<<21 {
-			return out
+		if len(out) >= maxContentTokens {
+			return out, true
 		}
 	}
 }
@@ -314,6 +344,9 @@ type textState struct {
 	horizScale  float64
 	rise        float64
 	leading     float64
+	// renderMode is Tr. Mode 3 draws nothing, which is how a scanned
+	// page carries its OCR layer.
+	renderMode int
 	// fillOp is the source text of the operation that last set the fill
 	// colour, so a restyled run can put it back exactly — whatever colour
 	// space it used.
@@ -350,7 +383,10 @@ func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth
 	st := textState{horizScale: 1}
 	var stStack []textState
 
-	tokens := tokenizeContent(target.content)
+	tokens, cut := tokenizeContentLimited(target.content)
+	if cut {
+		sc.truncated = true
+	}
 	var operands []contentToken
 	opStart := 0
 
@@ -416,6 +452,8 @@ func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth
 			codes:       encoded,
 			codeStep:    codeStepFor(fi),
 			codeText:    codeText,
+			renderMode:  st.renderMode,
+			baseFont:    fi.baseFont,
 			target:      target,
 			start:       opStart,
 			end:         end,
@@ -504,6 +542,8 @@ func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth
 			st.horizScale = num(0) / 100
 		case "Ts":
 			st.rise = num(0)
+		case "Tr":
+			st.renderMode = int(num(0))
 		case "Tf":
 			if len(operands) >= 2 {
 				if n, ok := operands[0].val.(Name); ok {
@@ -573,8 +613,12 @@ func (sc *runScanner) scanForm(name Name, resources any, ctm matrix, depth int) 
 		return
 	}
 	// Claim a writable stream for this form so edits reach the output.
+	// A scanner that only reads descends anyway: the form's text is on
+	// the page whether or not anything intends to rewrite it. One that
+	// edits cannot, since a form it may not claim is a form whose runs it
+	// has no way to write back.
 	writable := sc.adoptForm(entry)
-	if writable == nil {
+	if writable == nil && !sc.readOnly {
 		return
 	}
 	inner := ctm

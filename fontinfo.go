@@ -35,6 +35,11 @@ type fontInfo struct {
 	type3 bool
 	procs map[uint32]bool
 
+	// baseFont is the font's /BaseFont with its subset prefix intact,
+	// which is what names the face; the resource name is only what this
+	// page happened to call it.
+	baseFont string
+
 	// builtin is set when this describes one of the standard fourteen
 	// rather than a font read out of the document, which is how a
 	// substituted token is measured when the document's own font cannot
@@ -62,7 +67,28 @@ func newFontInfo(r *Reader, name Name, dict Dict, decoder *fontDecoder) *fontInf
 	}
 	fi.loadEmbedded(r, dict)
 	fi.loadFace(r, dict)
+	fi.baseFont = baseFontName(r, dict)
 	return fi
+}
+
+// baseFontName returns the /BaseFont of a font or, for a Type 0, of its
+// descendant, keeping the subset prefix.
+func baseFontName(r *Reader, dict Dict) string {
+	if base, ok := r.resolve(dict["BaseFont"]).(Name); ok {
+		return string(base)
+	}
+	if kids, ok := r.resolve(dict["DescendantFonts"]).(Array); ok && len(kids) > 0 {
+		if d, ok := r.resolve(kids[0]).(Dict); ok {
+			if base, ok := r.resolve(d["BaseFont"]).(Name); ok {
+				return string(base)
+			}
+		}
+	}
+	// A Type 3 font has no BaseFont; its /Name is the nearest thing.
+	if n, ok := r.resolve(dict["Name"]).(Name); ok {
+		return string(n)
+	}
+	return ""
 }
 
 // loadFace works out whether the font is bold or italic, from the

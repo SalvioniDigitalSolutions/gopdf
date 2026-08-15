@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	"math"
 )
 
 // ImageRef describes an image drawn on a page.
@@ -23,7 +24,17 @@ type ImageRef struct {
 	// X, Y, W and H give where the image is drawn, in points from the
 	// top-left of the page. They are zero if the image is in the page's
 	// resources but never painted.
+	//
+	// They bound the image. For anything but an upright placement the box
+	// is larger than the picture — a rotated image fills its bounding box
+	// no better than a tilted photograph fills the envelope it came in —
+	// so use Matrix where the placement matters.
 	X, Y, W, H float64
+	// Matrix is the transform in force where the image was drawn, mapping
+	// the unit square onto the page. It is the placement exactly:
+	// rotation, skew and flip included, in PDF's bottom-up coordinates.
+	// It is the zero matrix for an image the page never paints.
+	Matrix [6]float64
 
 	ref    Ref
 	stream *rawStream
@@ -166,14 +177,16 @@ func (sc *imageScanner) visit(name Name, entry any, resources any, ctm matrix, d
 			img.ColorSpace = "ImageMask"
 			img.BitsPerComponent = 1
 		}
-		// An image is drawn into the unit square, so the transform's own
-		// extent is the area it covers.
-		x0, y0 := ctm.apply(0, 0)
-		x1, y1 := ctm.apply(1, 1)
-		img.X = minF(x0, x1) - sc.box[0]
-		img.W = absF(x1 - x0)
-		img.H = absF(y1 - y0)
-		img.Y = sc.box[3] - maxF(y0, y1)
+		// An image is drawn into the unit square, so the transform is the
+		// placement. All four corners are taken, not two: under a
+		// rotation the diagonal alone describes a box the picture does
+		// not fill.
+		img.Matrix = ctm
+		lo, hi := unitSquareBounds(ctm)
+		img.X = lo[0] - sc.box[0]
+		img.Y = sc.box[3] - hi[1]
+		img.W = hi[0] - lo[0]
+		img.H = hi[1] - lo[1]
 		sc.out = append(sc.out, img)
 	}
 }
@@ -623,4 +636,47 @@ func encodeImageForPDF(m image.Image) (*imageData, error) {
 		return nil, err
 	}
 	return scratch.images[0], nil
+}
+
+// unitSquareBounds returns the corners of the box a transform maps the
+// unit square into.
+func unitSquareBounds(m matrix) (lo, hi [2]float64) {
+	first := true
+	for _, c := range [][2]float64{{0, 0}, {1, 0}, {0, 1}, {1, 1}} {
+		x, y := m.apply(c[0], c[1])
+		if first {
+			lo, hi, first = [2]float64{x, y}, [2]float64{x, y}, false
+			continue
+		}
+		lo[0], hi[0] = minF(lo[0], x), maxF(hi[0], x)
+		lo[1], hi[1] = minF(lo[1], y), maxF(hi[1], y)
+	}
+	return lo, hi
+}
+
+// Rotation returns the angle the image is drawn at, in degrees clockwise
+// from upright as seen on the page, in the range [0, 360).
+//
+// It is the angle of the placement's horizontal axis. A sheared placement
+// has no single angle; this reports the one its baseline runs at.
+func (im ImageRef) Rotation() float64 {
+	if im.Matrix == ([6]float64{}) {
+		return 0
+	}
+	// PDF space runs upwards and the page coordinates here run down, so
+	// the sign of the vertical component flips.
+	deg := math.Atan2(-im.Matrix[1], im.Matrix[0]) * 180 / math.Pi
+	if deg < 0 {
+		deg += 360
+	}
+	if deg >= 360 {
+		deg -= 360
+	}
+	return deg
+}
+
+// Upright reports whether the image is drawn square to the page, which is
+// when its bounding box is the picture and not merely around it.
+func (im ImageRef) Upright() bool {
+	return im.Matrix[1] == 0 && im.Matrix[2] == 0
 }
