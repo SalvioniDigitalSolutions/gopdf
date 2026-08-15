@@ -102,11 +102,24 @@ go get github.com/SalvioniDigitalSolutions/gopdf
 - **OCR-driven redaction**: plug in an engine (a tesseract adapter ships
   in the repo) and text rules also reach words inside a scan — pixels
   overwritten, a token drawn in their place, then read again to prove it
-- **Vector rendering**: `RenderPage` draws a page's artwork — paths,
-  fills, strokes with caps, joins and dashes, clips, colour spaces and
-  axial shadings — to an image, so a logo or a watermark that exists only
-  as instructions can travel as pixels behind live text. Text is
-  deliberately not drawn
+- **Page rendering**: `RenderPage` draws a page to an image — paths,
+  fills, strokes with caps, joins and dashes, clips, colour spaces, axial
+  and radial shadings, tiling and shading patterns, soft masks, raster
+  images, and **text**, set from the outlines the document's own fonts
+  carry. Each layer is a separate switch, so the artwork behind live text
+  is one call and a full-page picture is another
+- **Glyph outlines**: TrueType `glyf` contours including composites, and
+  CFF Type 2 charstrings run properly rather than approximated —
+  the same shapes a viewer draws
+- **Font substitution**: a document may name Arial without embedding it.
+  `SubstituteFont` lets you supply the shapes and `SystemFonts` builds
+  that from the machine's own fonts; advances still come from the
+  document, so the text lands exactly where the document says
+- **The object graph**: `Resolve`, `Object`, `Catalog`, `PageDict` and
+  `Walk` read any object in the file, and `AddObject`/`SetObject` write
+  them back — the escape hatch for anything the typed API does not model,
+  going through the same decryption, filters and cross-reference
+  machinery as everything else
 - **Repairs damaged files**: a wrong `startxref`, bytes before the header
   or a broken table are recovered by scanning for the objects
 - Reads encrypted files (RC4, AES-128, AES-256) with either password
@@ -249,6 +262,66 @@ page.Circle(cx, cy, r, gopdf.ClipPath)
 page.PaintLinearGradient(x0, y0, x1, y1, stops...)
 page.Pop()
 ```
+
+### Draw a page
+
+```go
+r, _ := gopdf.Open("report.pdf")
+
+// The artwork only: paths, shadings, patterns and soft masks, with the
+// text left out. Useful behind a live text layer.
+art, _, _ := r.RenderPageDetail(0, gopdf.RenderOpts{
+    DPI: 150, IncludeVector: true,
+})
+
+// Or the whole page. Fonts the document embeds are drawn from their own
+// outlines; SystemFonts stands in for the ones it only names.
+img, report, err := r.RenderPageDetail(0, gopdf.RenderOpts{
+    DPI:                 150,
+    IncludeVector:       true,
+    IncludeText:         true,
+    IncludeRasterImages: true,
+    SubstituteFont:      gopdf.SystemFonts(),
+})
+if report.Missing > 0 {
+    log.Printf("%d glyphs had no font to draw them with", report.Missing)
+}
+```
+
+Text that clips is followed whether or not text is drawn, because a
+headline used as a clip decides where a gradient shows through — ignore
+it and the gradient covers the page.
+
+### Reach the object graph
+
+Everything else in the package is an opinion about what a PDF is for.
+When a file does something those opinions have no word for, the graph
+itself is reachable:
+
+```go
+r, _ := gopdf.Open("odd.pdf")
+
+// Read: follow a reference, walk from the trailer, decode a stream.
+lang := r.Resolve(r.Catalog()["Lang"])
+if stm, ok := r.Resolve(r.PageDict(0)["Contents"]).(*gopdf.Stream); ok {
+    data, _ := stm.Data() // decoded, and decrypted if the file is
+    _ = data
+}
+r.Walk(func(ref gopdf.Ref, obj any) bool {
+    _ = obj
+    return true // false stops the walk
+})
+
+// Write: add objects and replace existing ones, appended incrementally.
+u := gopdf.Update(r)
+ref := u.AddObject(gopdf.NewStream(gopdf.Dict{}, []byte("q 1 0 0 RG 4 w 0 0 m 99 99 l S Q")))
+u.SetCatalogEntry("Lang", gopdf.String("en-GB"))
+_ = u.Save("odd-out.pdf")
+_, _ = ref, lang
+```
+
+The reader hands back its own dictionaries: `Clone` one before changing
+it, and write the copy back with `SetObject`.
 
 ### Merge, watermark, encrypt
 
@@ -454,6 +527,13 @@ Stated plainly, because they matter when choosing a library:
 - Signatures are `adbe.pkcs7.detached` with SHA-256. Signing produces the
   blob and the byte range; obtaining a timestamp from a TSA, and deciding
   whether a certificate is one you trust, are left to the caller.
+- Rendering draws a glyph from the outlines the document carries. A font
+  the document names but does not embed has no outlines to draw, and a
+  bare PostScript font is addressed by glyph name through the built-in
+  encodings this package does not carry. Both are handled by supplying a
+  substitute; without one their text is left undrawn and
+  `RenderPageDetail` reports how much. Blend modes are ignored: every
+  paint is composited normally.
 - Redaction removes *content*. A string can also live somewhere
   structural — a font's `/BaseFont` name, an embedded file's name — and
   those are not content to remove. Vector artwork that straddles the edge
@@ -465,7 +545,7 @@ Stated plainly, because they matter when choosing a library:
 
 Nothing outstanding from the original plan. Candidates, in no order:
 CID-keyed CFF subsetting, PAdES timestamps, public-key (certificate)
-security handlers, mesh shadings and tiling patterns, PDF/A conformance,
+security handlers, mesh shadings, blend modes, PDF/A conformance,
 linearization, and reflow that cascades across pages.
 
 ## License

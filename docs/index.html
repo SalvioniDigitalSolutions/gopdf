@@ -177,7 +177,7 @@ footer { border-top: 1px solid var(--border); margin-top: 4rem; padding-top: 1.5
     <li><a href="#encryption">Encryption</a></li>
     <li><a href="#signatures">Digital signatures</a></li>
     <li><a href="#design">Design notes</a></li>
-    <li><a href="#render">Rendering the vector layer</a></li>
+    <li><a href="#render">Rendering a page</a></li>
     <li><a href="#apimap">API map</a></li>
     <li><a href="#limits">Limitations</a></li>
     <li><a href="https://pkg.go.dev/github.com/SalvioniDigitalSolutions/gopdf">API reference ↗</a></li>
@@ -1109,21 +1109,43 @@ written in the clear, as the specification requires.</li>
 and font parser are continuously fuzzed with a checked-in corpus.</li>
 </ul>
 
-<h2 id="render">Rendering the vector layer</h2>
+<h2 id="render">Rendering a page</h2>
 <p>Some of what a page holds has no other form. Text can be extracted and
 a photograph pulled out and re-anchored, but a logo drawn as two hundred
 Bézier curves, a rule, a checkbox, a watermark across the diagonal —
 those are instructions, and the only way to carry them anywhere else is to
 draw them.</p>
+<p>Each layer is a separate switch, so the artwork alone is one call and
+the whole page is another.</p>
 <pre><code>r, _ := gopdf.<span class="f">Open</span>(<span class="s">"contract.pdf"</span>)
-img, err := r.<span class="f">RenderPage</span>(<span class="n">0</span>, gopdf.RenderOpts{
+
+<span class="c">// The artwork alone: a layer that can sit behind live, editable,</span>
+<span class="c">// redactable text rather than replacing it.</span>
+art, err := r.<span class="f">RenderPage</span>(<span class="n">0</span>, gopdf.RenderOpts{
 	DPI:           <span class="n">150</span>,
 	IncludeVector: <span class="k">true</span>,   <span class="c">// paths, fills, strokes, shadings</span>
 	Transparent:   <span class="k">true</span>,   <span class="c">// clear where nothing was painted</span>
-})</code></pre>
-<p>With text and photographs off, what comes back is the artwork alone —
-a layer that can sit behind live, editable, redactable text rather than
-replacing it.</p>
+})
+
+<span class="c">// Or the page as a reader sees it.</span>
+img, report, err := r.<span class="f">RenderPageDetail</span>(<span class="n">0</span>, gopdf.RenderOpts{
+	DPI:                 <span class="n">150</span>,
+	IncludeVector:       <span class="k">true</span>,
+	IncludeText:         <span class="k">true</span>,
+	IncludeRasterImages: <span class="k">true</span>,
+	SubstituteFont:      gopdf.<span class="f">SystemFonts</span>(),
+})
+<span class="k">if</span> report.Missing &gt; <span class="n">0</span> {
+	log.<span class="f">Printf</span>(<span class="s">"%d glyphs had no font to draw them with"</span>, report.Missing)
+}</code></pre>
+<p>Glyphs are drawn from the outlines the document's own fonts carry:
+TrueType contours out of <code>glyf</code>, composites assembled from
+their parts, and CFF glyphs by running their Type 2 charstrings. A font
+the document only names is not something any parser can supply, so
+<code>SubstituteFont</code> lets you hand one over —
+<code>SystemFonts</code> builds that from the machine's own fonts. A
+substitute gives shapes only: every advance still comes from the widths
+in the document, so the text lands where the document says.</p>
 
 <h3>What it draws</h3>
 <table>
@@ -1133,7 +1155,10 @@ replacing it.</p>
 <tr><td>Clipping</td><td><code>W</code> and <code>W*</code>, kept as a coverage mask so a clipped edge is as smooth as a painted one.</td></tr>
 <tr><td>State</td><td><code>q</code>/<code>Q</code>, <code>cm</code>, and the constant alpha an <code>ExtGState</code> sets.</td></tr>
 <tr><td>Colour</td><td>Gray, RGB and CMYK; ICC by component count; indexed palettes; separations through their tint function.</td></tr>
-<tr><td>Shading</td><td>Axial gradients, evaluated through sampled, exponential and stitching functions. Other kinds are painted as one colour from the middle of their own ramp rather than left as a hole.</td></tr>
+<tr><td>Shading</td><td>Axial and radial gradients, evaluated through sampled, exponential and stitching functions. The mesh kinds are painted as one colour from the middle of their own ramp rather than left as a hole.</td></tr>
+<tr><td>Patterns</td><td>Tiling patterns, run cell by cell across the area they fill; shading patterns painted through the path.</td></tr>
+<tr><td>Soft masks</td><td>A luminosity or alpha group rendered on its own and folded into the clip. A mask in force when a transparency group is drawn applies to the whole group and cannot be cleared from inside it, which is what Illustrator's output depends on.</td></tr>
+<tr><td>Text</td><td>All eight rendering modes: filled, stroked, both, invisible, and the four that add the glyphs to the clip. A text clip is followed even with text switched off, because what it removes is part of the artwork.</td></tr>
 <tr><td>Forms</td><td>XObjects recursed into, with their matrix composed and their bounding box clipping what they draw.</td></tr>
 <tr><td>Images</td><td>Off by default; <code>IncludeRasterImages</code> draws them, sampled through the inverse of their placement so a rotated one lands square.</td></tr>
 </tbody>
@@ -1141,20 +1166,24 @@ replacing it.</p>
 
 <h3>What it does not</h3>
 <div class="note warn">
-<p><strong>Text is not drawn, and asking for it is an error rather than a
-silent omission.</strong> Rendering type needs a font rasterizer this
-package does not have, and a page quietly missing its words would be
-worse than one that said so. Soft masks, tiling patterns and blend modes
-are also outside this: a page using them renders without them.</p>
+<p><strong>A glyph can only be drawn from outlines that exist.</strong>
+A font the document names without embedding has none, and a bare
+PostScript font is addressed by glyph name through the built-in
+encodings this package does not carry. Both are answered by supplying a
+substitute; without one their text is left undrawn, and
+<code>RenderPageDetail</code> reports how many glyphs that came to
+rather than handing back a page that looks complete.</p>
+<p>Blend modes are ignored: every paint is composited normally. The mesh
+shadings (types 4 to 7) are painted flat.</p>
 </div>
 
 <h3>How close it is</h3>
-<p>Measured against <code>pdftoppm</code> on a page of fills, strokes,
-dashes, joins, a gradient and a clip, the mean difference is 0.35 of 765
-and fewer than one pixel in five hundred differs enough to see — those
-being the anti-aliased edges. Across 1,200 real documents nothing failed,
-and the one-sided check that matters — ink where the reference has none —
-has a median of zero.</p>
+<p>Measured against <code>pdftoppm</code> across 1,500 documents of the
+corpus, 99.91% of the glyphs a page asks for are drawn, and the median
+document draws every one. On the one-sided check that matters — ink
+where the reference has none — the median page scores zero and 99% are
+under two per cent, the remainder being pages where the two renderers
+chose different substitutes for a font neither was given.</p>
 
 <h2 id="apimap">API map</h2>
 <p>What to reach for, by task. Every signature is on
@@ -1182,7 +1211,9 @@ this is the shape of it.</p>
 <tr><td><code>NumPages</code>, <code>PageSize</code>, <code>PageText</code>, <code>Info</code></td><td>The basics.</td></tr>
 <tr><td><code>PageTextFragments</code> → <code>TextFragment</code></td><td>Text one show-text operation at a time, with its baseline, advance, <code>/BaseFont</code>, effective size and render mode. Content-stream order, forms composed. <code>Invisible()</code> marks the OCR layer under a scan.</td></tr>
 <tr><td><code>IsEncrypted</code>, <code>Repaired</code>, <code>HasForm</code>, <code>HasSignatures</code></td><td>What kind of file this is.</td></tr>
-<tr><td><code>RenderPage</code> → <code>RenderOpts</code></td><td>Draw the page's vector layer to an image.</td></tr>
+<tr><td><code>RenderPage</code>, <code>RenderPageDetail</code> → <code>RenderOpts</code>, <code>RenderReport</code></td><td>Draw a page to an image, layer by layer. The detailed form reports the glyphs it could not draw.</td></tr>
+<tr><td><code>SystemFonts</code> → <code>FontRequest</code></td><td>Stand-in outlines for fonts the document names but does not embed.</td></tr>
+<tr><td><code>Resolve</code>, <code>Object</code>, <code>Catalog</code>, <code>Trailer</code>, <code>PageDict</code>, <code>PageRef</code>, <code>InheritedPageValue</code>, <code>Objects</code>, <code>Walk</code> → <code>Stream</code></td><td>The object graph itself, for whatever the typed API has no word for.</td></tr>
 <tr><td><code>Annotations</code>, <code>PageImages</code>, <code>FormFields</code>, <code>Signatures</code></td><td>What it holds. An <code>ImageRef</code> carries its draw <code>Matrix</code>, with <code>Rotation()</code> and <code>Upright()</code>, so a turned image reports its angle rather than a box larger than the picture.</td></tr>
 </tbody>
 </table>
@@ -1198,6 +1229,7 @@ this is the shape of it.</p>
 <tr><td><code>Restyle</code></td><td>Change a run's typeface, size or colour.</td></tr>
 <tr><td><code>ReplaceImage</code>, <code>RemoveAnnotations</code>, <code>SetFormValues</code></td><td>Images, annotations, fields.</td></tr>
 <tr><td><code>SetPageOrder</code>, <code>RemovePage</code>, <code>MovePage</code>, <code>SetPageRotation</code></td><td>Page operations.</td></tr>
+<tr><td><code>AddObject</code>, <code>SetObject</code>, <code>SetCatalogEntry</code>, <code>SetPageEntry</code>, <code>NewStream</code>, <code>Dict.Clone</code></td><td>Write objects directly, for anything the typed API does not model.</td></tr>
 <tr><td><code>SetFitMode</code>, <code>SetMaxExtraLines</code>, <code>SetCompress</code></td><td>How an edit is allowed to behave.</td></tr>
 </tbody>
 </table>
