@@ -483,9 +483,9 @@ go run ./examples/redact -in case.pdf -list -text "Ada Lovelace"
 Coordinates are in points (1/72 inch) with the origin at the **top-left**
 of the page; `Mm`, `Cm` and `Inch` convert other units.
 
-- **347 tests** at **85% statement coverage**, covering the writer, the
+- **409 tests** at **83% statement coverage**, covering the writer, the
   parser, the font subsetter, the filters, encryption, editing, reflow,
-  flow, forms, signatures and redaction
+  flow, forms, signatures, redaction, rendering and attachments
 - **Text extraction measured against `pdftotext`** over 918 real
   documents: agreement rose from 0.773 to 0.849 when word breaks started
   being measured rather than guessed, improving 581 files and regressing
@@ -498,13 +498,28 @@ of the page; `Mm`, `Cm` and `Inch` convert other units.
   was gone from both the text and the raw bytes, and a **2,000-file flow
   sweep** replaced a word with a much longer one and checked the
   paragraph reflowed intact. Between them the sweeps found four real
-  bugs, all fixed and now regression-tested
+  bugs, all fixed and now regression-tested.
+
+  A later **4,000-document redaction sweep** removed a word from each and
+  had `pdftotext` confirm it was gone: 3,986 succeeded, none silently,
+  and none produced a damaged document. The 137 that were refused rather
+  than written turned out to be the matcher and the verifier reading the
+  same page differently — a gap inside one show-text operation, and a
+  word hyphenated across a line — and fixing both left 14
 - **Fuzz targets** for the PDF reader and the TrueType parser, with a
   checked-in regression corpus of 700+ inputs. Fuzzing has found and fixed
   real bugs, including a denial-of-service in `cmap` parsing
+- **Rendering measured against `pdftoppm`**: across 1,500 documents
+  99.9% of the glyphs a page asks for are drawn, and on the check that
+  matters — ink where the reference has none — the median page scores
+  zero and 99% are under two per cent
 - **Validated against Poppler** in both directions: files gopdf writes are
   read by an independent implementation, and files other tools wrote are
   read, edited and rewritten by gopdf with their text preserved.
+  Attachments extracted by gopdf are byte-identical to `pdfdetach`, and
+  every font a stream selects is checked to be declared where that
+  stream resolves names — a thing gopdf's own forgiving reader could not
+  have caught.
   Signatures are checked with `pdfsig`, which reports them valid and the
   document wholly covered, and the CMS blob parses under OpenSSL
 - Unencrypted output is byte-for-byte **deterministic**
