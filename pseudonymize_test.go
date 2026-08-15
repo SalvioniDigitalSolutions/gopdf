@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -629,4 +630,153 @@ func shuffledEncodingDoc(t *testing.T, text string) []byte {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
+}
+
+// TestEditInsideAFormDeclaresItsFont is an interoperability failure that
+// this package's own reader was too forgiving to notice.
+//
+// A page can draw its text from inside a form XObject. An edit there
+// writes into the form's stream, and a font the edit needs was
+// registered against the page — but the page was never rebuilt, because
+// its own content stream had not changed. The result named /GpF1 in the
+// form and declared it nowhere: Poppler reported "Unknown font tag" and
+// drew none of the text, while gopdf read it back happily and every
+// check passed.
+func TestEditInsideAFormDeclaresItsFont(t *testing.T) {
+	// A page whose only text lives in a form XObject, set in a font that
+	// cannot represent a bracket, so the token needs the fallback.
+	doc := New()
+	doc.Compress = false
+	doc.AddPage()
+	src := docBytes(t, doc)
+
+	r := NewReaderOrFail(t, src)
+	u := Update(r)
+	inner := u.AddObject(NewStream(Dict{
+		"Type": Name("XObject"), "Subtype": Name("Form"),
+		"BBox":      Array{0.0, 0.0, 600.0, 800.0},
+		"Resources": Dict{"Font": Dict{"Fi": innerFont(u)}},
+	}, []byte("BT /Fi 24 Tf 72 700 Td (Symphony orchestra) Tj ET\n")))
+	res, _ := r.InheritedPageValue(0, "Resources").(Dict)
+	merged := res.Clone()
+	if merged == nil {
+		merged = Dict{}
+	}
+	merged["XObject"] = Dict{"Fm0": inner}
+	if err := u.SetPageEntry(0, "Resources", merged); err != nil {
+		t.Fatal(err)
+	}
+	page, err := u.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page.op("q /Fm0 Do Q")
+	var buf bytes.Buffer
+	if _, err := u.WriteTo(&buf); err != nil {
+		t.Fatal(err)
+	}
+	withForm := buf.Bytes()
+	if txt, _ := NewReaderOrFail(t, withForm).PageText(0); !strings.Contains(txt, "Symphony") {
+		t.Fatalf("the fixture does not draw its text: %q", txt)
+	}
+
+	var out bytes.Buffer
+	if _, err := Pseudonymize(NewReaderOrFail(t, withForm), &out,
+		[]Pseudonym{{From: "Symphony", To: "[[TOKEN_1]]"}}); err != nil {
+		t.Fatalf("the substitution was refused: %v", err)
+	}
+	final := NewReaderOrFail(t, out.Bytes())
+	if txt, _ := final.PageText(0); !strings.Contains(txt, "[[TOKEN_1]]") {
+		t.Errorf("the token is not on the page: %q", txt)
+	}
+
+	// Every font the content names has to be declared where the content
+	// is, which is the part a forgiving reader hides.
+	assertFontsDeclared(t, final)
+}
+
+// innerFont adds a font that can set letters and nothing else, so a
+// token made of brackets has to come from the fallback — which is the
+// font that then needs declaring.
+func innerFont(u *Updater) Ref {
+	var body strings.Builder
+	n := 0
+	for c := byte('A'); c <= 'z'; c++ {
+		if c > 'Z' && c < 'a' {
+			continue
+		}
+		fmt.Fprintf(&body, "<%02X> <%04X>\n", c, c)
+		n++
+	}
+	cmap := "/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n" +
+		"1 begincodespacerange <00> <FF> endcodespacerange\n" +
+		fmt.Sprintf("%d beginbfchar\n%s endbfchar\n", n, body.String()) +
+		"endcmap CMapName currentdict /CMap defineresource pop end end\n"
+	tu := u.AddObject(NewStream(Dict{}, []byte(cmap)))
+
+	// The descriptor marks it embedded, so the writer will not assume a
+	// viewer can supply glyphs the font does not list.
+	prog := u.AddObject(NewStream(Dict{"Length1": int64(4)}, []byte("fake")))
+	fd := u.AddObject(Dict{
+		"Type": Name("FontDescriptor"), "FontName": Name("ABCDEF+Narrow"),
+		"Flags": int64(4), "FontFile": prog,
+	})
+	return u.AddObject(Dict{
+		"Type": Name("Font"), "Subtype": Name("Type1"),
+		"BaseFont": Name("ABCDEF+Narrow"), "Encoding": Name("WinAnsiEncoding"),
+		"ToUnicode": tu, "FontDescriptor": fd,
+		"FirstChar": int64(32), "LastChar": int64(126),
+		"Widths": narrowWidths(),
+	})
+}
+
+func narrowWidths() Array {
+	w := make(Array, 0, 95)
+	for i := 0; i < 95; i++ {
+		w = append(w, int64(500))
+	}
+	return w
+}
+
+// assertFontsDeclared checks that every /Fx a content stream selects is
+// in the resource dictionary that stream resolves names against.
+func assertFontsDeclared(t *testing.T, r *Reader) {
+	t.Helper()
+	selector := regexp.MustCompile(`/([A-Za-z0-9_.+-]+)\s+[-0-9.]+\s+Tf`)
+
+	check := func(what string, content []byte, res any) {
+		fonts, _ := r.Resolve(Dict(nil)).(Dict)
+		if d, ok := r.Resolve(res).(Dict); ok {
+			fonts, _ = r.Resolve(d["Font"]).(Dict)
+		}
+		for _, m := range selector.FindAllSubmatch(content, -1) {
+			name := Name(m[1])
+			if fonts == nil || fonts[name] == nil {
+				t.Errorf("%s selects /%s, which its resources do not declare", what, name)
+			}
+		}
+	}
+	for i := 0; i < r.NumPages(); i++ {
+		content, err := r.pageContent(r.PageDict(i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		res := r.InheritedPageValue(i, "Resources")
+		check("the page", content, res)
+
+		// And each form it draws, against the form's own resources.
+		d, _ := r.Resolve(res).(Dict)
+		xobjs, _ := r.Resolve(d["XObject"]).(Dict)
+		for name, v := range xobjs {
+			stm, ok := r.Resolve(v).(*Stream)
+			if !ok || r.Resolve(stm.Dict["Subtype"]) != Name("Form") {
+				continue
+			}
+			body, err := stm.Data()
+			if err != nil {
+				continue
+			}
+			check("form /"+string(name), body, stm.Dict["Resources"])
+		}
+	}
 }

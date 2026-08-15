@@ -82,15 +82,47 @@ func (p *UpdatablePage) drawnContent() []byte {
 // self-contained; the original resource objects stay in the file,
 // unreferenced but untouched.
 func (p *UpdatablePage) mergedResources(rs *resourceSet) Dict {
-	r := p.u.r
+	return mergeResourceDict(p.u.r, p.sourceResources, rs, p.Page.resPrefix, true)
+}
+
+// mergeAdoptedForms gives every form XObject this update rewrote the
+// resources the update added.
+//
+// An edit inside a form writes its operators into the form's own stream,
+// and a font added for that edit was registered against the page. The
+// two are different resource dictionaries: the form names /GpF1, the
+// page is where /GpF1 was declared, and a reader resolving the name
+// against the form finds nothing and refuses to draw the text. Poppler
+// says "Unknown font tag" and stops; this package's own reader is more
+// forgiving, which is why the file looked fine from the inside.
+func (u *Updater) mergeAdoptedForms(rs *resourceSet, prefix string) {
+	if rs == nil {
+		return
+	}
+	for num, v := range u.changed {
+		stm, ok := v.(*rawStream)
+		if !ok || u.r.resolve(stm.dict["Subtype"]) != Name("Form") {
+			continue
+		}
+		stm.dict["Resources"] = mergeResourceDict(u.r, stm.dict["Resources"],
+			rs, prefix, false)
+		_ = num
+	}
+}
+
+// mergeResourceDict combines a source resource dictionary with the
+// resources an update added.
+func mergeResourceDict(r *Reader, source any, rs *resourceSet,
+	prefix string, addProcSet bool) Dict {
+
 	merged := Dict{}
-	if src, ok := r.resolve(p.sourceResources).(Dict); ok {
+	if src, ok := r.resolve(source).(Dict); ok {
 		for k, v := range src {
 			merged[k] = v
 		}
 	}
 	for _, cat := range resourceCategories {
-		ours := rs.entryDict(p.Page.resPrefix, cat)
+		ours := rs.entryDict(prefix, cat)
 		if len(ours) == 0 {
 			continue
 		}
@@ -105,9 +137,11 @@ func (p *UpdatablePage) mergedResources(rs *resourceSet) Dict {
 		}
 		merged[Name(cat)] = combined
 	}
-	if _, ok := merged["ProcSet"]; !ok {
-		merged["ProcSet"] = Array{
-			Name("PDF"), Name("Text"), Name("ImageB"), Name("ImageC"),
+	if addProcSet {
+		if _, ok := merged["ProcSet"]; !ok {
+			merged["ProcSet"] = Array{
+				Name("PDF"), Name("Text"), Name("ImageB"), Name("ImageC"),
+			}
 		}
 	}
 	return merged

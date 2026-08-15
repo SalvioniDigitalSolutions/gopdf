@@ -147,6 +147,12 @@ type UpdatablePage struct {
 	runs    []*TextRun
 	// contentTarget is the page's own content stream.
 	contentTarget *editTarget
+	// formEdited records that a text edit landed inside a form XObject
+	// rather than in the page's own content stream. The page still has
+	// to be rebuilt in that case, because the resources the edit needs
+	// are declared on the page.
+	formEdited bool
+
 	// sourceResources is the page's resource dictionary as the file has
 	// it, for merging in anything drawn.
 	sourceResources any
@@ -733,6 +739,13 @@ func (u *Updater) materialize() error {
 			if len(t.splices) == 0 {
 				continue
 			}
+			if t.stream != nil {
+				// Noted before the splices are cleared below, because
+				// the page still has to be rebuilt for the resources
+				// this edit needs even though its own stream is
+				// untouched.
+				p.formEdited = true
+			}
 			content, err := applySplices(t.content, t.splices)
 			if err != nil {
 				return err
@@ -754,7 +767,13 @@ func (u *Updater) materialize() error {
 		}
 		edited, drawn := p.contentDirty(), p.hasDrawing()
 		annotated := p.hasAnnots() || len(p.removed) > 0
-		if !edited && !drawn && !annotated {
+		// An edit inside a form XObject leaves the page's own stream
+		// untouched, and the page was skipped entirely — including the
+		// resources the edit needs. The form names the font and the page
+		// is where it would have been declared, so a reader resolving
+		// the name found nothing and refused to draw the text.
+		formEdited := u.rs != nil && p.formEdited
+		if !edited && !drawn && !annotated && !formEdited {
 			continue
 		}
 		dict := cloneDict(u.pageDict(p.pageNum, p.index))
@@ -774,6 +793,9 @@ func (u *Updater) materialize() error {
 		}
 		if u.rs != nil {
 			dict["Resources"] = p.mergedResources(u.rs)
+			// The form the edit went into needs them too: its operators
+			// are resolved against its own resource dictionary.
+			u.mergeAdoptedForms(u.rs, p.Page.resPrefix)
 		}
 		u.set(p.pageNum, dict)
 	}
