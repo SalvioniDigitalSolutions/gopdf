@@ -98,8 +98,9 @@ type Redactor struct {
 	labelColor   Color
 	labelFontRef Ref
 
-	fill   Color
-	verify bool
+	fill      Color
+	verify    bool
+	keepFiles bool
 	// substrings relaxes matching so a literal is found inside a longer
 	// word, which is what this package used to do.
 	substrings   bool
@@ -230,6 +231,24 @@ func (rd *Redactor) StripMetadata(on bool) { rd.stripMeta = on }
 // like any other.
 func (rd *Redactor) KeepAnnotations(on bool) { rd.keepAnnots = on }
 
+// Attachments lists the files the document carries inside it.
+//
+// They are worth looking at before redacting. An attachment is not
+// content on a page and no rule here reaches into one, so a spreadsheet
+// attached to a report still holds whatever the report said — the whole
+// point of redacting having been to remove it. RemoveAttachments takes
+// them out.
+func (rd *Redactor) Attachments() []Attachment { return rd.r.Attachments() }
+
+// KeepAttachments leaves the files a document carries inside it.
+//
+// Off by default, so a redaction removes them. No rule here reaches into
+// an attachment, and a spreadsheet attached to a report holds whatever
+// the report said — which makes leaving one in place the likeliest way
+// for a redacted document to give up what it was redacted for. Keeping
+// them is a decision worth stating.
+func (rd *Redactor) KeepAttachments(on bool) { rd.keepFiles = on }
+
 // Marks lists what will be removed, without removing it. Call it to show
 // a reviewer what is about to happen.
 func (rd *Redactor) Marks() ([]RedactionMark, error) {
@@ -272,6 +291,9 @@ func (rd *Redactor) WriteTo(w io.Writer) (int64, error) {
 		return 0, err
 	}
 	if err := rd.verifyOCR(buf.Bytes()); err != nil {
+		return 0, err
+	}
+	if err := rd.checkAttachments(buf.Bytes()); err != nil {
 		return 0, err
 	}
 	n, err := w.Write(buf.Bytes())
@@ -326,6 +348,50 @@ func (rd *Redactor) checkRemoved(out []byte) error {
 	return nil
 }
 
+// checkAttachments looks for the redacted words inside the files the
+// document carries.
+//
+// A page is text this package can read; an attachment is a file in
+// whatever format its producer chose. Its bytes are searched as they
+// are, which finds the words in a plain-text or comma-separated or XML
+// attachment and does not find them in a compressed container. That
+// asymmetry is the reason the error says what it says: what is found is
+// proof of a leak, and finding nothing is not proof of the opposite.
+func (rd *Redactor) checkAttachments(out []byte) error {
+	if len(rd.literals) == 0 && len(rd.patterns) == 0 {
+		return nil
+	}
+	r, err := NewReader(out)
+	if err != nil {
+		return nil // the document itself was already checked
+	}
+	for _, a := range r.Attachments() {
+		data, err := a.Data()
+		if err != nil {
+			continue
+		}
+		text := string(data)
+		for _, lit := range rd.literals {
+			if !containsBounded(text, lit, rd.mode()) {
+				continue
+			}
+			return fmt.Errorf("gopdf: %q is still in the attached file %q, which "+
+				"redaction does not reach into; remove the attachment with "+
+				"RemoveAttachments or take it out yourself, and the output has "+
+				"been withheld", lit, a.Name)
+		}
+		for _, re := range rd.patterns {
+			if m := re.FindString(text); m != "" {
+				return fmt.Errorf("gopdf: %q in the attached file %q still matches "+
+					"%v; redaction does not reach into an attachment, so remove it "+
+					"with RemoveAttachments, and the output has been withheld",
+					m, a.Name, re)
+			}
+		}
+	}
+	return nil
+}
+
 // --- planning ---
 
 func (rd *Redactor) plan() error {
@@ -343,6 +409,94 @@ func (rd *Redactor) plan() error {
 	return rd.err
 }
 
+// dropAttachments takes every embedded file out of the rewritten
+// document.
+//
+// The catalog's collection is unlinked and the file specifications and
+// their streams are dropped outright, so the bytes are not merely
+// unreachable but absent: a rewrite keeps what is reachable, and an
+// object left in place with nothing pointing at it would still be in the
+// file for anyone who looked.
+func (rd *Redactor) dropAttachments() {
+	r := rd.r
+	names, _ := r.resolve(r.Catalog()["Names"]).(Dict)
+	if names != nil {
+		if _, has := names["EmbeddedFiles"]; has {
+			trimmed := names.Clone()
+			delete(trimmed, "EmbeddedFiles")
+			cat := rd.pendingRoot(r.Catalog())
+			if len(trimmed) == 0 {
+				delete(cat, "Names")
+			} else {
+				cat["Names"] = trimmed
+			}
+			if num := refNumOr(r.trailer["Root"]); num != 0 {
+				rd.rw.replace[num] = cat
+			}
+		}
+		dropTree(r, rd.rw, names["EmbeddedFiles"], 0)
+	}
+	// And the ones a page carries as a paperclip.
+	for page := 0; page < len(r.pages); page++ {
+		annots, ok := r.resolve(r.pages[page].dict["Annots"]).(Array)
+		if !ok {
+			continue
+		}
+		for _, entry := range annots {
+			d, ok := r.resolve(entry).(Dict)
+			if !ok || r.resolve(d["Subtype"]) != Name("FileAttachment") {
+				continue
+			}
+			if num := refNumOr(entry); num != 0 {
+				rd.rw.drop[num] = true
+			}
+			dropFilespec(r, rd.rw, d["FS"])
+		}
+	}
+}
+
+// dropTree marks a name tree and everything it names for removal.
+func dropTree(r *Reader, rw *rewriter, v any, depth int) {
+	if depth > 32 {
+		return
+	}
+	if num := refNumOr(v); num != 0 {
+		rw.drop[num] = true
+	}
+	node, ok := r.resolve(v).(Dict)
+	if !ok {
+		return
+	}
+	if arr, ok := r.resolve(node["Names"]).(Array); ok {
+		for i := 1; i < len(arr); i += 2 {
+			dropFilespec(r, rw, arr[i])
+		}
+	}
+	for _, kid := range arrayOf(r, node["Kids"]) {
+		dropTree(r, rw, kid, depth+1)
+	}
+}
+
+// dropFilespec marks a file specification and its stream for removal.
+func dropFilespec(r *Reader, rw *rewriter, v any) {
+	if num := refNumOr(v); num != 0 {
+		rw.drop[num] = true
+	}
+	spec, ok := r.resolve(v).(Dict)
+	if !ok {
+		return
+	}
+	ef, ok := r.resolve(spec["EF"]).(Dict)
+	if !ok {
+		return
+	}
+	for _, key := range []Name{"F", "UF", "DOS", "Mac", "Unix"} {
+		if num := refNumOr(ef[key]); num != 0 {
+			rw.drop[num] = true
+		}
+	}
+}
+
 func (rd *Redactor) newObject(v any) Ref {
 	num := rd.nextNum
 	rd.nextNum++
@@ -353,6 +507,9 @@ func (rd *Redactor) newObject(v any) Ref {
 func (rd *Redactor) buildPlan() error {
 	if rd.stripMeta {
 		rd.rw.stripInfo = true
+	}
+	if !rd.keepFiles {
+		rd.dropAttachments()
 	}
 	byImage := make(map[Ref][]rect)
 	for _, img := range rd.images {
@@ -736,7 +893,17 @@ func (rd *Redactor) planImages(byImage map[Ref][]rect) error {
 }
 
 // stripDocumentMetadata discards the XMP metadata stream, which holds a
-// copy of the title, author and history the information dictionary does.
+// copy of the title, author and history the information dictionary does,
+// along with the actions a document can carry.
+//
+// It used to delete the catalog's whole /Names dictionary, which did
+// remove the embedded files hiding in there and took the named
+// destinations with them — so every internal link in the document
+// stopped working. The entries are now named one at a time: the scripts
+// go, because a script is behaviour rather than content and is a way out
+// of the document; the destinations stay, because a heading a link
+// points at is not metadata. Embedded files are their own decision, and
+// KeepAttachments is where it is made.
 func (rd *Redactor) stripDocumentMetadata() {
 	rootRef, ok := rd.r.trailer["Root"].(Ref)
 	if !ok {
@@ -746,17 +913,40 @@ func (rd *Redactor) stripDocumentMetadata() {
 	if !ok {
 		return
 	}
-	newRoot := cloneDict(root)
+	newRoot := rd.pendingRoot(root)
 	changed := false
-	for _, key := range []Name{"Metadata", "Names", "OpenAction", "AA"} {
+	for _, key := range []Name{"Metadata", "OpenAction", "AA"} {
 		if _, has := newRoot[key]; has {
 			delete(newRoot, key)
+			changed = true
+		}
+	}
+	if names, ok := rd.r.resolve(newRoot["Names"]).(Dict); ok {
+		if _, has := names["JavaScript"]; has {
+			trimmed := names.Clone()
+			delete(trimmed, "JavaScript")
+			if len(trimmed) == 0 {
+				delete(newRoot, "Names")
+			} else {
+				newRoot["Names"] = trimmed
+			}
 			changed = true
 		}
 	}
 	if changed {
 		rd.rw.replace[rootRef.Num] = newRoot
 	}
+}
+
+// pendingRoot returns the catalog this plan is building, so two steps
+// that both change it do not undo one another.
+func (rd *Redactor) pendingRoot(root Dict) Dict {
+	if num := refNumOr(rd.r.trailer["Root"]); num != 0 {
+		if pending, ok := rd.rw.replace[num].(Dict); ok {
+			return pending
+		}
+	}
+	return cloneDict(root)
 }
 
 // --- geometry and text helpers ---

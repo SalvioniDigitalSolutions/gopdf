@@ -85,6 +85,9 @@ go get github.com/SalvioniDigitalSolutions/gopdf
   just the characters it draws
 - **Annotations**: read, add and remove highlights, underlines,
   strike-outs, sticky notes, boxes and links — on new pages or in place
+- **Embedded files**: list what a document carries inside it, extract
+  it, attach more, and take them out again — including the paperclip
+  annotations on a page
 - **Page operations**: delete, reorder and move pages, in place
 - **Incremental update**: edit text, draw, annotate and reorder, appended
   so the original file survives byte for byte — including everything the
@@ -537,8 +540,11 @@ Stated plainly, because they matter when choosing a library:
   substitute; without one their text is left undrawn and
   `RenderPageDetail` reports how much.
 - Redaction removes *content*. A string can also live somewhere
-  structural — a font's `/BaseFont` name, an embedded file's name — and
-  those are not content to remove. Vector artwork that straddles the edge
+  structural — a font's `/BaseFont` name, for instance — and that is not
+  content to remove. Attachments are removed by default, and a redaction
+  that is told to keep one is refused if the words it removed are still
+  readable inside it; a compressed attachment cannot be searched that
+  way, so finding nothing there is not proof of the opposite. Vector artwork that straddles the edge
   of an area is covered but not deleted; `PartialArtwork` reports it so
   you can enlarge the area. A rewrite writes an encrypted source out
   unencrypted, since re-encrypting is a decision to take deliberately.
