@@ -1154,11 +1154,12 @@ in the document, so the text lands where the document says.</p>
 <tr><td>Strokes</td><td>Width, butt/round/square caps, miter/round/bevel joins with the miter limit honoured, and dash patterns with a phase.</td></tr>
 <tr><td>Clipping</td><td><code>W</code> and <code>W*</code>, kept as a coverage mask so a clipped edge is as smooth as a painted one.</td></tr>
 <tr><td>State</td><td><code>q</code>/<code>Q</code>, <code>cm</code>, and the constant alpha an <code>ExtGState</code> sets.</td></tr>
-<tr><td>Blend modes</td><td>The eleven separable ones, so a Multiply highlighter darkens the words under it instead of hiding them.</td></tr>
+<tr><td>Blend modes</td><td>All fifteen, so a Multiply highlighter darkens the words under it instead of hiding them, and a Luminosity overlay keeps the colour beneath.</td></tr>
 <tr><td>Annotations</td><td>Opt-in with <code>IncludeAnnotations</code>: appearance streams fitted to their rectangles, states chosen by <code>/AS</code>, hidden ones left alone.</td></tr>
 <tr><td>Optional content</td><td>Layers the document switches off are not painted, whether marked in the content stream or carried on an XObject.</td></tr>
 <tr><td>Colour</td><td>Gray, RGB and CMYK; ICC by component count; indexed palettes; separations through their tint function.</td></tr>
-<tr><td>Shading</td><td>Axial and radial gradients, evaluated through sampled, exponential and stitching functions. The mesh kinds are painted as one colour from the middle of their own ramp rather than left as a hole.</td></tr>
+<tr><td>Shading</td><td>Axial and radial gradients, evaluated through sampled, exponential and stitching functions.</td></tr>
+<tr><td>Meshes</td><td>Triangle meshes and Coons and tensor patches: the patch is evaluated on a grid, cut into triangles, and each filled with its corners spread across it.</td></tr>
 <tr><td>Patterns</td><td>Tiling patterns, run cell by cell across the area they fill; shading patterns painted through the path.</td></tr>
 <tr><td>Soft masks</td><td>A luminosity or alpha group rendered on its own and folded into the clip. A mask in force when a transparency group is drawn applies to the whole group and cannot be cleared from inside it, which is what Illustrator's output depends on.</td></tr>
 <tr><td>Text</td><td>All eight rendering modes: filled, stroked, both, invisible, and the four that add the glyphs to the clip. A text clip is followed even with text switched off, because what it removes is part of the artwork.</td></tr>
@@ -1176,9 +1177,10 @@ encodings this package does not carry. Both are answered by supplying a
 substitute; without one their text is left undrawn, and
 <code>RenderPageDetail</code> reports how many glyphs that came to
 rather than handing back a page that looks complete.</p>
-<p>The mesh shadings (types 4 to 7) are painted flat, and the four
-non-separable blend modes — Hue, Saturation, Color and Luminosity —
-fall back to Normal, which is what they degrade to.</p>
+<p>A transparency group is composited onto the page rather than onto a
+surface of its own, so an isolated or knockout group is drawn as an
+ordinary one. It shows only where a group's own overlaps would have been
+resolved among themselves before reaching the page.</p>
 </div>
 
 <h3>How close it is</h3>

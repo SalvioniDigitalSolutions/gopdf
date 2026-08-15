@@ -104,8 +104,9 @@ go get github.com/SalvioniDigitalSolutions/gopdf
   overwritten, a token drawn in their place, then read again to prove it
 - **Page rendering**: `RenderPage` draws a page to an image — paths,
   fills, strokes with caps, joins and dashes, clips, colour spaces, axial
-  and radial shadings, tiling and shading patterns, soft masks, blend
-  modes, raster images, annotation appearances, and **text**, set from
+  and radial shadings, mesh shadings, tiling and shading patterns, soft
+  masks, all fifteen blend modes, raster images, annotation appearances,
+  and **text**, set from
   the outlines the document's own fonts carry. Layers the document
   switches off are not painted. Each layer is a separate switch, so the
   artwork behind live text is one call and a full-page picture is
@@ -534,9 +535,7 @@ Stated plainly, because they matter when choosing a library:
   bare PostScript font is addressed by glyph name through the built-in
   encodings this package does not carry. Both are handled by supplying a
   substitute; without one their text is left undrawn and
-  `RenderPageDetail` reports how much. The mesh shadings (types 4 to 7)
-  are painted flat, and the four non-separable blend modes fall back to
-  Normal.
+  `RenderPageDetail` reports how much.
 - Redaction removes *content*. A string can also live somewhere
   structural — a font's `/BaseFont` name, an embedded file's name — and
   those are not content to remove. Vector artwork that straddles the edge
@@ -548,7 +547,7 @@ Stated plainly, because they matter when choosing a library:
 
 Nothing outstanding from the original plan. Candidates, in no order:
 CID-keyed CFF subsetting, PAdES timestamps, public-key (certificate)
-security handlers, mesh shadings, PDF/A conformance,
+security handlers, PDF/A conformance,
 linearization, and reflow that cascades across pages.
 
 ## License

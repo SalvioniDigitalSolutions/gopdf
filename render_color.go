@@ -230,10 +230,17 @@ func (rn *renderer) shadeDict(v any, gs *renderState) {
 	space := rn.readSpace(d["ColorSpace"], 0)
 	fn := loadFunction(rn.r, d["Function"])
 
+	if kind >= 4 && kind <= 7 {
+		stm, _ := rn.r.resolve(v).(*rawStream)
+		if rn.shadeMesh(gs, d, stm, kind, space, fn) {
+			return
+		}
+		// A mesh that cannot be read is still better as one colour than
+		// as a hole in the artwork.
+		rn.shadeSolid(gs, space, fn)
+		return
+	}
 	if fn == nil || (kind != 2 && kind != 3) {
-		// The mesh kinds are painted as the one colour nearest to them:
-		// the middle of their own ramp where there is one, mid grey
-		// otherwise.
 		rn.shadeSolid(gs, space, fn)
 		return
 	}

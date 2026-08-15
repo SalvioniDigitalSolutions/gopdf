@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"testing"
+	"time"
 )
 
 // renderDoc draws a page with fn and returns the rendered picture.
@@ -1843,10 +1844,10 @@ func TestRenderBlendModes(t *testing.T) {
 	if r, _, _ := over("NoSuchMode"); !near(r, 128, 3) {
 		t.Errorf("an unknown blend mode gave %d, want the normal 128", r)
 	}
-	// And the non-separable modes fall back to Normal rather than
-	// vanishing.
+	// Grey on grey is the one case where the non-separable modes agree
+	// with Normal, so they are checked on colours instead.
 	if r, _, _ := over("Luminosity"); !near(r, 128, 3) {
-		t.Errorf("Luminosity gave %d, want the normal 128", r)
+		t.Errorf("Luminosity of grey on grey gave %d, want 128", r)
 	}
 }
 
@@ -1889,7 +1890,64 @@ func TestBlendModeArithmetic(t *testing.T) {
 	if blendSoftLight.apply(0.5, 0.8) <= 0.5 {
 		t.Error("a light soft light should lighten")
 	}
+	// The non-separable modes take a whole colour: Luminosity keeps the
+	// backdrop's colour and the source's brightness, and Color is the
+	// reverse of that.
+	red := [3]float64{1, 0, 0}
+	grey := [3]float64{0.5, 0.5, 0.5}
+	// Luminosity keeps the backdrop's hue and takes the source's
+	// brightness, so grey over red is a red of the grey's brightness —
+	// not a grey.
+	got := blendLuminosity.applyRGB(red, grey)
+	if got[0] <= got[1] || got[1] != got[2] {
+		t.Errorf("grey over red by luminosity = %v, want it still red", got)
+	}
+	if math.Abs(lum(got)-lum(grey)) > 1e-9 {
+		t.Errorf("grey over red by luminosity has brightness %g, want %g",
+			lum(got), lum(grey))
+	}
+	// Color is the other way round: the source's hue at the backdrop's
+	// brightness.
+	got = blendColor.applyRGB(grey, red)
+	if got[0] <= got[1] || got[1] != got[2] {
+		t.Errorf("red over grey by colour = %v, want it red", got)
+	}
+	if math.Abs(lum(got)-lum(grey)) > 1e-9 {
+		t.Errorf("red over grey by colour has brightness %g, want the grey's %g",
+			lum(got), lum(grey))
+	}
+	// A colour against itself comes back unchanged, whichever mode.
+	for _, m := range []blendMode{blendHue, blendSaturation, blendColor, blendLuminosity} {
+		if got := m.applyRGB(red, red); math.Abs(got[0]-1) > 1e-9 ||
+			math.Abs(got[1]) > 1e-9 || math.Abs(got[2]) > 1e-9 {
+			t.Errorf("mode %d against itself changed red to %v", m, got)
+		}
+	}
+	// Saturation moves a flat colour nowhere, since it has none to give.
+	if got := blendSaturation.applyRGB(red, grey); sat(got) > 1e-9 {
+		t.Errorf("saturating red by a flat grey gave %v", got)
+	}
+
 	// Every mode has to stay in range, whatever it is given.
+	for m := blendNormal; m <= blendLuminosity; m++ {
+		for _, cb := range [][3]float64{{0, 0, 0}, {1, 1, 1}, {1, 0, 0}, {0.3, 0.6, 0.9}} {
+			for _, cs := range [][3]float64{{0, 0, 0}, {1, 1, 1}, {0, 1, 0}, {0.7, 0.2, 0.4}} {
+				got := cb
+				if m.separable() {
+					for k := range got {
+						got[k] = m.apply(cb[k], cs[k])
+					}
+				} else {
+					got = m.applyRGB(cb, cs)
+				}
+				for _, v := range got {
+					if v < -1e-9 || v > 1+1e-9 || math.IsNaN(v) {
+						t.Errorf("mode %d over %v under %v = %v, out of range", m, cs, cb, got)
+					}
+				}
+			}
+		}
+	}
 	for m := blendNormal; m <= blendExclusion; m++ {
 		for _, cb := range []float64{0, 0.25, 0.5, 1} {
 			for _, cs := range []float64{0, 0.25, 0.5, 1} {
@@ -1898,6 +1956,285 @@ func TestBlendModeArithmetic(t *testing.T) {
 					t.Errorf("mode %d over %g under %g = %g, out of range", m, cs, cb, v)
 				}
 			}
+		}
+	}
+}
+
+// TestRenderMeshShading draws a type 4 mesh: two triangles with a colour
+// at each corner. Painted flat, which is what happens when a renderer
+// only knows the gradient kinds, it is a coloured blob.
+func TestRenderMeshShading(t *testing.T) {
+	// One triangle, red, green and blue at its corners, packed the way
+	// the format asks: a flag byte, then 32-bit coordinates and 8-bit
+	// components, each mapped through /Decode.
+	var data []byte
+	put32 := func(v uint32) {
+		data = append(data, byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
+	}
+	vertex := func(x, y uint32, r, g, b byte) {
+		data = append(data, 0) // flag: start a new triangle
+		put32(x)
+		put32(y)
+		data = append(data, r, g, b)
+	}
+	// /Decode maps 0..2^32-1 onto 0..600 across and 0..800 up.
+	const full = float64(0xFFFFFFFF)
+	at32 := func(v, span float64) uint32 { return uint32(full * v / span) }
+	vertex(at32(100, 600), at32(300, 800), 255, 0, 0)
+	vertex(at32(500, 600), at32(300, 800), 0, 255, 0)
+	vertex(at32(300, 600), at32(700, 800), 0, 0, 255)
+
+	doc := New()
+	doc.Compress = false
+	page := doc.AddPage()
+	page.op("q /Sh0 sh Q")
+	src := withResources(t, docBytes(t, doc), func(u *Updater) Dict {
+		sh := u.add(&rawStream{
+			dict: Dict{
+				"ShadingType": int64(4), "ColorSpace": Name("DeviceRGB"),
+				"BitsPerCoordinate": int64(32), "BitsPerComponent": int64(8),
+				"BitsPerFlag": int64(8),
+				"Decode": Array{0.0, 600.0, 0.0, 800.0,
+					0.0, 1.0, 0.0, 1.0, 0.0, 1.0},
+			},
+			data: data,
+		})
+		return Dict{"Shading": Dict{"Sh0": Ref{Num: sh}}}
+	})
+
+	r := NewReaderOrFail(t, src)
+	img, err := r.RenderPage(0, RenderOpts{DPI: 100, IncludeVector: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Near each corner the triangle takes that corner's colour.
+	near3 := func(x, y float64, want string) {
+		t.Helper()
+		cr, cg, cb, _ := at(t, img, 100, x, 841.89-y)
+		var got string
+		switch {
+		case cr > cg && cr > cb:
+			got = "red"
+		case cg > cr && cg > cb:
+			got = "green"
+		case cb > cr && cb > cg:
+			got = "blue"
+		default:
+			got = "none"
+		}
+		if got != want {
+			t.Errorf("at (%g,%g) the mesh is %s (%d,%d,%d), want %s",
+				x, y, got, cr, cg, cb, want)
+		}
+	}
+	near3(140, 310, "red")
+	near3(460, 310, "green")
+	near3(300, 650, "blue")
+
+	// The middle is a mix of all three, which is what tells a mesh from
+	// three flat facets.
+	mr, mg, mb, _ := at(t, img, 100, 300, 841.89-430)
+	if mr == 0 || mg == 0 || mb == 0 {
+		t.Errorf("the middle of the mesh = %d,%d,%d, want all three mixed", mr, mg, mb)
+	}
+	// And outside the triangle nothing is painted.
+	if v, _, _, _ := at(t, img, 100, 120, 841.89-650); v != 255 {
+		t.Errorf("outside the triangle = %d, want the page untouched", v)
+	}
+}
+
+// TestRenderMeshLattice covers type 5, whose vertices come in rows of a
+// fixed length with no flags at all.
+func TestRenderMeshLattice(t *testing.T) {
+	var data []byte
+	put32 := func(v uint32) {
+		data = append(data, byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
+	}
+	const full = float64(0xFFFFFFFF)
+	vertex := func(x, y float64, r, g, b byte) {
+		put32(uint32(full * x / 600))
+		put32(uint32(full * y / 800))
+		data = append(data, r, g, b)
+	}
+	// Two rows of two: a square, red on the left and blue on the right.
+	vertex(100, 300, 255, 0, 0)
+	vertex(500, 300, 0, 0, 255)
+	vertex(100, 700, 255, 0, 0)
+	vertex(500, 700, 0, 0, 255)
+
+	doc := New()
+	doc.Compress = false
+	page := doc.AddPage()
+	page.op("q /Sh0 sh Q")
+	src := withResources(t, docBytes(t, doc), func(u *Updater) Dict {
+		sh := u.add(&rawStream{
+			dict: Dict{
+				"ShadingType": int64(5), "ColorSpace": Name("DeviceRGB"),
+				"BitsPerCoordinate": int64(32), "BitsPerComponent": int64(8),
+				"VerticesPerRow": int64(2),
+				"Decode": Array{0.0, 600.0, 0.0, 800.0,
+					0.0, 1.0, 0.0, 1.0, 0.0, 1.0},
+			},
+			data: data,
+		})
+		return Dict{"Shading": Dict{"Sh0": Ref{Num: sh}}}
+	})
+
+	img, err := NewReaderOrFail(t, src).RenderPage(0,
+		RenderOpts{DPI: 100, IncludeVector: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lr, _, lb, _ := at(t, img, 100, 130, 841.89-500)
+	if lr < 200 || lb > 60 {
+		t.Errorf("the left of the lattice = r%d b%d, want red", lr, lb)
+	}
+	rr, _, rb, _ := at(t, img, 100, 470, 841.89-500)
+	if rr > 60 || rb < 200 {
+		t.Errorf("the right of the lattice = r%d b%d, want blue", rr, rb)
+	}
+	mr, _, mb, _ := at(t, img, 100, 300, 841.89-500)
+	if mr < 40 || mr > 220 || mb < 40 || mb > 220 {
+		t.Errorf("the middle = r%d b%d, want a mix", mr, mb)
+	}
+}
+
+// TestMeshGarbageIsSurvivable: a mesh is a packed bit stream, and a
+// truncated or nonsensical one must stop rather than run away.
+func TestMeshGarbageIsSurvivable(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		dict Dict
+		data []byte
+	}{
+		{"no bit widths", Dict{"ShadingType": int64(4)}, []byte{1, 2, 3}},
+		{"truncated vertices", Dict{
+			"ShadingType": int64(4), "BitsPerCoordinate": int64(32),
+			"BitsPerComponent": int64(8), "BitsPerFlag": int64(8),
+			"Decode": Array{0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0},
+		}, []byte{0, 1, 2}},
+		{"a lattice with no row length", Dict{
+			"ShadingType": int64(5), "BitsPerCoordinate": int64(32),
+			"BitsPerComponent": int64(8),
+			"Decode":           Array{0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0},
+		}, bytes.Repeat([]byte{7}, 64)},
+		{"a patch that shares an edge it has not got", Dict{
+			"ShadingType": int64(6), "BitsPerCoordinate": int64(32),
+			"BitsPerComponent": int64(8), "BitsPerFlag": int64(8),
+			"Decode": Array{0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0},
+		}, append([]byte{1}, bytes.Repeat([]byte{9}, 200)...)},
+	} {
+		doc := New()
+		doc.Compress = false
+		page := doc.AddPage()
+		page.op("q /Sh0 sh Q")
+		d := c.dict.Clone()
+		d["ColorSpace"] = Name("DeviceRGB")
+		src := withResources(t, docBytes(t, doc), func(u *Updater) Dict {
+			sh := u.add(&rawStream{dict: d, data: c.data})
+			return Dict{"Shading": Dict{"Sh0": Ref{Num: sh}}}
+		})
+		done := make(chan error, 1)
+		go func() {
+			_, err := NewReaderOrFail(t, src).RenderPage(0,
+				RenderOpts{DPI: 72, IncludeVector: true})
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("%s: %v", c.name, err)
+			}
+		case <-time.After(20 * time.Second):
+			t.Fatalf("%s: the render did not finish", c.name)
+		}
+	}
+}
+
+// TestRenderCoonsPatch draws a type 6 mesh: a square patch with a colour
+// at each corner, which is the shape everything about patch meshes rests
+// on. Type 7 adds four interior points that only refine the middle, so
+// the same fixture covers both.
+func TestRenderCoonsPatch(t *testing.T) {
+	for _, kind := range []int64{6, 7} {
+		var data []byte
+		put32 := func(v uint32) {
+			data = append(data, byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
+		}
+		const full = float64(0xFFFFFFFF)
+		pt := func(x, y float64) {
+			put32(uint32(full * x / 600))
+			put32(uint32(full * y / 800))
+		}
+		data = append(data, 0) // flag 0: a new patch
+
+		// Twelve control points anticlockwise around a square from
+		// (100,300) to (500,700), each edge a straight Bézier.
+		lerp := func(a, b float64, t float64) float64 { return a + (b-a)*t }
+		corners := [4][2]float64{{100, 300}, {100, 700}, {500, 700}, {500, 300}}
+		for i := 0; i < 4; i++ {
+			a, b := corners[i], corners[(i+1)%4]
+			pt(a[0], a[1])
+			pt(lerp(a[0], b[0], 1.0/3), lerp(a[1], b[1], 1.0/3))
+			pt(lerp(a[0], b[0], 2.0/3), lerp(a[1], b[1], 2.0/3))
+		}
+		if kind == 7 {
+			// The four interior points of a tensor patch, at the
+			// positions a Coons patch implies.
+			for _, c := range [4][2]float64{{200, 400}, {200, 600}, {400, 600}, {400, 400}} {
+				pt(c[0], c[1])
+			}
+		}
+		// Red, green, blue, white at the four corners.
+		data = append(data, 255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255)
+
+		doc := New()
+		doc.Compress = false
+		page := doc.AddPage()
+		page.op("q /Sh0 sh Q")
+		src := withResources(t, docBytes(t, doc), func(u *Updater) Dict {
+			sh := u.add(&rawStream{
+				dict: Dict{
+					"ShadingType": kind, "ColorSpace": Name("DeviceRGB"),
+					"BitsPerCoordinate": int64(32), "BitsPerComponent": int64(8),
+					"BitsPerFlag": int64(8),
+					"Decode": Array{0.0, 600.0, 0.0, 800.0,
+						0.0, 1.0, 0.0, 1.0, 0.0, 1.0},
+				},
+				data: data,
+			})
+			return Dict{"Shading": Dict{"Sh0": Ref{Num: sh}}}
+		})
+
+		img, err := NewReaderOrFail(t, src).RenderPage(0,
+			RenderOpts{DPI: 100, IncludeVector: true})
+		if err != nil {
+			t.Fatalf("type %d: %v", kind, err)
+		}
+		// Each corner of the patch takes its own colour.
+		for _, c := range []struct {
+			x, y         float64
+			wantR, wantG bool
+			name         string
+		}{
+			{130, 330, true, false, "the red corner"},
+			{130, 670, false, true, "the green corner"},
+		} {
+			cr, cg, cb, _ := at(t, img, 100, c.x, 841.89-c.y)
+			if c.wantR && !(cr > cg && cr > cb) {
+				t.Errorf("type %d: %s = %d,%d,%d, want red", kind, c.name, cr, cg, cb)
+			}
+			if c.wantG && !(cg > cr && cg > cb) {
+				t.Errorf("type %d: %s = %d,%d,%d, want green", kind, c.name, cr, cg, cb)
+			}
+		}
+		// The middle is a mix, and the area outside the patch is not
+		// painted at all.
+		if mr, mg, mb, _ := at(t, img, 100, 300, 841.89-500); mr == 0 || mg == 0 || mb == 0 {
+			t.Errorf("type %d: the middle = %d,%d,%d, want a mix", kind, mr, mg, mb)
+		}
+		if v, _, _, _ := at(t, img, 100, 550, 841.89-500); v != 255 {
+			t.Errorf("type %d: outside the patch = %d, want untouched", kind, v)
 		}
 	}
 }
