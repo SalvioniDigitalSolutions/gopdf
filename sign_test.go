@@ -225,9 +225,9 @@ func signatureBlob(t *testing.T, file []byte) []byte {
 		}
 		out[i] = hi<<4 | lo
 	}
-	for len(out) > 0 && out[len(out)-1] == 0 {
-		out = out[:len(out)-1]
-	}
+	// The reserve's zero padding is left alone: DER carries its own
+	// length, so the parser stops where the data does. Trimming would
+	// bite into a blob whose own last byte is zero.
 	return out
 }
 
@@ -408,4 +408,35 @@ func TestSignEncryptedDoc(t *testing.T) {
 	// The digest must match the bytes on disk, which only holds if
 	// /Contents was left out of the encryption.
 	verifySignature(t, buf.Bytes(), sigs[0].ByteRange, cert)
+}
+
+// TestSignerCertificateWithZeroTailByte is the regression for a blob
+// whose own last byte is zero. The reserve is padded with zeros, and
+// trimming them to find the end of the data ate into the data itself
+// whenever it ended that way — roughly one signature in 256, which shows
+// up as a certificate that cannot be read and a signer with no name.
+func TestSignerCertificateWithZeroTailByte(t *testing.T) {
+	cert, key := testSigner(t, "Ada Lovelace")
+	blob, err := buildCMS(SignOptions{Certificate: cert, Key: key}, sha256Sum([]byte("x")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// However the blob ends, padding it must not change what is read.
+	for _, pad := range [][]byte{nil, {0}, {0, 0, 0, 0}, bytes.Repeat([]byte{0}, 512)} {
+		got := signerCertificate(append(append([]byte(nil), blob...), pad...))
+		if got == nil {
+			t.Fatalf("with %d bytes of padding the certificate was not read", len(pad))
+		}
+		if got.Subject.CommonName != "Ada Lovelace" {
+			t.Errorf("with %d bytes of padding the signer is %q", len(pad),
+				got.Subject.CommonName)
+		}
+	}
+	// And a blob that genuinely ends in a zero byte still reads, which is
+	// the case the trimming used to destroy.
+	withZero := append(append([]byte(nil), blob...), 0)
+	if got := signerCertificate(withZero); got == nil ||
+		got.Subject.CommonName != "Ada Lovelace" {
+		t.Error("a blob ending in a zero byte was not read")
+	}
 }

@@ -175,10 +175,13 @@ func parsePDFDate(s string) time.Time {
 
 // signerCertificate pulls the signing certificate out of a CMS blob.
 func signerCertificate(blob []byte) *x509.Certificate {
-	// The blob is padded with zeros to a reserved length.
-	for len(blob) > 0 && blob[len(blob)-1] == 0 {
-		blob = blob[:len(blob)-1]
-	}
+	// The blob sits in a fixed reserve and is padded with zeros to fill
+	// it. Those are not trimmed: a DER object carries its own length, so
+	// the parser stops at the end of the structure and hands back the
+	// padding as the remainder. Trimming would be a guess, and a wrong
+	// one whenever the signature's own last byte is zero — about one
+	// signature in 256, which is exactly often enough to look like
+	// something else.
 	var ci contentInfo
 	if _, err := asn1.Unmarshal(blob, &ci); err != nil {
 		return nil
