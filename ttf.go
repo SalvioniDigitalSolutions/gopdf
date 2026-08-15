@@ -25,10 +25,16 @@ type ttfFont struct {
 	numGlyphs int
 	advances  []uint16 // advance width per glyph ID
 	cmap      map[rune]uint16
-	kern      map[uint32]int16 // leftGID<<16|rightGID -> adjustment
-	loca      []uint32         // numGlyphs+1 offsets into glyf
-	glyf      []byte
-	psName    string
+	// symbolCmap marks a character map that is a symbol font's own
+	// (3,0) table, whose codes are conventionally offset to F000.
+	symbolCmap bool
+	// glyphNames maps a glyph name from the post table to its index,
+	// which is how a simple font's /Differences addresses a glyph.
+	glyphNames map[string]uint16
+	kern       map[uint32]int16 // leftGID<<16|rightGID -> adjustment
+	loca       []uint32         // numGlyphs+1 offsets into glyf
+	glyf       []byte
+	psName     string
 
 	// CFF-based OpenType fonts carry PostScript outlines in a single
 	// table. They are embedded whole rather than subset, so program
@@ -266,11 +272,15 @@ func (f *ttfFont) parseCmap() error {
 		score := -1
 		switch {
 		case platform == 3 && encoding == 10: // Windows, full Unicode
-			score = 3
+			score = 4
 		case platform == 0: // Unicode
-			score = 2
+			score = 3
 		case platform == 3 && encoding == 1: // Windows, BMP
+			score = 3
+		case platform == 3 && encoding == 0: // Windows, symbol
 			score = 2
+		case platform == 1 && encoding == 0: // Macintosh, one byte
+			score = 1
 		}
 		if score > bestScore {
 			best, bestScore = i, score
@@ -279,6 +289,7 @@ func (f *ttfFont) parseCmap() error {
 	if bestScore < 0 {
 		return errors.New("gopdf: font has no Unicode cmap subtable")
 	}
+	f.symbolCmap = bestScore == 2
 	off := int(be32(cmap, 4+best*8+4))
 	if off+2 > len(cmap) {
 		return errTTF
@@ -289,13 +300,49 @@ func (f *ttfFont) parseCmap() error {
 	// use a small fraction of it.
 	budget := 1 << 22
 	switch format := be16(cmap, off); format {
+	case 0:
+		return f.parseCmap0(cmap[off:])
 	case 4:
 		return f.parseCmap4(cmap[off:], &budget)
+	case 6:
+		return f.parseCmap6(cmap[off:])
 	case 12:
 		return f.parseCmap12(cmap[off:], &budget)
 	default:
 		return fmt.Errorf("gopdf: unsupported cmap subtable format %d", format)
 	}
+}
+
+// parseCmap0 reads the oldest form: a flat table of 256 glyph indices,
+// one per byte code. Subset fonts still emit it.
+func (f *ttfFont) parseCmap0(t []byte) error {
+	if len(t) < 262 {
+		return errTTF
+	}
+	for code := 0; code < 256; code++ {
+		if gid := uint16(t[6+code]); gid != 0 {
+			f.cmap[rune(code)] = gid
+		}
+	}
+	return nil
+}
+
+// parseCmap6 reads a single contiguous run of codes, which is what a
+// subsetter emits when the glyphs it kept happen to be adjacent.
+func (f *ttfFont) parseCmap6(t []byte) error {
+	if len(t) < 10 {
+		return errTTF
+	}
+	first, count := int(be16(t, 6)), int(be16(t, 8))
+	if count < 0 || 10+count*2 > len(t) {
+		return errTTF
+	}
+	for i := 0; i < count; i++ {
+		if gid := be16(t, 10+i*2); gid != 0 {
+			f.cmap[rune(first+i)] = gid
+		}
+	}
+	return nil
 }
 
 func (f *ttfFont) parseCmap4(t []byte, budget *int) error {
@@ -377,6 +424,57 @@ func (f *ttfFont) parseOS2Post() {
 	if post := f.tables["post"]; len(post) >= 16 {
 		f.italicAngle = float64(int32(be32(post, 4))) / 65536
 		f.fixedPitch = be32(post, 12) != 0
+		f.parsePostNames(post)
+	}
+}
+
+// parsePostNames reads the glyph names a version 2 post table carries.
+//
+// This is how a simple font's /Differences reaches a glyph: the array
+// names a glyph per code, and the names mean whatever the font says they
+// mean. Only the names the font spells out are read — the standard
+// Macintosh ordering the format also allows is a built-in table, and a
+// glyph addressed only that way is left alone.
+func (f *ttfFont) parsePostNames(post []byte) {
+	if len(post) < 34 || be32(post, 0) != 0x00020000 {
+		return
+	}
+	n := int(be16(post, 32))
+	if n <= 0 || n > f.numGlyphs+1 || 34+n*2 > len(post) {
+		return
+	}
+	indices := make([]int, n)
+	maxCustom := -1
+	for i := 0; i < n; i++ {
+		v := int(be16(post, 34+i*2))
+		indices[i] = v
+		if v >= 258 && v-258 > maxCustom {
+			maxCustom = v - 258
+		}
+	}
+	if maxCustom < 0 {
+		return // every glyph uses the standard ordering
+	}
+	names := make([]string, 0, maxCustom+1)
+	for p := 34 + n*2; p < len(post) && len(names) <= maxCustom; {
+		length := int(post[p])
+		p++
+		if p+length > len(post) {
+			break
+		}
+		names = append(names, string(post[p:p+length]))
+		p += length
+	}
+	f.glyphNames = make(map[string]uint16, len(names))
+	for gid, idx := range indices {
+		if idx < 258 {
+			continue
+		}
+		if k := idx - 258; k < len(names) {
+			if _, seen := f.glyphNames[names[k]]; !seen {
+				f.glyphNames[names[k]] = uint16(gid)
+			}
+		}
 	}
 }
 

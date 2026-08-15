@@ -25,10 +25,13 @@ type RenderOpts struct {
 	// DPI is the resolution. Zero means 150, which is where a rule stops
 	// looking soft.
 	DPI float64
-	// IncludeText draws glyphs. It is not supported: rendering type means
-	// a font rasterizer, and the point of this is the artwork that has no
-	// other form. Setting it reports an error rather than quietly
-	// producing a page with holes in it.
+	// IncludeText draws glyphs, using the outlines the document's own
+	// fonts carry. Fonts whose glyphs are addressed by name through the
+	// built-in encodings are the exception and are left undrawn;
+	// RenderPageDetail reports how many glyphs that came to.
+	//
+	// Text that clips is followed whether or not this is set, because
+	// what a text clip removes is part of the artwork.
 	IncludeText bool
 	// IncludeRasterImages draws photographs and scans. Off by default:
 	// they can be pulled out and placed separately, and leaving them out
@@ -39,6 +42,15 @@ type RenderOpts struct {
 	IncludeVector bool
 	// Transparent leaves untouched pixels clear instead of white.
 	Transparent bool
+	// SubstituteFont supplies a font program for a font the document
+	// names but does not embed, and for the Type 1 programs this package
+	// does not read. It is asked for TrueType or OpenType bytes and may
+	// return nil, in which case that font's glyphs are left undrawn.
+	//
+	// A substitute provides shapes only: every advance still comes from
+	// the widths in the document, so the text lands where the document
+	// says. SystemFonts returns one built on the machine's own fonts.
+	SubstituteFont func(FontRequest) []byte
 }
 
 func (o RenderOpts) dpi() float64 {
@@ -56,14 +68,31 @@ func (o RenderOpts) dpi() float64 {
 // What is drawn is chosen by the options, and nothing is drawn that they
 // do not ask for. A malformed content stream is reported for that page
 // rather than panicking.
-func (r *Reader) RenderPage(page int, opts RenderOpts) (img image.Image, err error) {
+func (r *Reader) RenderPage(page int, opts RenderOpts) (image.Image, error) {
+	img, _, err := r.RenderPageDetail(page, opts)
+	return img, err
+}
+
+// RenderReport says what a render managed.
+//
+// Glyphs is how many were drawn and Missing how many were asked for and
+// could not be: a font whose program is not embedded, or one whose
+// glyphs are addressed by name through the built-in encodings this
+// package does not carry. A page that reports missing glyphs is a page
+// with holes in it, and the count is the only way to tell that apart
+// from a page that simply had little text.
+type RenderReport struct {
+	Glyphs  int
+	Missing int
+}
+
+// RenderPageDetail draws a page and says what it managed, which matters
+// when text is switched on: a font this package cannot read leaves holes,
+// and silence about them would be the wrong answer.
+func (r *Reader) RenderPageDetail(page int, opts RenderOpts) (img image.Image, rep RenderReport, err error) {
 	if page < 0 || page >= len(r.pages) {
-		return nil, fmt.Errorf("gopdf: page %d out of range (document has %d pages)",
+		return nil, rep, fmt.Errorf("gopdf: page %d out of range (document has %d pages)",
 			page, r.NumPages())
-	}
-	if opts.IncludeText {
-		return nil, fmt.Errorf("gopdf: RenderPage cannot draw text; it renders the " +
-			"vector layer, and glyphs need a font rasterizer this package does not have")
 	}
 	defer func() {
 		if e := recover(); e != nil {
@@ -74,17 +103,17 @@ func (r *Reader) RenderPage(page int, opts RenderOpts) (img image.Image, err err
 	pi := r.pages[page]
 	size, err := r.PageSize(page)
 	if err != nil {
-		return nil, err
+		return nil, rep, err
 	}
 	scale := opts.dpi() / 72
 	w := int(math.Ceil(size.W * scale))
 	h := int(math.Ceil(size.H * scale))
 	if w <= 0 || h <= 0 {
-		return nil, fmt.Errorf("gopdf: page %d has no area", page+1)
+		return nil, rep, fmt.Errorf("gopdf: page %d has no area", page+1)
 	}
 	const maxSide = 20000
 	if w > maxSide || h > maxSide {
-		return nil, fmt.Errorf("gopdf: page %d would be %dx%d pixels at %g DPI",
+		return nil, rep, fmt.Errorf("gopdf: page %d would be %dx%d pixels at %g DPI",
 			page+1, w, h, opts.dpi())
 	}
 
@@ -92,13 +121,13 @@ func (r *Reader) RenderPage(page int, opts RenderOpts) (img image.Image, err err
 	if !opts.Transparent {
 		fillWhite(dst)
 	}
-	if !opts.IncludeVector && !opts.IncludeRasterImages {
-		return dst, nil
+	if !opts.IncludeVector && !opts.IncludeRasterImages && !opts.IncludeText {
+		return dst, rep, nil
 	}
 
 	content, err := r.pageContent(pi.dict)
 	if err != nil {
-		return nil, fmt.Errorf("gopdf: page %d: %w", page+1, err)
+		return nil, rep, fmt.Errorf("gopdf: page %d: %w", page+1, err)
 	}
 
 	// PDF space has its origin at the bottom left of the media box and
@@ -110,7 +139,8 @@ func (r *Reader) RenderPage(page int, opts RenderOpts) (img image.Image, err err
 
 	rn := &renderer{r: r, dst: dst, w: w, h: h, opts: opts, baseCTM: base}
 	rn.run(content, pi.resources, base, newRenderState(), 0)
-	return dst, nil
+	rep = RenderReport{Glyphs: rn.text.drawn, Missing: rn.text.missing}
+	return dst, rep, nil
 }
 
 // rotationMatrix turns the page as its /Rotate asks.
@@ -189,6 +219,9 @@ type renderer struct {
 	// pattern is placed in however deep it is used.
 	baseCTM   matrix
 	maskDepth int
+	// text carries the font cache and the pending text clip across a
+	// content stream.
+	text textRenderer
 }
 
 // newCanvas makes a surface for a mask group: black where a luminosity
@@ -217,7 +250,8 @@ func (rn *renderer) run(content []byte, resources any, base matrix, gs renderSta
 	var path rasterPath
 	var start point
 	pendingClip := 0 // 0 none, 1 nonzero, 2 even-odd
-	inText := false
+	ts := newGlyphState()
+	var tsStack []glyphState
 
 	tokens := tokenizeContent(content)
 	var operands []contentToken
@@ -252,11 +286,14 @@ func (rn *renderer) run(content []byte, resources any, base matrix, gs renderSta
 		case "q":
 			if len(stack) < 64 {
 				stack = append(stack, gs)
+				tsStack = append(tsStack, ts)
 			}
 		case "Q":
 			if n := len(stack); n > 0 {
 				gs = stack[n-1]
 				stack = stack[:n-1]
+				ts = tsStack[n-1]
+				tsStack = tsStack[:n-1]
 			}
 		case "cm":
 			if len(operands) >= 6 {
@@ -296,23 +333,23 @@ func (rn *renderer) run(content []byte, resources any, base matrix, gs renderSta
 		case "n":
 			rn.endPath(&path, &gs, &pendingClip)
 		case "f", "F", "f*":
-			rn.fill(&path, &gs, string(op) == "f*", res)
+			rn.fillArt(&path, &gs, string(op) == "f*", res)
 			rn.endPath(&path, &gs, &pendingClip)
 		case "S":
-			rn.stroke(&path, &gs)
+			rn.strokeArt(&path, &gs)
 			rn.endPath(&path, &gs, &pendingClip)
 		case "s":
 			path.close()
-			rn.stroke(&path, &gs)
+			rn.strokeArt(&path, &gs)
 			rn.endPath(&path, &gs, &pendingClip)
 		case "B", "B*":
-			rn.fill(&path, &gs, string(op) == "B*", res)
-			rn.stroke(&path, &gs)
+			rn.fillArt(&path, &gs, string(op) == "B*", res)
+			rn.strokeArt(&path, &gs)
 			rn.endPath(&path, &gs, &pendingClip)
 		case "b", "b*":
 			path.close()
-			rn.fill(&path, &gs, string(op) == "b*", res)
-			rn.stroke(&path, &gs)
+			rn.fillArt(&path, &gs, string(op) == "b*", res)
+			rn.strokeArt(&path, &gs)
 			rn.endPath(&path, &gs, &pendingClip)
 		case "W":
 			pendingClip = 1
@@ -399,13 +436,71 @@ func (rn *renderer) run(content []byte, resources any, base matrix, gs renderSta
 				}
 			}
 
-		// Text is walked so its state does not leak, and not drawn.
+		// --- text ---
 		case "BT":
-			inText = true
+			ts.tm, ts.tlm = identity(), identity()
 		case "ET":
-			inText = false
+			rn.endTextObject(&gs)
+		case "Tf":
+			if len(operands) >= 2 {
+				if n, ok := operands[0].val.(Name); ok {
+					rn.setFont(res, n, num(1), &ts)
+				}
+			}
+		case "Td":
+			ts.tlm = matrix{1, 0, 0, 1, num(0), num(1)}.mul(ts.tlm)
+			ts.tm = ts.tlm
+		case "TD":
+			ts.leading = -num(1)
+			ts.tlm = matrix{1, 0, 0, 1, num(0), num(1)}.mul(ts.tlm)
+			ts.tm = ts.tlm
+		case "Tm":
+			if len(operands) >= 6 {
+				ts.tlm = matrix{num(0), num(1), num(2), num(3), num(4), num(5)}
+				ts.tm = ts.tlm
+			}
+		case "T*":
+			ts.nextLine()
+		case "TL":
+			ts.leading = num(0)
+		case "Tc":
+			ts.charSp = num(0)
+		case "Tw":
+			ts.wordSp = num(0)
+		case "Tz":
+			ts.hScale = num(0) / 100
+		case "Ts":
+			ts.rise = num(0)
+		case "Tr":
+			ts.mode = int(num(0))
+		case "Tj":
+			if len(operands) >= 1 {
+				if str, ok := operands[0].val.(String); ok {
+					rn.showText([]byte(str), &gs, &ts, res)
+				}
+			}
+		case "'":
+			ts.nextLine()
+			if len(operands) >= 1 {
+				if str, ok := operands[0].val.(String); ok {
+					rn.showText([]byte(str), &gs, &ts, res)
+				}
+			}
+		case "\"":
+			if len(operands) >= 3 {
+				ts.wordSp, ts.charSp = num(0), num(1)
+				ts.nextLine()
+				if str, ok := operands[2].val.(String); ok {
+					rn.showText([]byte(str), &gs, &ts, res)
+				}
+			}
+		case "TJ":
+			if len(operands) >= 1 {
+				if arr, ok := operands[0].val.(Array); ok {
+					rn.showAdjusted(arr, &gs, &ts, res)
+				}
+			}
 		}
-		_ = inText
 		_ = start
 		operands = operands[:0]
 	}
@@ -441,8 +536,26 @@ func (rn *renderer) intersectClip(old *clipMask, path *rasterPath, evenOdd bool)
 }
 
 // fill paints the current path.
+// fillArt and strokeArt are the path operators' way in, and are the one
+// place the artwork switch is read. A glyph goes to fill directly,
+// because it is drawn on the strength of IncludeText instead.
+func (rn *renderer) fillArt(path *rasterPath, gs *renderState, evenOdd bool, res Dict) {
+	if rn.opts.IncludeVector {
+		rn.fill(path, gs, evenOdd, res)
+	}
+}
+
+func (rn *renderer) strokeArt(path *rasterPath, gs *renderState) {
+	if rn.opts.IncludeVector {
+		rn.stroke(path, gs)
+	}
+}
+
+// fill paints a path. Whether the caller was allowed to draw is the
+// caller's business: a glyph is filled because text was asked for, and a
+// rectangle because artwork was.
 func (rn *renderer) fill(path *rasterPath, gs *renderState, evenOdd bool, res Dict) {
-	if !rn.opts.IncludeVector || path.empty() {
+	if path.empty() {
 		return
 	}
 	if gs.fillPattern != "" {
@@ -459,7 +572,7 @@ func (rn *renderer) fill(path *rasterPath, gs *renderState, evenOdd bool, res Di
 
 // stroke paints the current path's outline.
 func (rn *renderer) stroke(path *rasterPath, gs *renderState) {
-	if !rn.opts.IncludeVector || len(path.subs) == 0 {
+	if len(path.subs) == 0 {
 		return
 	}
 	st := gs.line

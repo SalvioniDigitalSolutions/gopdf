@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"image"
 	"math"
+	"os"
 	"testing"
 )
 
@@ -272,16 +273,15 @@ func TestRenderFormXObject(t *testing.T) {
 	}
 }
 
-func TestRenderTextIsRefused(t *testing.T) {
+// TestRenderTextIsOffByDefault: text is drawn only when asked for, and
+// with it off the page carries the artwork and nothing else.
+func TestRenderTextIsOffByDefault(t *testing.T) {
 	doc := New()
 	p := doc.AddPage()
 	p.SetFont(Helvetica, 12)
 	p.Text(60, 60, "words")
 	r := NewReaderOrFail(t, docBytes(t, doc))
-	if _, err := r.RenderPage(0, RenderOpts{IncludeText: true}); err == nil {
-		t.Fatal("drawing text should be refused, not silently skipped")
-	}
-	// And with text off, the glyphs do not appear.
+
 	img, err := r.RenderPage(0, RenderOpts{DPI: 150, IncludeVector: true})
 	if err != nil {
 		t.Fatal(err)
@@ -294,6 +294,301 @@ func TestRenderTextIsRefused(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestRenderTextWithoutAFontLeavesHoles: one of the standard fourteen is
+// not embedded, so without a substitute there is nothing to draw with.
+// The count is the point — a page with holes should say so.
+func TestRenderTextWithoutAFontLeavesHoles(t *testing.T) {
+	doc := New()
+	p := doc.AddPage()
+	p.SetFont(Helvetica, 12)
+	p.Text(60, 60, "words")
+	r := NewReaderOrFail(t, docBytes(t, doc))
+
+	img, rep, err := r.RenderPageDetail(0, RenderOpts{DPI: 150, IncludeText: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Glyphs != 0 {
+		t.Errorf("drew %d glyphs from a font that is not in the file", rep.Glyphs)
+	}
+	if rep.Missing != 5 {
+		t.Errorf("missing = %d, want the 5 letters of the word", rep.Missing)
+	}
+	if inkFraction(img) != 0 {
+		t.Error("something was painted with no font to paint it with")
+	}
+}
+
+// TestRenderEmbeddedText draws a page set in a font the document carries,
+// which is the case that needs no help from anywhere.
+func TestRenderEmbeddedText(t *testing.T) {
+	font, err := LoadFont(testFontPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := New()
+	p := doc.AddPage()
+	p.SetFont(font, 48)
+	p.Text(60, 700, "Hamburgefonstiv")
+	r := NewReaderOrFail(t, docBytes(t, doc))
+
+	img, rep, err := r.RenderPageDetail(0, RenderOpts{DPI: 100, IncludeText: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Missing != 0 {
+		t.Errorf("%d glyphs of an embedded font could not be drawn", rep.Missing)
+	}
+	if rep.Glyphs != 15 {
+		t.Errorf("drew %d glyphs, want 15", rep.Glyphs)
+	}
+	ink := inkFraction(img)
+	if ink < 0.005 {
+		t.Errorf("the page is %.4f%% ink; the text was not drawn", ink*100)
+	}
+	// The ink must be where the text is, not spread over the page: a
+	// glyph drawn at the wrong scale is the failure this catches. Text
+	// places its baseline from the top of the page, so at 100 DPI a
+	// baseline 700 points down lands near row 972.
+	minX, minY, maxX, maxY := inkBounds(img)
+	if minY < 900 || maxY > 1000 {
+		t.Errorf("text ink runs from y=%d to y=%d, want one line near y=972",
+			minY, maxY)
+	}
+	if maxY-minY > 70 {
+		t.Errorf("the text is %d pixels tall, which is more than one line", maxY-minY)
+	}
+	if minX < 75 || maxX > 700 {
+		t.Errorf("text ink runs from x=%d to x=%d, want it to start near x=83",
+			minX, maxX)
+	}
+}
+
+// TestRenderTextModes covers what the eight rendering modes do: fill,
+// stroke, both, and the invisible mode that scanned pages use.
+func TestRenderTextModes(t *testing.T) {
+	font, err := LoadFont(testFontPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ink := func(mode int) float64 {
+		doc := New()
+		doc.Compress = false
+		p := doc.AddPage()
+		p.SetFont(font, 60)
+		p.op("%d Tr", mode)
+		p.Text(60, 200, "MMMM")
+		r := NewReaderOrFail(t, docBytes(t, doc))
+		img, err := r.RenderPage(0, RenderOpts{DPI: 100, IncludeText: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return inkFraction(img)
+	}
+	filled := ink(0)
+	if filled <= 0 {
+		t.Fatal("mode 0 drew nothing")
+	}
+	if got := ink(3); got != 0 {
+		t.Errorf("mode 3 is invisible but painted %.4f of the page", got)
+	}
+	// A stroked outline is lighter than a solid fill of the same letters.
+	if stroked := ink(1); stroked <= 0 || stroked >= filled {
+		t.Errorf("mode 1 ink %.4f against mode 0 ink %.4f", stroked, filled)
+	}
+}
+
+// TestRenderTextClip is the case that makes text matter to a renderer
+// that does not otherwise draw it: a headline used as a clip, with a
+// shading painted through the letters. Ignore the clip and the shading
+// covers the page.
+func TestRenderTextClip(t *testing.T) {
+	font, err := LoadFont(testFontPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := New()
+	doc.Compress = false
+	p := doc.AddPage()
+	p.SetFont(font, 72)
+	// Text writes its own BT and ET, so the mode is set around it; text
+	// state belongs to the graphics state and carries in.
+	p.op("q 7 Tr")
+	p.Text(60, 200, "CLIP")
+	p.op("0 0 0 rg 0 500 600 200 re f Q")
+	r := NewReaderOrFail(t, docBytes(t, doc))
+
+	img, err := r.RenderPage(0, RenderOpts{DPI: 100, IncludeVector: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ink := inkFraction(img)
+	if ink == 0 {
+		t.Fatal("the clip removed everything")
+	}
+	// The rectangle covers about a fifth of the page. Through the
+	// letters it must cover a great deal less.
+	if ink > 0.05 {
+		t.Errorf("%.3f of the page is painted; the text clip was ignored", ink)
+	}
+	// And what is painted has to sit on the line of text, which a
+	// baseline 200 points from the top puts near row 278.
+	_, minY, _, maxY := inkBounds(img)
+	if minY < 200 || maxY > 300 {
+		t.Errorf("ink runs from y=%d to y=%d, not along the headline", minY, maxY)
+	}
+}
+
+// TestRenderTextClipWithNoFontHidesRatherThanFloods: a clip built from a
+// font that cannot be read holds nothing, and nothing is what shows
+// through. Treating the clip as absent would paint the fill over the
+// whole page, which is the worse of the two mistakes by far.
+func TestRenderTextClipWithNoFontHidesRatherThanFloods(t *testing.T) {
+	doc := New()
+	doc.Compress = false
+	p := doc.AddPage()
+	p.SetFont(Helvetica, 72) // not embedded, so no outlines
+	p.op("q 7 Tr")
+	p.Text(60, 200, "CLIP")
+	p.op("0 0 0 rg 0 500 600 200 re f Q")
+	r := NewReaderOrFail(t, docBytes(t, doc))
+
+	img, err := r.RenderPage(0, RenderOpts{DPI: 100, IncludeVector: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ink := inkFraction(img); ink != 0 {
+		t.Errorf("%.3f of the page was painted through a clip that could not be built", ink)
+	}
+}
+
+// TestRenderSubstituteFont: the document names a font it does not carry,
+// and the caller supplies one.
+func TestRenderSubstituteFont(t *testing.T) {
+	data, err := os.ReadFile(testFontPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := New()
+	p := doc.AddPage()
+	p.SetFont(Helvetica, 36)
+	p.Text(60, 700, "substituted")
+	r := NewReaderOrFail(t, docBytes(t, doc))
+
+	var asked FontRequest
+	img, rep, err := r.RenderPageDetail(0, RenderOpts{
+		DPI: 100, IncludeText: true,
+		SubstituteFont: func(req FontRequest) []byte {
+			asked = req
+			return data
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asked.BaseFont != "Helvetica" {
+		t.Errorf("asked for %q, want Helvetica", asked.BaseFont)
+	}
+	if rep.Missing != 0 || rep.Glyphs != 11 {
+		t.Errorf("drew %d glyphs and missed %d, want 11 and 0", rep.Glyphs, rep.Missing)
+	}
+	if inkFraction(img) == 0 {
+		t.Error("the substitute drew nothing")
+	}
+
+	// Returning nothing must leave the page blank rather than break it.
+	img2, rep2, err := r.RenderPageDetail(0, RenderOpts{
+		DPI: 100, IncludeText: true,
+		SubstituteFont: func(FontRequest) []byte { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep2.Glyphs != 0 || inkFraction(img2) != 0 {
+		t.Error("a substitute that declined still drew something")
+	}
+}
+
+// TestSubstituteUsesDocumentWidths: the stand-in supplies shapes, not
+// metrics. Text set in a substitute must occupy the width the document
+// says it does, or every line ends in the wrong place.
+func TestSubstituteUsesDocumentWidths(t *testing.T) {
+	data, err := os.ReadFile(testFontPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Courier is fixed-pitch at 600/1000 em, which no proportional
+	// substitute matches, so the advance can only be right if it came
+	// from the document.
+	doc := New()
+	doc.Compress = false
+	p := doc.AddPage()
+	p.SetFont(Courier, 50)
+	p.Text(60, 700, "iiii")
+	r := NewReaderOrFail(t, docBytes(t, doc))
+
+	img, _, err := r.RenderPageDetail(0, RenderOpts{
+		DPI: 72, IncludeText: true,
+		SubstituteFont: func(FontRequest) []byte { return data },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	minX, _, maxX, _ := inkBounds(img)
+	// Four characters at 600/1000 of 50pt is 120pt from the first pen
+	// position; the last glyph's ink stops a little short of that.
+	if maxX-minX < 80 || maxX-minX > 125 {
+		t.Errorf("four fixed-pitch characters span %d points, want about 100",
+			maxX-minX)
+	}
+}
+
+// inkBounds is the box containing everything painted.
+func inkBounds(img image.Image) (minX, minY, maxX, maxY int) {
+	b := img.Bounds()
+	minX, minY = b.Max.X, b.Max.Y
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			cr, cg, cb, _ := img.At(x, y).RGBA()
+			if cr>>8 > 245 && cg>>8 > 245 && cb>>8 > 245 {
+				continue
+			}
+			if x < minX {
+				minX = x
+			}
+			if x > maxX {
+				maxX = x
+			}
+			if y < minY {
+				minY = y
+			}
+			if y > maxY {
+				maxY = y
+			}
+		}
+	}
+	return minX, minY, maxX, maxY
+}
+
+// inkFraction is how much of a page was painted.
+func inkFraction(img image.Image) float64 {
+	b := img.Bounds()
+	ink, total := 0, 0
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			total++
+			cr, cg, cb, _ := img.At(x, y).RGBA()
+			if cr>>8 < 250 || cg>>8 < 250 || cb>>8 < 250 {
+				ink++
+			}
+		}
+	}
+	if total == 0 {
+		return 0
+	}
+	return float64(ink) / float64(total)
 }
 
 func TestRenderNothingRequested(t *testing.T) {
