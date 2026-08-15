@@ -2,6 +2,7 @@ package gopdf
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -502,6 +503,127 @@ func annotWithAppearance(t *testing.T, note string) []byte {
 	num, _ := r.pageObjectNumber(0)
 	u.set(num, pd)
 
+	var buf bytes.Buffer
+	if _, err := u.WriteTo(&buf); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// TestSubstitutionWritesWhatItSays is the failure that only a check on
+// the replacement can catch.
+//
+// A subset font puts its glyphs at whatever codes it likes and its
+// ToUnicode says which. Writing a token by looking the characters up in
+// a standard encoding drew "[[TOKEN_1]]" as "99PFKENJ1))": the original
+// was genuinely gone, so every check that looked for the original
+// passed, and what was left was a document quietly saying something
+// else.
+func TestSubstitutionWritesWhatItSays(t *testing.T) {
+	// A font whose /Differences shuffles the codes, so a standard
+	// encoding disagrees with the font's own map about what each means.
+	src := shuffledEncodingDoc(t, "All rights reserved")
+
+	r := NewReaderOrFail(t, src)
+	before, err := r.PageText(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(before, "All rights reserved") {
+		t.Fatalf("the fixture does not read as expected: %q", before)
+	}
+
+	var buf bytes.Buffer
+	res, err := Pseudonymize(r, &buf, []Pseudonym{{From: "rights", To: "[[TOKEN_1]]"}})
+	if err != nil {
+		t.Fatalf("the substitution was refused: %v", err)
+	}
+	if res.Total() != 1 {
+		t.Fatalf("replaced %d, want 1", res.Total())
+	}
+	got, err := NewReaderOrFail(t, buf.Bytes()).PageText(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "[[TOKEN_1]]") {
+		t.Errorf("the token was not written as itself: %q", got)
+	}
+	if strings.Contains(got, "rights") {
+		t.Errorf("the original survived: %q", got)
+	}
+}
+
+// shuffledEncodingDoc builds a page set in a font that draws its glyphs
+// at codes of its own choosing and says so only in /ToUnicode.
+//
+// The letters are shifted up by one, so the font's own map and the
+// standard encoding disagree about what every code means. /ToUnicode
+// covers the letters, digits and space and says nothing about the
+// brackets and underscore a token is made of — which is the shape a
+// subset font has, and the reason a token could come out as nonsense:
+// with no map to consult, the standard encoding was believed, and the
+// code it gave for "[" was a code this font draws a letter at.
+func shuffledEncodingDoc(t *testing.T, text string) []byte {
+	t.Helper()
+	doc := New()
+	doc.Compress = false
+	p := doc.AddPage()
+	p.SetFont(Helvetica, 12)
+	p.Text(72, 100, "anchor")
+	src := docBytes(t, doc)
+
+	shift := func(b byte) byte { return b + 1 }
+	mapped := func(b byte) bool {
+		return b == ' ' || b >= '0' && b <= '9' ||
+			b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z'
+	}
+
+	var cmap strings.Builder
+	cmap.WriteString("/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n" +
+		"1 begincodespacerange <00> <FF> endcodespacerange\n")
+	var entries int
+	var body strings.Builder
+	for c := byte(' '); c < 127; c++ {
+		if !mapped(c) {
+			continue
+		}
+		fmt.Fprintf(&body, "<%02X> <%04X>\n", shift(c), c)
+		entries++
+	}
+	fmt.Fprintf(&cmap, "%d beginbfchar\n%s endbfchar\n", entries, body.String())
+	cmap.WriteString("endcmap CMapName currentdict /CMap defineresource pop end end\n")
+
+	r := NewReaderOrFail(t, src)
+	u := Update(r)
+	tu := u.AddObject(NewStream(Dict{}, []byte(cmap.String())))
+	font := u.AddObject(Dict{
+		"Type": Name("Font"), "Subtype": Name("Type1"),
+		"BaseFont":  Name("Helvetica"),
+		"Encoding":  Name("WinAnsiEncoding"),
+		"ToUnicode": tu,
+	})
+	res, _ := r.InheritedPageValue(0, "Resources").(Dict)
+	merged := res.Clone()
+	fonts, _ := r.Resolve(merged["Font"]).(Dict)
+	f2 := fonts.Clone()
+	if f2 == nil {
+		f2 = Dict{}
+	}
+	f2["Fsh"] = font
+	merged["Font"] = f2
+	if err := u.SetPageEntry(0, "Resources", merged); err != nil {
+		t.Fatal(err)
+	}
+
+	var enc strings.Builder
+	for i := 0; i < len(text); i++ {
+		enc.WriteByte(shift(text[i]))
+	}
+	page, err := u.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page.op("BT /Fsh 12 Tf 72 700 Td (%s) Tj ET", escapeString([]byte(enc.String())))
 	var buf bytes.Buffer
 	if _, err := u.WriteTo(&buf); err != nil {
 		t.Fatal(err)

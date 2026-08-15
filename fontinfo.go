@@ -228,11 +228,33 @@ func (fi *fontInfo) buildEncoder() {
 			if r == 0 || !fi.canUse(uint32(code)) {
 				continue
 			}
+			// A subset font is free to put any glyph at any code, and
+			// its ToUnicode says which. Where the two disagree the map
+			// wins: writing code 0x54 because an encoding calls it "T"
+			// drew a P in a font whose own map says 0x54 is a P, and the
+			// token came out as nonsense that still looked like text.
+			if fi.contradicts(uint32(code), r) {
+				continue
+			}
 			if _, taken := fi.encode[r]; !taken {
 				fi.encode[r] = []byte{byte(code)}
 			}
 		}
 	}
+}
+
+// contradicts reports whether the font's own ToUnicode map says a code
+// means something other than the rune an encoding claims for it.
+func (fi *fontInfo) contradicts(code uint32, r rune) bool {
+	if fi.decoder == nil || fi.decoder.toUnicode == nil {
+		return false
+	}
+	text, ok := fi.decoder.toUnicode[code]
+	if !ok {
+		return false // the map is silent, so it disagrees with nothing
+	}
+	runes := []rune(text)
+	return len(runes) != 1 || runes[0] != r
 }
 
 func (fi *fontInfo) loadSimpleWidths(r *Reader, dict Dict) {

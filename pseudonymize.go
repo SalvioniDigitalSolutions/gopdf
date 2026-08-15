@@ -134,7 +134,7 @@ func Pseudonymize(r *Reader, w io.Writer, subs []Pseudonym) (PseudonymizeResult,
 	if _, err := rw.writeTo(&final); err != nil {
 		return PseudonymizeResult{}, err
 	}
-	if err := checkPseudonymized(final.Bytes(), clean); err != nil {
+	if err := checkPseudonymized(final.Bytes(), clean, out); err != nil {
 		return PseudonymizeResult{}, err
 	}
 	if _, err := w.Write(final.Bytes()); err != nil {
@@ -161,8 +161,9 @@ func PseudonymizeFile(src, dst string, subs []Pseudonym) (PseudonymizeResult, er
 
 // checkPseudonymized confirms that nothing a mapping was meant to remove
 // can still be found — on the page, in a string anywhere in the object
-// graph, or in a metadata packet.
-func checkPseudonymized(out []byte, subs []Pseudonym) error {
+// graph, or in a metadata packet — and that what was meant to replace it
+// arrived.
+func checkPseudonymized(out []byte, subs []Pseudonym, res PseudonymizeResult) error {
 	r, err := NewReader(out)
 	if err != nil {
 		return fmt.Errorf("gopdf: the pseudonymized document could not be read back: %w", err)
@@ -174,7 +175,50 @@ func checkPseudonymized(out []byte, subs []Pseudonym) error {
 	if where != "" {
 		return fmt.Errorf("gopdf: %s; the output has been withheld", where)
 	}
+	return checkTokensArrived(r, subs, res)
+}
+
+// checkTokensArrived confirms that a token a substitution reported
+// writing can be read back off the page.
+//
+// Removing the original is half the job. A font that encodes the token's
+// characters at codes meaning something else draws it as nonsense that
+// still looks like text — "[[TOKEN_1]]" came out as "99PFKENJ1))" —
+// and every check that only looks for the original passes, because the
+// original is genuinely gone. What is left is a document quietly missing
+// the thing it was supposed to say.
+func checkTokensArrived(r *Reader, subs []Pseudonym, res PseudonymizeResult) error {
+	var pages strings.Builder
+	for i := 0; i < r.NumPages(); i++ {
+		text, err := r.PageText(i)
+		if err != nil {
+			return fmt.Errorf("gopdf: page %d could not be read back: %w", i, err)
+		}
+		pages.WriteString(text)
+		pages.WriteString("\n")
+		pages.WriteString(r.annotationText(i))
+		pages.WriteString("\n")
+	}
+	// A token long enough to need it is re-wrapped across lines, so the
+	// comparison is made with runs of whitespace flattened: the point is
+	// whether the words arrived, not where the lines fell.
+	got := flattenSpace(dehyphenate(pages.String()))
+	for _, s := range subs {
+		if res.Replaced[s.From] == 0 || s.To == "" {
+			continue // nothing was replaced, so nothing should have arrived
+		}
+		if !strings.Contains(got, flattenSpace(s.To)) {
+			return fmt.Errorf("gopdf: %q was removed but %q was not written in its "+
+				"place; the document's font encodes it as something else, and the "+
+				"output has been withheld", s.From, s.To)
+		}
+	}
 	return nil
+}
+
+// flattenSpace collapses every run of whitespace to a single space.
+func flattenSpace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // Reverse returns the mappings that undo a substitution, for a caller
