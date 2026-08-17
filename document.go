@@ -114,6 +114,10 @@ type Document struct {
 	// edits are materialized when the document is written.
 	editables []*EditablePage
 
+	// attachments are files to embed, added by Attach and written into
+	// the catalog's name tree when the document is serialized.
+	attachments []pendingAttachment
+
 	// acroForm is an imported form definition, set by
 	// FillFormInteractive; acroFields are fields authored through the
 	// Page.Add*Field methods.

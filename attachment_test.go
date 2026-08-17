@@ -489,3 +489,73 @@ func TestRedactionKeepsNamedDestinations(t *testing.T) {
 		t.Errorf("the redaction itself did not happen: %q", txt)
 	}
 }
+
+// TestDocumentAttach covers the other half of the pair: a file put into
+// a document being built, rather than into one that already exists.
+func TestDocumentAttach(t *testing.T) {
+	doc := New()
+	doc.Compress = false
+	p := doc.AddPage()
+	p.SetFont(Helvetica, 12)
+	p.Text(72, 100, "A report with its figures attached.")
+	if err := doc.Attach("figures.csv", []byte("year,total\n2026,41\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := doc.AttachWithDescription("notes.txt", "how it was compiled",
+		[]byte("the working")); err != nil {
+		t.Fatal(err)
+	}
+	if err := doc.Attach("", []byte("x")); err == nil {
+		t.Error("an attachment with no name was accepted")
+	}
+
+	r := NewReaderOrFail(t, docBytes(t, doc))
+	list := r.Attachments()
+	if len(list) != 2 {
+		t.Fatalf("found %d attachments, want 2: %+v", len(list), list)
+	}
+	if list[0].Name != "figures.csv" || list[1].Name != "notes.txt" {
+		t.Fatalf("names = %q, %q", list[0].Name, list[1].Name)
+	}
+	if list[1].Description != "how it was compiled" {
+		t.Errorf("description = %q", list[1].Description)
+	}
+	if data, err := list[0].Data(); err != nil || string(data) != "year,total\n2026,41\n" {
+		t.Errorf("the first attachment reads as %q (%v)", data, err)
+	}
+	if data, err := list[1].Data(); err != nil || string(data) != "the working" {
+		t.Errorf("the second attachment reads as %q (%v)", data, err)
+	}
+	if list[0].Size != 19 {
+		t.Errorf("size = %d, want 19", list[0].Size)
+	}
+	// And the document is still a document.
+	if txt, err := r.PageText(0); err != nil || !strings.Contains(txt, "figures attached") {
+		t.Errorf("page text: %q %v", txt, err)
+	}
+	verifyXref(t, docBytes(t, doc))
+}
+
+// TestDocumentAttachThenUpdate: a file added at build time and another
+// added by a later update have to end up in the same collection.
+func TestDocumentAttachThenUpdate(t *testing.T) {
+	doc := New()
+	doc.Compress = false
+	doc.AddPage()
+	if err := doc.Attach("first.txt", []byte("one")); err != nil {
+		t.Fatal(err)
+	}
+	r := NewReaderOrFail(t, docBytes(t, doc))
+	u := Update(r)
+	if err := u.Attach("second.txt", []byte("two")); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if _, err := u.WriteTo(&buf); err != nil {
+		t.Fatal(err)
+	}
+	list := NewReaderOrFail(t, buf.Bytes()).Attachments()
+	if len(list) != 2 {
+		t.Fatalf("found %d attachments, want both: %+v", len(list), list)
+	}
+}

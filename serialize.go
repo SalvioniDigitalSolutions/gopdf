@@ -68,6 +68,10 @@ func (d *Document) WriteTo(w io.Writer) (int64, error) {
 	rs := d.allocResources(alloc)
 	fontNums := rs.fontNums
 
+	// Attachments become objects before the numbers are handed out,
+	// since they go into the same pool as everything else copied in.
+	attachTree := d.buildAttachments()
+
 	rawNums := make([]int, len(d.raw))
 	for i := range d.raw {
 		rawNums[i] = alloc()
@@ -246,6 +250,11 @@ func (d *Document) WriteTo(w io.Writer) (int64, error) {
 	if d.acroForm != nil || len(d.acroFields) > 0 {
 		ow.str(" /AcroForm ")
 		d.writeAcroForm(ow, ctx, fontNums)
+	}
+	if attachTree != nil {
+		ow.str(" /Names << /EmbeddedFiles ")
+		writeValue(ow, attachTree, ctx)
+		ow.str(" >>")
 	}
 	ow.str(" >>\n")
 	endObj()

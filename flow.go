@@ -808,10 +808,22 @@ func newFlow(lines []flowLine, onChange func()) *Flow {
 						style: styleOf(prev), FontName: prev.FontName})
 				}
 			}
-			f.spans = append(f.spans, FlowSpan{
-				Text: run.Text, style: styleOf(run),
-				FontName: run.FontName, FontSize: run.FontSize,
-			})
+			// A run can carry gaps of its own, where one operation drew
+			// "9.2.1" and then moved the pen before "Messaggio". The
+			// reader sees two words there and so must this, or a
+			// replacement of the second one finds nothing to replace.
+			// The pieces are emitted with the same space between them
+			// that a gap between two runs gets.
+			for i, piece := range splitAtGaps(run) {
+				if i > 0 {
+					f.spans = append(f.spans, FlowSpan{Text: " ",
+						style: styleOf(run), FontName: run.FontName})
+				}
+				f.spans = append(f.spans, FlowSpan{
+					Text: piece, style: styleOf(run),
+					FontName: run.FontName, FontSize: run.FontSize,
+				})
+			}
 			prev = run
 		}
 	}
@@ -929,4 +941,22 @@ func coalesceForOutput(in []FlowSpan) []FlowSpan {
 		out = append(out, s)
 	}
 	return out
+}
+
+// splitAtGaps cuts a run's text where the operation left a word break of
+// its own, by the rule extraction uses.
+func splitAtGaps(run *TextRun) []string {
+	if len(run.spaceAt) == 0 {
+		return []string{run.Text}
+	}
+	var out []string
+	last := 0
+	for _, off := range run.spaceAt {
+		if off <= last || off > len(run.Text) {
+			continue
+		}
+		out = append(out, run.Text[last:off])
+		last = off
+	}
+	return append(out, run.Text[last:])
 }

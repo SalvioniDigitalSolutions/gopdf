@@ -211,6 +211,72 @@ func (r *Reader) nameTree(v any, depth int) []nameTreeEntry {
 
 // --- writing ---
 
+// pendingAttachment is a file waiting to be written into a document
+// being built.
+type pendingAttachment struct {
+	name        string
+	description string
+	data        []byte
+}
+
+// Attach adds a file to a document being built. The name is what a
+// reader will see and offer to save it as.
+func (d *Document) Attach(name string, data []byte) error {
+	return d.AttachWithDescription(name, "", data)
+}
+
+// AttachWithDescription adds a file to a document being built, along
+// with the note that goes with it.
+func (d *Document) AttachWithDescription(name, description string, data []byte) error {
+	if name == "" {
+		return errors.New("gopdf: an attachment needs a name")
+	}
+	d.attachments = append(d.attachments, pendingAttachment{
+		name: name, description: description, data: append([]byte(nil), data...),
+	})
+	return nil
+}
+
+// buildAttachments turns the pending files into objects and returns the
+// name tree that lists them, or nil if there are none.
+//
+// It runs before object numbers are handed out, since everything it adds
+// goes into the same pool the rest of the document's copied objects use.
+func (d *Document) buildAttachments() any {
+	if len(d.attachments) == 0 {
+		return nil
+	}
+	files := append([]pendingAttachment(nil), d.attachments...)
+	sort.SliceStable(files, func(i, j int) bool { return files[i].name < files[j].name })
+
+	flat := make(Array, 0, len(files)*2)
+	for _, f := range files {
+		stream := rawRef(len(d.raw))
+		d.raw = append(d.raw, &rawStream{
+			dict: Dict{
+				"Type":   Name("EmbeddedFile"),
+				"Params": Dict{"Size": int64(len(f.data))},
+			},
+			data: f.data,
+		})
+		spec := Dict{
+			"Type": Name("Filespec"),
+			"F":    String(textStringBytes(f.name)),
+			"UF":   String(textStringBytes(f.name)),
+			"EF":   Dict{"F": stream},
+		}
+		if f.description != "" {
+			spec["Desc"] = String(textStringBytes(f.description))
+		}
+		specRef := rawRef(len(d.raw))
+		d.raw = append(d.raw, spec)
+		flat = append(flat, String(textStringBytes(f.name)), specRef)
+	}
+	tree := rawRef(len(d.raw))
+	d.raw = append(d.raw, Dict{"Names": flat})
+	return tree
+}
+
 // Attach adds a file to an existing document, appended incrementally.
 func (u *Updater) Attach(name string, data []byte) error {
 	return u.AttachWithDescription(name, "", data)

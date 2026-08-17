@@ -848,3 +848,83 @@ func TestFlowTextScale(t *testing.T) {
 		t.Errorf("textScale of an empty run = %v, want 1", got)
 	}
 }
+
+// TestFlowReadsGapsInsideOneOperation: a run can carry word breaks of
+// its own, where one show-text operation draws "9.2.1" and then moves
+// the pen before "Messaggio". A reader sees two words there, and a
+// replacement of the second must find it.
+func TestFlowReadsGapsInsideOneOperation(t *testing.T) {
+	doc := New()
+	doc.Compress = false
+	p := doc.AddPage()
+	p.SetFont(Helvetica, 12)
+	p.op("BT /F1 12 Tf 72 700 Td [(9.2.1) -2000 (Messaggio) -2000 (concernente)] TJ ET")
+	src := docBytes(t, doc)
+
+	r := NewReaderOrFail(t, src)
+	u := Update(r)
+	page, err := u.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := page.ReplaceTextFlow("Messaggio", "[[TOKEN_1]]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("replaced %d, want the one word after the gap", n)
+	}
+	var buf bytes.Buffer
+	if _, err := u.WriteTo(&buf); err != nil {
+		t.Fatal(err)
+	}
+	got, err := NewReaderOrFail(t, buf.Bytes()).PageText(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "[[TOKEN_1]]") {
+		t.Errorf("the replacement is not on the page: %q", got)
+	}
+	if strings.Contains(got, "Messaggio") {
+		t.Errorf("the original survived: %q", got)
+	}
+	for _, keep := range []string{"9.2.1", "concernente"} {
+		if !strings.Contains(got, keep) {
+			t.Errorf("%q was lost: %q", keep, got)
+		}
+	}
+}
+
+// TestFlowKeepsAKernedWordWhole is the other side: a tight kern inside a
+// word is not a break, and splitting there would let a replacement match
+// half a word.
+func TestFlowKeepsAKernedWordWhole(t *testing.T) {
+	doc := New()
+	doc.Compress = false
+	p := doc.AddPage()
+	p.SetFont(Helvetica, 12)
+	p.op("BT /F1 12 Tf 72 700 Td [(Sunder) -20 (land)] TJ ET")
+	src := docBytes(t, doc)
+
+	r := NewReaderOrFail(t, src)
+	u := Update(r)
+	page, err := u.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := page.ReplaceTextFlow("land", "[[X]]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("replaced %d; a kern was treated as a word break", n)
+	}
+	// And the whole word is still replaceable.
+	n2, err := page.ReplaceTextFlow("Sunderland", "[[TOWN]]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n2 != 1 {
+		t.Errorf("replaced %d of the whole word, want 1", n2)
+	}
+}
