@@ -381,16 +381,16 @@ func (rd *Redactor) checkAttachments(out []byte) error {
 				continue
 			}
 			return fmt.Errorf("gopdf: %q is still in the attached file %q, which "+
-				"redaction does not reach into; remove the attachment with "+
-				"RemoveAttachments or take it out yourself, and the output has "+
-				"been withheld", lit, a.Name)
+				"redaction does not reach into; stop keeping the attachments "+
+				"or take that one out yourself, and the output has been "+
+				"withheld", lit, a.Name)
 		}
 		for _, re := range rd.patterns {
 			if m := re.FindString(text); m != "" {
 				return fmt.Errorf("gopdf: %q in the attached file %q still matches "+
-					"%v; redaction does not reach into an attachment, so remove it "+
-					"with RemoveAttachments, and the output has been withheld",
-					m, a.Name, re)
+					"%v; redaction does not reach into an attachment, so stop "+
+					"keeping them or take that one out yourself, and the output "+
+					"has been withheld", m, a.Name, re)
 			}
 		}
 	}

@@ -86,8 +86,8 @@ go get github.com/SalvioniDigitalSolutions/gopdf
 - **Annotations**: read, add and remove highlights, underlines,
   strike-outs, sticky notes, boxes and links — on new pages or in place
 - **Embedded files**: list what a document carries inside it, extract
-  it, attach more, and take them out again — including the paperclip
-  annotations on a page
+  it, attach more — to a document being built or an existing one — and
+  take them out again, including the paperclip annotations on a page
 - **Page operations**: delete, reorder and move pages, in place
 - **Incremental update**: edit text, draw, annotate and reorder, appended
   so the original file survives byte for byte — including everything the

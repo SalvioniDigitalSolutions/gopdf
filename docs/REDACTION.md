@@ -46,7 +46,8 @@ err = rd.Save("redacted.pdf")
 | **Images** | Pixels inside the area are overwritten and the image re-encoded, so the original samples are gone. One that cannot be decoded (fax, JBIG2, JPEG 2000) is dropped whole rather than left in. |
 | **Vector artwork** | A path lying entirely inside the area is deleted. One straddling the edge is reported by `PartialArtwork()`, not silently kept. A path that establishes a clip is never removed. |
 | **Annotations** | Removed with whatever text they hold, unless `KeepAnnotations(true)`. |
-| **Metadata** | Information dictionary and XMP discarded, unless `StripMetadata(false)`. |
+| **Metadata** | Information dictionary and XMP discarded, unless `StripMetadata(false)`. Named destinations survive: they are structure, not metadata. |
+| **Embedded files** | Removed, unless `KeepAttachments(true)`. No rule here reaches inside one, so a spreadsheet attached to a report still holds whatever the report said. |
 
 ### Options
 
@@ -55,8 +56,42 @@ rd.SetFill(gopdf.RGB(0, 0, 0))  // colour of the bar; black by default
 rd.SetOverlay(false)            // remove the content but paint no bar
 rd.StripMetadata(false)         // keep the document metadata
 rd.KeepAnnotations(true)        // leave annotations in place
+rd.KeepAttachments(true)        // leave the embedded files in place
 rd.SetVerify(false)             // skip the read-back check (not advised)
 ```
+
+### Embedded files
+
+A PDF can carry other files inside it — the spreadsheet a table came
+from, the original of a scan. Nothing on the page shows they are there,
+and no redaction rule reaches into one, which makes an attachment the
+likeliest way for a redacted document to give up what it was redacted
+for. They are removed by default.
+
+Look before you decide:
+
+```go
+for _, a := range rd.Attachments() {
+    log.Printf("%s (%d bytes) %s", a.Name, a.Size, a.Description)
+}
+rd.KeepAttachments(true) // if you have a reason to
+```
+
+Keeping one is checked, as far as it can be. A redaction told to keep an
+attachment whose bytes still hold the words it removed is refused rather
+than written:
+
+```
+gopdf: "Ada Lovelace" is still in the attached file "contacts.csv", which
+redaction does not reach into; stop keeping the attachments or take that
+one out yourself, and the output has been withheld
+```
+
+That check reads the attachment's bytes as they are, which finds the
+words in a plain-text, comma-separated or XML file and does not find them
+in a compressed container such as `.docx` or `.zip`. **Finding nothing is
+not proof there is nothing.** For an attachment you cannot read yourself,
+drop it.
 
 ### It checks its own work
 
