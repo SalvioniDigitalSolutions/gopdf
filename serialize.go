@@ -37,6 +37,12 @@ func (d *Document) WriteTo(w io.Writer) (int64, error) {
 	if len(d.pages) == 0 {
 		return 0, errors.New("gopdf: document has no pages")
 	}
+	// A document that asked for the archival profile is checked before
+	// anything is written, so it cannot end up claiming a conformance it
+	// does not meet.
+	if err := d.pdfaCheck(); err != nil {
+		return 0, err
+	}
 	// Materialize pending text edits before anything is serialized.
 	for _, e := range d.editables {
 		if err := e.flush(); err != nil {
@@ -74,6 +80,7 @@ func (d *Document) WriteTo(w io.Writer) (int64, error) {
 	labelTree := d.buildPageLabels()
 	layerProps := d.buildLayers()
 	xmpRef := d.buildXMP()
+	intentRef := d.buildPDFAExtras()
 
 	rawNums := make([]int, len(d.raw))
 	for i := range d.raw {
@@ -270,6 +277,11 @@ func (d *Document) WriteTo(w io.Writer) (int64, error) {
 	if xmpRef != nil {
 		ow.str(" /Metadata ")
 		writeValue(ow, xmpRef, ctx)
+	}
+	if intentRef != nil {
+		ow.str(" /OutputIntents [")
+		writeValue(ow, intentRef, ctx)
+		ow.str("]")
 	}
 	ow.str(" >>\n")
 	endObj()

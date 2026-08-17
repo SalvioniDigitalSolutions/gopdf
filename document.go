@@ -114,6 +114,9 @@ type Document struct {
 	// edits are materialized when the document is written.
 	editables []*EditablePage
 
+	// pdfa is the archival conformance level asked for, if any.
+	pdfa PDFAConformance
+
 	// wantXMP asks for a metadata packet describing the document.
 	wantXMP bool
 

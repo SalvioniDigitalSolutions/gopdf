@@ -157,7 +157,7 @@ func (d *Document) buildXMP() any {
 	if info.Producer == "" {
 		info.Producer = "gopdf"
 	}
-	packet := xmpPacket(info, d.CreationDate)
+	packet := xmpPacket(info, d.CreationDate, pdfaXMP(d.pdfa))
 	ref := rawRef(len(d.raw))
 	d.raw = append(d.raw, &rawStream{
 		dict: Dict{"Type": Name("Metadata"), "Subtype": Name("XML")},
@@ -175,7 +175,7 @@ func (u *Updater) SetXMP(info Info) error {
 	u.SetInfo(info)
 	stream := u.AddObject(NewStream(
 		Dict{"Type": Name("Metadata"), "Subtype": Name("XML")},
-		xmpPacket(info, time.Now()),
+		xmpPacket(info, time.Now(), ""),
 	))
 	return u.SetCatalogEntry("Metadata", stream)
 }
@@ -186,7 +186,7 @@ func (u *Updater) SetXMP(info Info) error {
 // the shape is fixed and the escaping is the only part that varies —
 // and because a packet is padded with whitespace so a tool can rewrite
 // it in place without moving the rest of the file.
-func xmpPacket(info Info, created time.Time) []byte {
+func xmpPacket(info Info, created time.Time, extra string) []byte {
 	var b strings.Builder
 	// The packet opens with a byte order mark, written as its bytes so
 	// the source file itself stays plain ASCII.
@@ -229,6 +229,7 @@ func xmpPacket(info Info, created time.Time) []byte {
 		simple("xmp:CreateDate", stamp)
 		simple("xmp:ModifyDate", stamp)
 	}
+	b.WriteString(extra)
 	b.WriteString("  </rdf:Description>\n </rdf:RDF>\n</x:xmpmeta>\n")
 	// The padding is what lets a later tool rewrite the packet without
 	// moving anything after it, and the specification asks for it.

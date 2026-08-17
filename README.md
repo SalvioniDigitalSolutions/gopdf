@@ -55,6 +55,17 @@ go get github.com/SalvioniDigitalSolutions/gopdf
   preserved as soft masks, grayscale, and Adobe CMYK handling
 - Word wrapping, alignment, links, and a nestable bookmark tree
 - **Encryption**: AES-128 or AES-256 with per-field permissions
+- **Page labels**: the numbering a reader sees — roman front matter,
+  prefixed appendices — read, written and resolved a page at a time
+- **Layers**: declare optional content, draw on it, and switch it on or
+  off in a document that already has some
+- **XMP metadata**: read a packet in whichever shape its producer wrote,
+  and write one generated from the information dictionary so the two
+  cannot disagree
+- **PDF/A**: write to the archival profile — the metadata, the output
+  intent and the identification it needs, and a refusal rather than a
+  file that claims a conformance it does not meet — and check an existing
+  document against it
 
 **Reading and manipulating**
 
@@ -127,6 +138,10 @@ go get github.com/SalvioniDigitalSolutions/gopdf
   them back — the escape hatch for anything the typed API does not model,
   going through the same decryption, filters and cross-reference
   machinery as everything else
+- **Tagged PDF**: read the structure tree, with the document's own
+  element names mapped through its role map, the alternate text a screen
+  reader depends on, and the heading outline a document has whether or
+  not it also has bookmarks
 - **Repairs damaged files**: a wrong `startxref`, bytes before the header
   or a broken table are recovered by scanning for the objects
 - Reads encrypted files (RC4, AES-128, AES-256) with either password
@@ -484,7 +499,7 @@ go run ./examples/redact -in case.pdf -list -text "Ada Lovelace"
 Coordinates are in points (1/72 inch) with the origin at the **top-left**
 of the page; `Mm`, `Cm` and `Inch` convert other units.
 
-- **409 tests** at **83% statement coverage**, covering the writer, the
+- **460 tests** at **84% statement coverage**, covering the writer, the
   parser, the font subsetter, the filters, encryption, editing, reflow,
   flow, forms, signatures, redaction, rendering and attachments
 - **Text extraction measured against `pdftotext`** over 918 real
@@ -547,6 +562,15 @@ Stated plainly, because they matter when choosing a library:
 - Signatures are `adbe.pkcs7.detached` with SHA-256. Signing produces the
   blob and the byte range; obtaining a timestamp from a TSA, and deciding
   whether a certificate is one you trust, are left to the caller.
+- The archival profile is checked for the things that go wrong in
+  practice — a font that is not embedded, an encrypted file, a script,
+  a missing intent. It is not a certificate: a full validator also checks
+  colour management and the internals of embedded font programs.
+- A JBIG2 image is decoded when it is coded as a generic region, which is
+  what a scanner in its ordinary mode produces. One using a symbol
+  dictionary is reported rather than guessed at, and JPEG 2000 is not
+  decoded at all; both are dropped whole by redaction rather than
+  part-scrubbed.
 - Rendering draws a glyph from the outlines the document carries. A font
   the document names but does not embed has no outlines to draw, and a
   bare PostScript font is addressed by glyph name through the built-in
@@ -567,7 +591,7 @@ Stated plainly, because they matter when choosing a library:
 
 Nothing outstanding from the original plan. Candidates, in no order:
 CID-keyed CFF subsetting, PAdES timestamps, public-key (certificate)
-security handlers, PDF/A conformance,
+security handlers, JPEG 2000 decoding, JBIG2 symbol dictionaries,
 linearization, and reflow that cascades across pages.
 
 ## License
