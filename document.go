@@ -114,6 +114,9 @@ type Document struct {
 	// edits are materialized when the document is written.
 	editables []*EditablePage
 
+	// wantXMP asks for a metadata packet describing the document.
+	wantXMP bool
+
 	// layers are the optional-content groups declared by AddLayer, and
 	// layerUsed those a page actually drew on, in resource-name order.
 	layers    []*Layer

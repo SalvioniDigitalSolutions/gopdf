@@ -73,6 +73,7 @@ func (d *Document) WriteTo(w io.Writer) (int64, error) {
 	attachTree := d.buildAttachments()
 	labelTree := d.buildPageLabels()
 	layerProps := d.buildLayers()
+	xmpRef := d.buildXMP()
 
 	rawNums := make([]int, len(d.raw))
 	for i := range d.raw {
@@ -265,6 +266,10 @@ func (d *Document) WriteTo(w io.Writer) (int64, error) {
 	if layerProps != nil {
 		ow.str(" /OCProperties ")
 		writeValue(ow, layerProps, ctx)
+	}
+	if xmpRef != nil {
+		ow.str(" /Metadata ")
+		writeValue(ow, xmpRef, ctx)
 	}
 	ow.str(" >>\n")
 	endObj()
