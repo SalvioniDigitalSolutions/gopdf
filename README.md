@@ -345,6 +345,70 @@ _, _ = ref, lang
 The reader hands back its own dictionaries: `Clone` one before changing
 it, and write the copy back with `SetObject`.
 
+### What a document says about itself
+
+A file carries more than its pages: what a reader should call page 4, what
+can be switched off, what it claims to be, and what it has tucked inside.
+
+```go
+doc := gopdf.New()
+
+// The numbering a reader sees, which need not be the numbering underneath.
+doc.SetPageLabels([]gopdf.PageLabelRange{
+    {From: 0, Style: gopdf.LabelRomanLower},          // i, ii, iii, iv
+    {From: 4, Style: gopdf.LabelDecimal, Start: 1},   // 1, 2, 3...
+    {From: 40, Style: gopdf.LabelDecimal, Prefix: "A-"},
+})
+
+// Content that can be switched off.
+draft, _ := doc.AddLayer("Draft stamp", false) // starts hidden
+p := doc.AddPage()
+p.BeginLayer(draft)
+p.Text(100, 400, "DRAFT")
+p.EndLayer()
+
+// Metadata generated from the information dictionary, and the archival
+// profile — which refuses rather than claim a conformance it does not meet.
+doc.SetInfo(gopdf.Info{Title: "Report", Author: "Ada Lovelace"})
+doc.SetXMP(true)
+doc.SetPDFA(gopdf.PDFA2b)
+_ = doc.Attach("figures.csv", csv)
+_ = doc.Save("report.pdf")
+```
+
+And the same things, read back off a file someone else wrote:
+
+```go
+r, _ := gopdf.Open("report.pdf")
+
+fmt.Println(r.PageLabel(3))  // "iv"
+for _, l := range r.Layers() {
+    fmt.Println(l.Name, l.On)
+}
+fmt.Println(r.XMP().Title)
+
+// A tagged document says what its content is, not just where it sits.
+if r.Tagged() {
+    for _, h := range r.StructOutline() {
+        fmt.Printf("%*s%s (page %d)\n", h.Level*2, "", h.Text, h.Page+1)
+    }
+    fmt.Println(r.StructText()) // in reading order, from the structure
+}
+
+for _, a := range r.Attachments() {
+    data, _ := a.Data()
+    fmt.Println(a.Name, len(data), a.Description)
+}
+
+for _, issue := range r.CheckPDFA(gopdf.PDFA2b) {
+    fmt.Println(issue) // page 2: every font must be embedded (/F1 is Helvetica...)
+}
+```
+
+An incremental update can change any of them without rewriting the file:
+`SetPageLabels`, `SetLayerVisible`, `SetXMP`, `Attach` and
+`RemoveAttachments` are all on `Updater` too.
+
 ### Merge, watermark, encrypt
 
 ```go

@@ -178,6 +178,7 @@ footer { border-top: 1px solid var(--border); margin-top: 4rem; padding-top: 1.5
     <li><a href="#signatures">Digital signatures</a></li>
     <li><a href="#design">Design notes</a></li>
     <li><a href="#render">Rendering a page</a></li>
+    <li><a href="#structure">What a document says about itself</a></li>
     <li><a href="#apimap">API map</a></li>
     <li><a href="#limits">Limitations</a></li>
     <li><a href="https://pkg.go.dev/github.com/SalvioniDigitalSolutions/gopdf">API reference ↗</a></li>
@@ -1194,6 +1195,113 @@ where the reference has none — the median page scores zero and 99% are
 under two per cent, the remainder being pages where the two renderers
 chose different substitutes for a font neither was given.</p>
 
+<h2 id="structure">What a document says about itself</h2>
+<p>A page carries the marks; the document carries what they mean. Page
+numbering, layers, metadata, structure and the files travelling inside it
+are all somewhere other than the content stream, and none of them can be
+worked out by looking at the page.</p>
+
+<h3>Page labels</h3>
+<p>The page a reader calls <code>iv</code> is the fourth in the file, and
+the one they call 1 is often the ninth. Nothing in the page says so.</p>
+<pre><code>doc.<span class="f">SetPageLabels</span>([]gopdf.PageLabelRange{
+	{From: <span class="n">0</span>, Style: gopdf.LabelRomanLower},              <span class="c">// i, ii, iii…</span>
+	{From: <span class="n">4</span>, Style: gopdf.LabelDecimal, Start: <span class="n">1</span>},     <span class="c">// 1, 2, 3…</span>
+	{From: <span class="n">40</span>, Style: gopdf.LabelDecimal, Prefix: <span class="s">"A-"</span>}, <span class="c">// A-1, A-2…</span>
+})
+
+r.<span class="f">PageLabel</span>(<span class="n">3</span>)   <span class="c">// "iv"</span>
+r.<span class="f">PageLabels</span>()   <span class="c">// the ranges, in page order</span></code></pre>
+<p>Styles are <code>LabelDecimal</code>, <code>LabelRomanUpper</code>,
+<code>LabelRomanLower</code>, <code>LabelLettersUpper</code>,
+<code>LabelLettersLower</code> and <code>LabelNone</code>. Pages ahead of
+the first range are numbered plainly, as a viewer numbers a document with
+no labels at all. <code>Updater.SetPageLabels</code> sets them on a file
+that already exists.</p>
+
+<h3>Layers</h3>
+<p>Optional content: a draft stamp kept for later, a set of labels for one
+audience. Both halves are here — putting content on a layer, and saying
+which layers a document starts with.</p>
+<pre><code>draft, _ := doc.<span class="f">AddLayer</span>(<span class="s">"Draft stamp"</span>, <span class="k">false</span>) <span class="c">// declared, starts hidden</span>
+p.<span class="f">BeginLayer</span>(draft)
+p.<span class="f">Text</span>(<span class="n">100</span>, <span class="n">400</span>, <span class="s">"DRAFT"</span>)
+p.<span class="f">EndLayer</span>()
+
+<span class="c">// And on a document that already has some:</span>
+u.<span class="f">SetLayerVisible</span>(<span class="s">"Draft stamp"</span>, <span class="k">true</span>)
+r.<span class="f">Layers</span>()  <span class="c">// name and visibility, in the order a viewer shows them</span></code></pre>
+<p>The renderer honours them: a switched-off layer is not painted, whether
+it is marked in the content stream or carried on an XObject, and a
+membership dictionary's policy is read as written.</p>
+
+<h3>Metadata</h3>
+<p>A document records who wrote it twice — in the information dictionary
+and in an XMP packet — and the two routinely disagree because a tool
+updates one and leaves the other. Writing generates the packet from the
+dictionary so they cannot.</p>
+<pre><code>doc.<span class="f">SetInfo</span>(gopdf.Info{Title: <span class="s">"Report"</span>, Author: <span class="s">"Ada Lovelace"</span>})
+doc.<span class="f">SetXMP</span>(<span class="k">true</span>)
+
+x := r.<span class="f">XMP</span>()      <span class="c">// Title, Author, Created…, and Raw for the rest</span>
+u.<span class="f">SetXMP</span>(info)   <span class="c">// on an existing document, dictionary and packet together</span></code></pre>
+<p>Reading takes the element form and the attribute form, since producers
+use both — sometimes in one packet.</p>
+
+<h3>Tagged PDF</h3>
+<p>A tagged document says what its content <em>is</em>: this run is a
+heading, that image means &ldquo;revenue, rising&rdquo;. The page says
+none of it — the words come off it in the order the operators drew them,
+which for two columns is both columns interleaved.</p>
+<pre><code><span class="k">if</span> r.<span class="f">Tagged</span>() {
+	<span class="k">for</span> _, h := <span class="k">range</span> r.<span class="f">StructOutline</span>() {
+		fmt.<span class="f">Printf</span>(<span class="s">"%*s%s (page %d)\n"</span>, h.Level*<span class="n">2</span>, <span class="s">""</span>, h.Text, h.Page+<span class="n">1</span>)
+	}
+	text := r.<span class="f">StructText</span>()   <span class="c">// in the structure's order, not the operators'</span>
+	tree := r.<span class="f">Structure</span>()    <span class="c">// []*StructNode: Role, Alt, ActualText, Page…</span>
+}</code></pre>
+<p>Element names go through the document's own role map to the standard
+ones, so a producer calling a heading <code>Head1</code> still reports as
+<code>H1</code>. <code>Alt</code> is the alternate text a screen reader
+depends on; <code>ActualText</code> is what an element reads as where the
+glyphs do not spell it.</p>
+
+<h3>Embedded files</h3>
+<p>A PDF can carry other files: the spreadsheet a table came from, the
+original of a scan. Nothing on the page shows they are there.</p>
+<pre><code>doc.<span class="f">Attach</span>(<span class="s">"figures.csv"</span>, data)
+u.<span class="f">AttachWithDescription</span>(<span class="s">"notes.txt"</span>, <span class="s">"working notes"</span>, data)
+
+<span class="k">for</span> _, a := <span class="k">range</span> r.<span class="f">Attachments</span>() {
+	b, _ := a.<span class="f">Data</span>()   <span class="c">// decoded, and decrypted if the file is</span>
+	_ = b
+}
+u.<span class="f">RemoveAttachments</span>(<span class="k">func</span>(a gopdf.Attachment) <span class="k">bool</span> {
+	<span class="k">return</span> strings.<span class="f">HasSuffix</span>(a.Name, <span class="s">".csv"</span>)
+})</code></pre>
+<p>Both places a file can live are read: the catalog's collection, through
+its name tree, and the paperclip annotation on a page. Redaction removes
+them by default — see <a href="#redaction">Redaction</a>.</p>
+
+<h3>The archival profile</h3>
+<p>PDF/A is mostly a set of refusals: a conforming file may not rely on
+anything outside itself, and must say what its colours mean and what it
+claims to be.</p>
+<pre><code>doc.<span class="f">SetPDFA</span>(gopdf.PDFA2b)   <span class="c">// or PDFA2u, which also wants searchable text</span>
+<span class="c">// Save reports an error rather than writing a file that claims a</span>
+<span class="c">// conformance it does not meet — an unembedded font, or encryption.</span>
+
+<span class="k">for</span> _, issue := <span class="k">range</span> r.<span class="f">CheckPDFA</span>(gopdf.PDFA2b) {
+	fmt.<span class="f">Println</span>(issue)   <span class="c">// "page 2: every font must be embedded (…)"</span>
+}</code></pre>
+<div class="note">
+<p>The check catches what goes wrong in practice — a font the file does
+not carry, encryption, a script, a missing intent. It is not a
+certificate: a full validator also examines colour management and the
+insides of embedded font programs. Across the corpus, 1,703 documents
+that claim conformance are all agreed with.</p>
+</div>
+
 <h2 id="apimap">API map</h2>
 <p>What to reach for, by task. Every signature is on
 <a href="https://pkg.go.dev/github.com/SalvioniDigitalSolutions/gopdf">pkg.go.dev</a>;
@@ -1210,6 +1318,11 @@ this is the shape of it.</p>
 <tr><td><code>Push</code>, <code>Pop</code>, <code>Translate</code>, <code>Scale</code>, <code>RotateAt</code></td><td>Scoped transforms.</td></tr>
 <tr><td><code>SetLineCap</code>, <code>SetLineJoin</code>, <code>SetDash</code>, <code>SetAlpha</code></td><td>Stroke and transparency state.</td></tr>
 <tr><td><code>AddOutline</code></td><td>A bookmark tree.</td></tr>
+<tr><td><code>SetPageLabels</code> → <code>PageLabelRange</code>, <code>PageLabelStyle</code></td><td>The numbering a reader sees: roman front matter, prefixed appendices.</td></tr>
+<tr><td><code>AddLayer</code> → <code>Layer</code>, <code>BeginLayer</code>, <code>EndLayer</code></td><td>Declare optional content and put content on it.</td></tr>
+<tr><td><code>SetXMP</code></td><td>A metadata packet generated from the information dictionary, so the two agree.</td></tr>
+<tr><td><code>Attach</code>, <code>AttachWithDescription</code></td><td>Carry another file inside the document.</td></tr>
+<tr><td><code>SetPDFA</code> → <code>PDFAConformance</code></td><td>Write to the archival profile, or fail rather than claim it falsely.</td></tr>
 </tbody>
 </table>
 
@@ -1223,6 +1336,12 @@ this is the shape of it.</p>
 <tr><td><code>RenderPage</code>, <code>RenderPageDetail</code> → <code>RenderOpts</code>, <code>RenderReport</code></td><td>Draw a page to an image, layer by layer. The detailed form reports the glyphs it could not draw.</td></tr>
 <tr><td><code>SystemFonts</code> → <code>FontRequest</code></td><td>Stand-in outlines for fonts the document names but does not embed.</td></tr>
 <tr><td><code>Resolve</code>, <code>Object</code>, <code>Catalog</code>, <code>Trailer</code>, <code>PageDict</code>, <code>PageRef</code>, <code>InheritedPageValue</code>, <code>Objects</code>, <code>Walk</code> → <code>Stream</code></td><td>The object graph itself, for whatever the typed API has no word for.</td></tr>
+<tr><td><code>PageLabel</code>, <code>PageLabels</code></td><td>What a reader calls a page, and the ranges behind it.</td></tr>
+<tr><td><code>Layers</code> → <code>Layer</code></td><td>The optional content a document defines, and whether each starts visible.</td></tr>
+<tr><td><code>XMP</code> → <code>XMP</code></td><td>The metadata packet, parsed and raw.</td></tr>
+<tr><td><code>Tagged</code>, <code>MarkedTagged</code>, <code>Structure</code>, <code>StructText</code>, <code>StructOutline</code> → <code>StructNode</code>, <code>StructHeading</code></td><td>What a tagged document says its content is: roles through the role map, alternate text, reading order, headings.</td></tr>
+<tr><td><code>Attachments</code> → <code>Attachment</code></td><td>The files inside the document, from the collection and from the page.</td></tr>
+<tr><td><code>CheckPDFA</code> → <code>PDFAIssue</code></td><td>What stops a document meeting the archival profile.</td></tr>
 <tr><td><code>Annotations</code>, <code>PageImages</code>, <code>FormFields</code>, <code>Signatures</code></td><td>What it holds. An <code>ImageRef</code> carries its draw <code>Matrix</code>, with <code>Rotation()</code> and <code>Upright()</code>, so a turned image reports its angle rather than a box larger than the picture.</td></tr>
 </tbody>
 </table>
@@ -1236,9 +1355,12 @@ this is the shape of it.</p>
 <tr><td><code>Runs</code>, <code>ExtractText</code></td><td>The text on a page, operation by operation.</td></tr>
 <tr><td><code>ReplaceText</code>, <code>Blocks</code> + <code>ReplaceTextReflow</code>, <code>Flows</code> + <code>ReplaceTextFlow</code></td><td>In-line, re-wrapped within a paragraph, and re-wrapped at any length.</td></tr>
 <tr><td><code>Restyle</code></td><td>Change a run's typeface, size or colour.</td></tr>
+<tr><td><code>Redactor.Attachments</code>, <code>KeepAttachments</code></td><td>See the files a document carries, and decide whether a redaction keeps them.</td></tr>
 <tr><td><code>ReplaceImage</code>, <code>RemoveAnnotations</code>, <code>SetFormValues</code></td><td>Images, annotations, fields.</td></tr>
 <tr><td><code>SetPageOrder</code>, <code>RemovePage</code>, <code>MovePage</code>, <code>SetPageRotation</code></td><td>Page operations.</td></tr>
 <tr><td><code>AddObject</code>, <code>SetObject</code>, <code>SetCatalogEntry</code>, <code>SetPageEntry</code>, <code>NewStream</code>, <code>Dict.Clone</code></td><td>Write objects directly, for anything the typed API does not model.</td></tr>
+<tr><td><code>SetPageLabels</code>, <code>SetLayerVisible</code>, <code>SetXMP</code></td><td>Change the numbering, a layer's visibility, or the metadata, appended.</td></tr>
+<tr><td><code>Attach</code>, <code>AttachWithDescription</code>, <code>RemoveAttachments</code></td><td>Add or take out the files a document carries.</td></tr>
 <tr><td><code>SetFitMode</code>, <code>SetMaxExtraLines</code>, <code>SetCompress</code></td><td>How an edit is allowed to behave.</td></tr>
 </tbody>
 </table>
