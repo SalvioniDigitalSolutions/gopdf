@@ -30,6 +30,12 @@ type ImageRef struct {
 	// no better than a tilted photograph fills the envelope it came in —
 	// so use Matrix where the placement matters.
 	X, Y, W, H float64
+	// Filter is the codec the image is stored in — "DCTDecode" for a
+	// JPEG, "JBIG2Decode" for a scan, "FlateDecode" for anything this
+	// package wrote — or empty for an image stored raw. It is the last
+	// filter in the chain, which is the one that decides what the bytes
+	// are a picture of.
+	Filter string
 	// Matrix is the transform in force where the image was drawn, mapping
 	// the unit square onto the page. It is the placement exactly:
 	// rotation, skew and flip included, in PDF's bottom-up coordinates.
@@ -173,6 +179,7 @@ func (sc *imageScanner) visit(name Name, entry any, resources any, ctm matrix, d
 		img.Height, _ = toInt(sc.r.resolve(stm.dict["Height"]))
 		img.BitsPerComponent, _ = toInt(sc.r.resolve(stm.dict["BitsPerComponent"]))
 		img.ColorSpace = colorSpaceName(sc.r, stm.dict["ColorSpace"])
+		img.Filter = lastFilterName(sc.r, stm.dict)
 		if b, ok := sc.r.resolve(stm.dict["ImageMask"]).(bool); ok && b {
 			img.ColorSpace = "ImageMask"
 			img.BitsPerComponent = 1
@@ -238,12 +245,14 @@ func (im ImageRef) decodeBase() (image.Image, error) {
 		return nil, err
 	}
 	for _, f := range filters {
-		switch f {
-		case "JPXDecode":
+		if f == "JPXDecode" {
 			return nil, fmt.Errorf("gopdf: JPEG 2000 images are not decoded")
-		case "JBIG2Decode":
-			return nil, fmt.Errorf("gopdf: JBIG2 images are not decoded")
 		}
+	}
+	// A JBIG2 scan is decoded by the generic-region decoder; a file that
+	// uses a symbol dictionary reports that rather than guessing.
+	if n := len(filters); n > 0 && filters[n-1] == "JBIG2Decode" {
+		return im.decodeJBIG2Image(filters, parms)
 	}
 	// A fax stream is decoded by the vendored CCITT codec; anything
 	// before it in the chain is unwrapped inside decodeFax.
@@ -679,4 +688,20 @@ func (im ImageRef) Rotation() float64 {
 // when its bounding box is the picture and not merely around it.
 func (im ImageRef) Upright() bool {
 	return im.Matrix[1] == 0 && im.Matrix[2] == 0
+}
+
+// lastFilterName is the codec at the end of a stream's filter chain,
+// which is the one that says what the data is.
+func lastFilterName(r *Reader, d Dict) string {
+	switch t := r.resolve(d["Filter"]).(type) {
+	case Name:
+		return string(t)
+	case Array:
+		if len(t) > 0 {
+			if n, ok := r.resolve(t[len(t)-1]).(Name); ok {
+				return string(n)
+			}
+		}
+	}
+	return ""
 }
