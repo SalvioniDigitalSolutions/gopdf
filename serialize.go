@@ -71,6 +71,8 @@ func (d *Document) WriteTo(w io.Writer) (int64, error) {
 	// Attachments become objects before the numbers are handed out,
 	// since they go into the same pool as everything else copied in.
 	attachTree := d.buildAttachments()
+	labelTree := d.buildPageLabels()
+	layerProps := d.buildLayers()
 
 	rawNums := make([]int, len(d.raw))
 	for i := range d.raw {
@@ -256,6 +258,14 @@ func (d *Document) WriteTo(w io.Writer) (int64, error) {
 		writeValue(ow, attachTree, ctx)
 		ow.str(" >>")
 	}
+	if labelTree != nil {
+		ow.str(" /PageLabels ")
+		writeValue(ow, labelTree, ctx)
+	}
+	if layerProps != nil {
+		ow.str(" /OCProperties ")
+		writeValue(ow, layerProps, ctx)
+	}
 	ow.str(" >>\n")
 	endObj()
 
@@ -359,6 +369,17 @@ func (d *Document) WriteTo(w io.Writer) (int64, error) {
 	if len(d.shadings) > 0 {
 		res.WriteString(" /Shading <<" + ownEntries("", "Shading") + " >>")
 	}
+	// A layer is named in the content stream and resolved through
+	// /Properties, so a page that draws on one has to carry the entry.
+	layerEntries := ""
+	if props := d.layerProperties(); len(props) > 0 {
+		var b strings.Builder
+		for _, k := range sortedKeys(props) {
+			fmt.Fprintf(&b, " /%s %d 0 R", k, ctx.ref(props[k].(rawRef)))
+		}
+		layerEntries = b.String()
+		res.WriteString(" /Properties <<" + layerEntries + " >>")
+	}
 
 	// writePageResources emits the resource dictionary for one page. An
 	// imported page keeps its own dictionary, with this library's entries
@@ -398,6 +419,9 @@ func (d *Document) WriteTo(w io.Writer) (int64, error) {
 			if own := ownEntries(p.resPrefix, cat); own != "" {
 				ow.printf(" /%s <<%s >>", cat, own)
 			}
+		}
+		if _, exists := p.ownResources["Properties"]; !exists && layerEntries != "" {
+			ow.printf(" /Properties <<%s >>", layerEntries)
 		}
 		if _, exists := p.ownResources["ProcSet"]; !exists {
 			ow.str(" /ProcSet [/PDF /Text /ImageB /ImageC]")

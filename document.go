@@ -114,6 +114,14 @@ type Document struct {
 	// edits are materialized when the document is written.
 	editables []*EditablePage
 
+	// layers are the optional-content groups declared by AddLayer, and
+	// layerUsed those a page actually drew on, in resource-name order.
+	layers    []*Layer
+	layerUsed []*Layer
+
+	// pageLabels is the numbering scheme set by SetPageLabels.
+	pageLabels []PageLabelRange
+
 	// attachments are files to embed, added by Attach and written into
 	// the catalog's name tree when the document is serialized.
 	attachments []pendingAttachment

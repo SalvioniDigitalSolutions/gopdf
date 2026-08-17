@@ -72,16 +72,19 @@ const (
 // Page is a single page of a Document. All coordinates are in points with
 // the origin at the top-left corner; y grows downward.
 type Page struct {
-	doc       *Document
-	w, h      float64
-	buf       bytes.Buffer
-	font      *Font
-	fontIdx   int
-	fontSize  float64
-	links     []link
-	rotate    int
-	rawAnnots []any           // imported annotations, written verbatim
-	annots    []*pendingAnnot // annotations created through this API
+	doc      *Document
+	w, h     float64
+	buf      bytes.Buffer
+	font     *Font
+	fontIdx  int
+	fontSize float64
+	links    []link
+	rotate   int
+	// layerDepth counts open BeginLayer brackets, so EndLayer cannot
+	// close one that was never opened.
+	layerDepth int
+	rawAnnots  []any           // imported annotations, written verbatim
+	annots     []*pendingAnnot // annotations created through this API
 
 	// Set for pages imported with EditPage: the original content stream
 	// (written before anything drawn through this API), the page's own
