@@ -303,8 +303,11 @@ func subsetCFF(cff []byte, keep map[uint16]bool, nGlyphs int) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A CID-keyed font is organised differently — numbers for names, and
+	// a set of private dictionaries rather than one — and is reduced by
+	// its own subsetter.
 	if dictEntry(top, cffOpROS) != nil || dictEntry(top, cffOpFDArray) != nil {
-		return nil, errors.New("gopdf: CID-keyed CFF fonts are embedded without subsetting")
+		return subsetCIDCFF(cff, keep, nGlyphs)
 	}
 
 	csEntry := dictEntry(top, cffOpCharStrings)

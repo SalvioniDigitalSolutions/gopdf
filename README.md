@@ -43,7 +43,8 @@ go get github.com/SalvioniDigitalSolutions/gopdf
   either orientation, with Unicode metadata
 - The standard 14 fonts with accurate metrics, plus **TrueType and
   OpenType embedding** — `.ttf`, `.ttc` and `.otf` are all subset to the
-  glyphs you use, outlines, subroutines and glyph names alike — with pair
+  glyphs you use, outlines, subroutines and glyph names alike, CID-keyed
+  fonts included — a 55 MB CJK face embeds as a few hundred kilobytes — with pair
   kerning and ToUnicode maps for full Unicode text that stays searchable
 - Vector graphics: lines, rectangles, rounded rectangles, circles,
   ellipses, polygons, Bézier paths, dash patterns, caps and joins,
@@ -541,8 +542,6 @@ Stated plainly, because they matter when choosing a library:
   positions every word separately and never draws a space cannot be
   re-wrapped.
 - `FillForm` flattens; `FillFormInteractive` keeps fields editable.
-- CID-keyed CFF fonts are embedded whole rather than subset; every other
-  font kind is subset.
 - Permission flags on encrypted documents are advisory, as the PDF
   specification defines them — they are not a security boundary.
 - Signatures are `adbe.pkcs7.detached` with SHA-256. Signing produces the
