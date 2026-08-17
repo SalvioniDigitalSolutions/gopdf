@@ -558,3 +558,68 @@ func TestEditOutOfRange(t *testing.T) {
 		t.Error("expected an error for an out-of-range page")
 	}
 }
+
+// TestStrictLexPages is the check a caller runs over their own output.
+//
+// A splice landing right after an operator whose trailing space it
+// consumed leaves "Tc" and "1" as the single token "Tc1". Every reader
+// here tolerates it and so do the common ones, which is exactly why it
+// goes unnoticed — the content is right and the file is not.
+func TestStrictLexPages(t *testing.T) {
+	// A document this package wrote is clean.
+	doc := New()
+	doc.Compress = false
+	p := doc.AddPage()
+	p.SetFont(Helvetica, 12)
+	p.Text(72, 100, "Alpha Beta Gamma")
+	p.Rect(100, 200, 50, 50, Fill)
+	clean := docBytes(t, doc)
+	if err := StrictLexPages(clean); err != nil {
+		t.Errorf("a document this package wrote does not lex strictly: %v", err)
+	}
+
+	// And so is one it edited, which is the property the check exists to
+	// hold: the splice must not fuse with its neighbours.
+	r := NewReaderOrFail(t, clean)
+	u := Update(r)
+	page, err := u.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := page.ReplaceText("Beta", "Delta"); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if _, err := u.WriteTo(&buf); err != nil {
+		t.Fatal(err)
+	}
+	if err := StrictLexPages(buf.Bytes()); err != nil {
+		t.Errorf("an edited document does not lex strictly: %v", err)
+	}
+
+	// A stream with two tokens run together is caught, and the error says
+	// where.
+	fused := NewReaderOrFail(t, clean)
+	u2 := Update(fused)
+	stm := u2.AddObject(NewStream(Dict{}, []byte("BT /F1 12 Tf 0 Tc1 0 Td ET")))
+	if err := u2.SetPageEntry(0, "Contents", stm); err != nil {
+		t.Fatal(err)
+	}
+	var bad bytes.Buffer
+	if _, err := u2.WriteTo(&bad); err != nil {
+		t.Fatal(err)
+	}
+	err = StrictLexPages(bad.Bytes())
+	if err == nil {
+		t.Fatal("two tokens run together were not caught")
+	}
+	if !strings.Contains(err.Error(), "Tc1") {
+		t.Errorf("the error does not name the offending token: %v", err)
+	}
+
+	// A file that is not a document at all is an error rather than a
+	// clean bill of health.
+	if err := StrictLexPages([]byte("not a pdf")); err == nil {
+		t.Error("nonsense passed the check")
+	}
+}

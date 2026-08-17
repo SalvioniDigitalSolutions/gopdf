@@ -194,3 +194,117 @@ func TestLayerNesting(t *testing.T) {
 		t.Errorf("%.4f of the page is painted; expected one bar of two", ink)
 	}
 }
+
+// TestMembershipPolicies covers the ways a membership dictionary can
+// combine several layers. Reading the policy wrong hides content that
+// should show, or shows content that should be hidden, and either is
+// invisible until someone looks at the page.
+func TestMembershipPolicies(t *testing.T) {
+	doc := New()
+	doc.Compress = false
+	doc.AddPage()
+	r := NewReaderOrFail(t, docBytes(t, doc))
+	u := Update(r)
+
+	on := u.AddObject(Dict{"Type": Name("OCG"), "Name": String("visible")})
+	off := u.AddObject(Dict{"Type": Name("OCG"), "Name": String("hidden")})
+	if err := u.SetCatalogEntry("OCProperties", Dict{
+		"OCGs": Array{on, off}, "D": Dict{"OFF": Array{off}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if _, err := u.WriteTo(&buf); err != nil {
+		t.Fatal(err)
+	}
+	out := NewReaderOrFail(t, buf.Bytes())
+	rn := &renderer{r: out, hidden: hiddenLayers(out)}
+
+	// A plain group is hidden when the configuration switches it off.
+	if rn.layerHidden(off) != true {
+		t.Error("a switched-off group is not reported hidden")
+	}
+	if rn.layerHidden(on) != false {
+		t.Error("a visible group is reported hidden")
+	}
+
+	for _, c := range []struct {
+		policy     Name
+		groups     Array
+		wantHidden bool
+		why        string
+	}{
+		{"AnyOn", Array{on, off}, false, "one is on, so it shows"},
+		{"AnyOn", Array{off}, true, "none is on"},
+		{"AllOn", Array{on, off}, true, "not all are on"},
+		{"AllOn", Array{on}, false, "all are on"},
+		{"AnyOff", Array{on, off}, false, "one is off, so it shows"},
+		{"AnyOff", Array{on}, true, "none is off"},
+		{"AllOff", Array{off}, false, "all are off, so it shows"},
+		{"AllOff", Array{on, off}, true, "not all are off"},
+		// An unrecognised policy shows its content: hiding something
+		// that should be seen is the worse mistake.
+		{"NoSuchPolicy", Array{off}, true, "read as AnyOn"},
+	} {
+		got := rn.layerHidden(Dict{
+			"Type": Name("OCMD"), "OCGs": c.groups, "P": c.policy,
+		})
+		if got != c.wantHidden {
+			t.Errorf("%s over %d groups: hidden = %v, want %v (%s)",
+				c.policy, len(c.groups), got, c.wantHidden, c.why)
+		}
+	}
+	// A membership dictionary naming a single group, not an array.
+	if !rn.layerHidden(Dict{"Type": Name("OCMD"), "OCGs": off}) {
+		t.Error("a membership dictionary naming one hidden group was not hidden")
+	}
+	// One naming nothing hides nothing.
+	if rn.layerHidden(Dict{"Type": Name("OCMD")}) {
+		t.Error("a membership dictionary naming no groups hid its content")
+	}
+	// And a document with no optional content hides nothing at all.
+	plain := &renderer{r: out}
+	if plain.layerHidden(off) {
+		t.Error("a renderer with no hidden set hid something")
+	}
+}
+
+// TestBaseStateOff is the inverted configuration: everything starts off
+// and /ON names the exceptions. Reading it as if it were the usual way
+// round hides the whole document.
+func TestBaseStateOff(t *testing.T) {
+	doc := New()
+	doc.Compress = false
+	doc.AddPage()
+	r := NewReaderOrFail(t, docBytes(t, doc))
+	u := Update(r)
+	a := u.AddObject(Dict{"Type": Name("OCG"), "Name": String("shown")})
+	b := u.AddObject(Dict{"Type": Name("OCG"), "Name": String("not shown")})
+	if err := u.SetCatalogEntry("OCProperties", Dict{
+		"OCGs": Array{a, b},
+		"D":    Dict{"BaseState": Name("OFF"), "ON": Array{a}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if _, err := u.WriteTo(&buf); err != nil {
+		t.Fatal(err)
+	}
+	out := NewReaderOrFail(t, buf.Bytes())
+
+	hidden := hiddenLayers(out)
+	if hidden[a.Num] {
+		t.Error("a layer named in /ON is hidden under BaseState OFF")
+	}
+	if !hidden[b.Num] {
+		t.Error("a layer not named in /ON is visible under BaseState OFF")
+	}
+	// And Layers reports the same thing.
+	byName := map[string]bool{}
+	for _, l := range out.Layers() {
+		byName[l.Name] = l.On
+	}
+	if !byName["shown"] || byName["not shown"] {
+		t.Errorf("visibility under BaseState OFF is wrong: %+v", byName)
+	}
+}

@@ -2422,3 +2422,163 @@ func TestOrdinaryGroupIsUnchanged(t *testing.T) {
 		t.Error("the group painted outside its shapes")
 	}
 }
+
+func TestNormalizeRect(t *testing.T) {
+	// A document is not obliged to give a rectangle's corners in order,
+	// and an inverted one placed as given puts the appearance outside
+	// itself.
+	for _, c := range []struct{ in, want [4]float64 }{
+		{[4]float64{10, 20, 30, 40}, [4]float64{10, 20, 30, 40}},
+		{[4]float64{30, 40, 10, 20}, [4]float64{10, 20, 30, 40}},
+		{[4]float64{30, 20, 10, 40}, [4]float64{10, 20, 30, 40}},
+		{[4]float64{10, 40, 30, 20}, [4]float64{10, 20, 30, 40}},
+	} {
+		got := c.in
+		normalizeRect(got[:])
+		if got != c.want {
+			t.Errorf("normalizeRect(%v) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+// TestAnnotationWithAnInvertedRect: the appearance has to land inside the
+// rectangle however the rectangle was written.
+func TestAnnotationWithAnInvertedRect(t *testing.T) {
+	doc := New()
+	doc.Compress = false
+	doc.AddPage()
+	r := NewReaderOrFail(t, docBytes(t, doc))
+	u := Update(r)
+	ap := u.AddObject(NewStream(Dict{
+		"Type": Name("XObject"), "Subtype": Name("Form"),
+		"BBox": Array{0.0, 0.0, 10.0, 10.0},
+	}, []byte("0 0 0 rg 0 0 10 10 re f\n")))
+	// The corners the wrong way round.
+	annot := u.AddObject(Dict{
+		"Type": Name("Annot"), "Subtype": Name("Square"),
+		"Rect": Array{200.0, 700.0, 100.0, 600.0},
+		"AP":   Dict{"N": ap},
+	})
+	if err := u.SetPageEntry(0, "Annots", Array{annot}); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if _, err := u.WriteTo(&buf); err != nil {
+		t.Fatal(err)
+	}
+	img, err := NewReaderOrFail(t, buf.Bytes()).RenderPage(0, RenderOpts{
+		DPI: 100, IncludeVector: true, IncludeAnnotations: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// It must be painted inside the rectangle the corners describe.
+	if v, _, _, _ := at(t, img, 100, 150, 841.89-650); v != 0 {
+		t.Errorf("the middle of the inverted rectangle = %d, want it painted", v)
+	}
+	minX, minY, maxX, maxY := inkBounds(img)
+	// 100..200 points across at 100 DPI is 139..278 pixels.
+	if minX < 130 || maxX > 290 || minY < 190 || maxY > 340 {
+		t.Errorf("the appearance was drawn at %d,%d..%d,%d, outside its rectangle",
+			minX, minY, maxX, maxY)
+	}
+}
+
+// TestAnnotationWithNoBBox: an appearance stream with no bounding box has
+// nothing to fit, so it is placed at the rectangle rather than dropped.
+func TestAnnotationWithNoBBox(t *testing.T) {
+	doc := New()
+	doc.Compress = false
+	doc.AddPage()
+	r := NewReaderOrFail(t, docBytes(t, doc))
+	u := Update(r)
+	ap := u.AddObject(NewStream(Dict{
+		"Type": Name("XObject"), "Subtype": Name("Form"),
+	}, []byte("0 0 0 rg 0 0 40 20 re f\n")))
+	annot := u.AddObject(Dict{
+		"Type": Name("Annot"), "Subtype": Name("Stamp"),
+		"Rect": Array{100.0, 600.0, 200.0, 700.0},
+		"AP":   Dict{"N": ap},
+	})
+	if err := u.SetPageEntry(0, "Annots", Array{annot}); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if _, err := u.WriteTo(&buf); err != nil {
+		t.Fatal(err)
+	}
+	img, err := NewReaderOrFail(t, buf.Bytes()).RenderPage(0, RenderOpts{
+		DPI: 100, IncludeVector: true, IncludeAnnotations: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inkFraction(img) == 0 {
+		t.Error("an appearance with no bounding box was not drawn at all")
+	}
+	// It sits at the rectangle's own corner rather than at the page's.
+	minX, minY, _, _ := inkBounds(img)
+	if minX < 130 || minY < 190 {
+		t.Errorf("the appearance was drawn at %d,%d, not at its rectangle",
+			minX, minY)
+	}
+}
+
+// TestAnnotationAppearanceMatrix covers the placement arithmetic on its
+// own: a stream drawn away from the origin, and one with a matrix, both
+// have to end up filling the rectangle.
+func TestAnnotationAppearanceMatrix(t *testing.T) {
+	doc := New()
+	doc.Compress = false
+	doc.AddPage()
+	r := NewReaderOrFail(t, docBytes(t, doc))
+	rect := []float64{100, 600, 300, 700}
+
+	// A box drawn from 50,50 to 150,100 fitted to a 200x100 rectangle:
+	// twice as wide, twice as tall, moved to the rectangle's corner.
+	m, ok := appearanceMatrix(r, Dict{"BBox": Array{50.0, 50.0, 150.0, 100.0}}, rect)
+	if !ok {
+		t.Fatal("the matrix was refused")
+	}
+	x, y := m.apply(50, 50)
+	if !nearF(x, 100, 0.01) || !nearF(y, 600, 0.01) {
+		t.Errorf("the box's corner maps to %.2f,%.2f, want the rectangle's 100,600", x, y)
+	}
+	x, y = m.apply(150, 100)
+	if !nearF(x, 300, 0.01) || !nearF(y, 700, 0.01) {
+		t.Errorf("the box's far corner maps to %.2f,%.2f, want 300,700", x, y)
+	}
+
+	// With a matrix of its own, the box is transformed first and the
+	// result fitted, so the corner still lands on the rectangle.
+	m2, ok := appearanceMatrix(r, Dict{
+		"BBox":   Array{0.0, 0.0, 10.0, 10.0},
+		"Matrix": Array{0.0, 1.0, -1.0, 0.0, 0.0, 0.0}, // a quarter turn
+	}, rect)
+	if !ok {
+		t.Fatal("a rotated appearance was refused")
+	}
+	// Whatever the rotation does, the four corners must span the
+	// rectangle exactly.
+	minX, minY := 1e9, 1e9
+	maxX, maxY := -1e9, -1e9
+	for _, c := range [][2]float64{{0, 0}, {10, 0}, {10, 10}, {0, 10}} {
+		px, py := m2.apply(c[0], c[1])
+		minX, maxX = minF(minX, px), maxF(maxX, px)
+		minY, maxY = minF(minY, py), maxF(maxY, py)
+	}
+	if !nearF(minX, 100, 0.01) || !nearF(maxX, 300, 0.01) ||
+		!nearF(minY, 600, 0.01) || !nearF(maxY, 700, 0.01) {
+		t.Errorf("a rotated appearance spans %.1f,%.1f..%.1f,%.1f, want the rectangle",
+			minX, minY, maxX, maxY)
+	}
+
+	// A box of no width is not something to divide by.
+	if _, ok := appearanceMatrix(r, Dict{
+		"BBox": Array{10.0, 10.0, 10.0, 10.0},
+	}, rect); !ok {
+		t.Error("a degenerate box should still place, at scale one")
+	}
+}
+
+func nearF(a, b, tol float64) bool { return a-b < tol && b-a < tol }
