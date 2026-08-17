@@ -403,3 +403,107 @@ func jbig2PageInfo(w, h int) []byte {
 	b.Write([]byte{0, 0}) // not striped
 	return segmentWrap(0, 48, b.Bytes())
 }
+
+// TestJBIG2TwoDictionaries is why a decoder cannot just accumulate every
+// dictionary it passes.
+//
+// A symbol identifier is an index into exactly the dictionaries a region
+// names, and its width in bits comes from how many symbols those hold.
+// Hand a region one dictionary too many and every identifier is read at
+// the wrong width: the stream desyncs and the page comes out as other
+// people's shapes. This package used to do that, and got away with it
+// only because a document with one dictionary is the common case.
+func TestJBIG2TwoDictionaries(t *testing.T) {
+	first := letterShapes()
+	second := []*bitmap{newBitmap(3, 5), newBitmap(6, 5)}
+	for y := 0; y < 5; y++ {
+		second[0].set(1, y, 1)
+		second[1].set(y, y, 1)
+	}
+	// Each dictionary sorts its own symbols by height then width.
+	sortedFirst := []*bitmap{first[1], first[0]}
+	sortedSecond := []*bitmap{second[0], second[1]}
+	const w, h = 40, 24
+
+	stream := append(jbig2PageInfo(w, h), encodeSymbolDictNum(t, 1, first, 0)...)
+	stream = append(stream, encodeTextRegionNum(t, 2, w, h, sortedFirst,
+		[]placement{{0, 2, 2}}, 1)...)
+	stream = append(stream, encodeSymbolDictNum(t, 3, second, 0)...)
+	stream = append(stream, encodeTextRegionNum(t, 4, w, h, sortedSecond,
+		[]placement{{1, 2, 14}}, 3)...)
+
+	want := newBitmap(w, h)
+	drawSymbol(want, sortedFirst[0], 2, 2, 1, false)
+	drawSymbol(want, sortedSecond[1], 2, 14, 1, false)
+
+	pix, err := decodeJBIG2(stream, nil, w, h)
+	if err != nil {
+		t.Fatalf("decoding a two-dictionary page: %v", err)
+	}
+	mine := &bitmap{w: w, h: h, pix: pix}
+	comparePixels(t, "two dictionaries against the original", mine, want)
+	comparePixels(t, "two dictionaries against Poppler", mine,
+		popplerDecodeJBIG2(t, stream, w, h))
+}
+
+// TestJBIG2SegmentReferences reads the segment header's referred-to list,
+// which is what the scoping rests on.
+func TestJBIG2SegmentReferences(t *testing.T) {
+	// A segment numbered 7, of type 6, referring to segments 1 and 4.
+	seg := []byte{
+		0, 0, 0, 7,
+		6,      // type 6
+		2 << 5, // two referred-to segments, short form
+		1, 4,   // their numbers, one byte each
+		1,          // page 1
+		0, 0, 0, 2, // length
+		'h', 'i',
+	}
+	segs, err := parseJBIG2Segments(seg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(segs) != 1 {
+		t.Fatalf("%d segments, want 1", len(segs))
+	}
+	s := segs[0]
+	if s.num != 7 || s.kind != 6 || string(s.data) != "hi" {
+		t.Errorf("segment = %+v", s)
+	}
+	if len(s.refers) != 2 || s.refers[0] != 1 || s.refers[1] != 4 {
+		t.Errorf("references = %v, want [1 4]", s.refers)
+	}
+
+	// A segment referring to nothing.
+	none := append([]byte(nil), seg...)
+	none[5] = 0
+	none = append(none[:6], none[8:]...)
+	if segs, err := parseJBIG2Segments(none); err != nil {
+		t.Fatal(err)
+	} else if len(segs[0].refers) != 0 {
+		t.Errorf("references = %v, want none", segs[0].refers)
+	}
+
+	// And the gathering of a region's input symbols, in the order named.
+	a := []*bitmap{newBitmap(1, 1)}
+	b := []*bitmap{newBitmap(2, 2), newBitmap(3, 3)}
+	dicts := map[int][]*bitmap{1: a, 2: b}
+	got := inputSymbols(dicts, []int{2, 1})
+	if len(got) != 3 || got[0].w != 2 || got[2].w != 1 {
+		t.Errorf("the symbols came in the wrong order: %v", widthsOf(got))
+	}
+	if len(inputSymbols(dicts, nil)) != 0 {
+		t.Error("naming no dictionary produced symbols")
+	}
+	if len(inputSymbols(dicts, []int{99})) != 0 {
+		t.Error("naming a dictionary that is not there produced symbols")
+	}
+}
+
+func widthsOf(b []*bitmap) []int {
+	out := make([]int, len(b))
+	for i, x := range b {
+		out[i] = x.w
+	}
+	return out
+}

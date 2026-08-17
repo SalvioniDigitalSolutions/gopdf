@@ -456,3 +456,23 @@ func TestJBIG2SymbolGarbageIsSurvivable(t *testing.T) {
 		t.Error("a text region with no symbols was accepted")
 	}
 }
+
+// encodeSymbolDictNum and encodeTextRegionNum are the numbered forms, so
+// a fixture can build a document with more than one dictionary and say
+// which region uses which.
+func encodeSymbolDictNum(t *testing.T, num int, symbols []*bitmap, template int) []byte {
+	t.Helper()
+	seg := encodeSymbolDict(t, symbols, template)
+	seg[3] = byte(num) // the segment number in the header
+	return seg
+}
+
+func encodeTextRegionNum(t *testing.T, num, w, h int, symbols []*bitmap,
+	places []placement, refers int) []byte {
+	t.Helper()
+	seg := encodeTextRegion(t, w, h, symbols, places)
+	seg[3] = byte(num)
+	// The referred-to segment number sits after the count byte.
+	seg[6] = byte(refers)
+	return seg
+}

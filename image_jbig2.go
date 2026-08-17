@@ -38,7 +38,11 @@ func decodeJBIG2(data, globals []byte, width, height int) ([]byte, error) {
 	// The globals stream carries the segments shared between images,
 	// which for a scanned document is where the symbol dictionary lives:
 	// one set of shapes for every page. It is read first for that reason.
-	var symbols []*bitmap
+	// Dictionaries are kept by segment number, since a region names the
+	// ones it uses and the numbering of its symbols depends on getting
+	// exactly those.
+	dicts := map[int][]*bitmap{}
+	var everything []*bitmap
 	for _, part := range [][]byte{globals, data} {
 		segs, err := parseJBIG2Segments(part)
 		if err != nil {
@@ -47,12 +51,20 @@ func decodeJBIG2(data, globals []byte, width, height int) ([]byte, error) {
 		for _, s := range segs {
 			switch s.kind {
 			case 0: // symbol dictionary
-				got, err := decodeSymbolDictionary(s.data, symbols)
+				got, err := decodeSymbolDictionary(s.data, inputSymbols(dicts, s.refers))
 				if err != nil {
 					return nil, err
 				}
-				symbols = append(symbols, got...)
+				dicts[s.num] = got
+				everything = append(everything, got...)
 			case 4, 6, 7: // text region, and its immediate variants
+				symbols := inputSymbols(dicts, s.refers)
+				if len(symbols) == 0 {
+					// A region that names nothing is not conforming, and
+					// is common enough that refusing would be worse than
+					// offering every dictionary in the file.
+					symbols = everything
+				}
 				if err := decodeTextRegion(s.data, symbols, page); err != nil {
 					return nil, err
 				}
@@ -75,6 +87,17 @@ func decodeJBIG2(data, globals []byte, width, height int) ([]byte, error) {
 		return nil, errors.New("gopdf: JBIG2 image has no region to decode")
 	}
 	return page.pix, nil
+}
+
+// inputSymbols gathers the symbols of the dictionaries a segment names,
+// in the order it names them, which is the order their identifiers run
+// in.
+func inputSymbols(dicts map[int][]*bitmap, refers []int) []*bitmap {
+	var out []*bitmap
+	for _, num := range refers {
+		out = append(out, dicts[num]...)
+	}
+	return out
 }
 
 // bitmap is one byte per pixel, 1 for black.
@@ -105,8 +128,15 @@ func (b *bitmap) set(x, y int, v byte) {
 
 // jbig2Segment is one segment of the embedded stream.
 type jbig2Segment struct {
-	kind int
-	data []byte
+	num int
+	// refers lists the segments this one draws on. A text region names
+	// the symbol dictionaries whose shapes it uses, and using anything
+	// else numbers the shapes differently: the symbol identifiers are
+	// indices into exactly the dictionaries named, so a region given one
+	// dictionary too many reads every identifier at the wrong width.
+	refers []int
+	kind   int
+	data   []byte
 }
 
 // parseJBIG2Segments reads the segment headers of an embedded stream.
@@ -126,6 +156,7 @@ func parseJBIG2Segments(data []byte) ([]jbig2Segment, error) {
 		// long form with a count and a retain bitmap.
 		rt := data[q]
 		count := int(rt >> 5)
+		longForm := count == 7
 		if count == 7 {
 			if q+4 > len(data) {
 				return nil, errJBIG2
@@ -147,7 +178,24 @@ func parseJBIG2Segments(data []byte) ([]jbig2Segment, error) {
 		case segNum > 256:
 			refSize = 2
 		}
+		refStart := q
 		q += count * refSize
+		refers := make([]int, 0, count)
+		for i := 0; i < count; i++ {
+			at := refStart + i*refSize
+			if at+refSize > len(data) {
+				return nil, errJBIG2
+			}
+			switch refSize {
+			case 1:
+				refers = append(refers, int(data[at]))
+			case 2:
+				refers = append(refers, int(be16(data, at)))
+			default:
+				refers = append(refers, int(be32(data, at)))
+			}
+		}
+		_ = longForm
 		if pageAssoc4 {
 			q += 4
 		} else {
@@ -167,7 +215,9 @@ func parseJBIG2Segments(data []byte) ([]jbig2Segment, error) {
 		if length < 0 || q+length > len(data) {
 			return nil, errJBIG2
 		}
-		out = append(out, jbig2Segment{kind: kind, data: data[q : q+length]})
+		out = append(out, jbig2Segment{
+			num: int(segNum), refers: refers, kind: kind, data: data[q : q+length],
+		})
 		p = q + length
 		if len(out) > 1<<16 {
 			return nil, errJBIG2

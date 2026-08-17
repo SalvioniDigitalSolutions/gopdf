@@ -86,11 +86,11 @@ func (d *Document) buildPDFAExtras() any {
 	}
 	ref := rawRef(len(d.raw))
 	d.raw = append(d.raw, Dict{
-		"Type":                    Name("OutputIntent"),
-		"S":                       Name("GTS_PDFA1"),
+		"Type":                      Name("OutputIntent"),
+		"S":                         Name("GTS_PDFA1"),
 		"OutputConditionIdentifier": String(textStringBytes("sRGB IEC61966-2.1")),
-		"RegistryName":            String(textStringBytes("http://www.color.org")),
-		"Info":                    String(textStringBytes("sRGB IEC61966-2.1")),
+		"RegistryName":              String(textStringBytes("http://www.color.org")),
+		"Info":                      String(textStringBytes("sRGB IEC61966-2.1")),
 	})
 	return ref
 }
