@@ -232,6 +232,13 @@ type renderer struct {
 	// pattern is placed in however deep it is used.
 	baseCTM   matrix
 	maskDepth int
+	// groupDepth bounds how deep a transparency group may nest before
+	// its own surface stops being worth allocating.
+	groupDepth int
+	// knockoutBase is what a knockout group started with. Every paint
+	// inside it composites against this rather than against the paints
+	// before it.
+	knockoutBase *image.NRGBA
 	// hidden holds the optional-content groups the document switches
 	// off, by object number.
 	hidden map[int]bool
@@ -690,7 +697,15 @@ func (rn *renderer) paint(path *rasterPath, evenOdd bool, rgb [3]float64,
 func (rn *renderer) blend(x, y int, r, g, b uint8, a float64) {
 	i := rn.dst.PixOffset(x, y)
 	p := rn.dst.Pix
-	dstA := float64(p[i+3]) / 255
+	// In a knockout group each operation composites against what the
+	// group started with rather than against the ones before it, so two
+	// overlapping shapes stay opaque to each other however transparent
+	// the group as a whole is.
+	back := p
+	if rn.knockoutBase != nil {
+		back = rn.knockoutBase.Pix
+	}
+	dstA := float64(back[i+3]) / 255
 	outA := a + dstA*(1-a)
 	if outA <= 0 {
 		p[i], p[i+1], p[i+2], p[i+3] = 0, 0, 0, 0
@@ -706,9 +721,9 @@ func (rn *renderer) blend(x, y int, r, g, b uint8, a float64) {
 		}
 		return uint8(v + 0.5)
 	}
-	p[i] = mix(r, p[i])
-	p[i+1] = mix(g, p[i+1])
-	p[i+2] = mix(b, p[i+2])
+	p[i] = mix(r, back[i])
+	p[i+1] = mix(g, back[i+1])
+	p[i+2] = mix(b, back[i+2])
 	p[i+3] = uint8(clamp01(outA)*255 + 0.5)
 }
 
@@ -800,6 +815,10 @@ func (rn *renderer) doXObject(res Dict, name Name, gs renderState, depth int) {
 		formRes := stm.dict["Resources"]
 		if formRes == nil {
 			formRes = res
+		}
+		if kind, ok := rn.transparencyGroup(stm.dict); ok && kind.needsOwnSurface() {
+			rn.drawGroup(content, formRes, inner, sub, depth, kind)
+			return
 		}
 		rn.run(content, formRes, inner, sub, depth+1)
 	case Name("Image"):

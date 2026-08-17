@@ -2238,3 +2238,187 @@ func TestRenderCoonsPatch(t *testing.T) {
 		}
 	}
 }
+
+// groupDoc draws two overlapping black squares inside a form, at the
+// given group flags and group alpha, and returns the rendered page.
+func groupDoc(t *testing.T, isolated, knockout bool, alpha float64) image.Image {
+	t.Helper()
+	doc := New()
+	doc.Compress = false
+	page := doc.AddPage()
+	page.op("q /GSa gs /Fm0 Do Q")
+	src := withResources(t, docBytes(t, doc), func(u *Updater) Dict {
+		grp := Dict{"S": Name("Transparency"), "CS": Name("DeviceRGB")}
+		if isolated {
+			grp["I"] = true
+		}
+		if knockout {
+			grp["K"] = true
+		}
+		form := u.add(&rawStream{
+			dict: Dict{
+				"Type": Name("XObject"), "Subtype": Name("Form"),
+				"BBox": Array{0.0, 0.0, 600.0, 800.0}, "Group": grp,
+			},
+			// Two squares overlapping in the middle.
+			data: []byte("0 0 0 rg 100 600 100 100 re f 150 650 100 100 re f\n"),
+		})
+		return Dict{
+			"XObject":   Dict{"Fm0": Ref{Num: form}},
+			"ExtGState": Dict{"GSa": Dict{"Type": Name("ExtGState"), "ca": alpha}},
+		}
+	})
+	img, err := NewReaderOrFail(t, src).RenderPage(0,
+		RenderOpts{DPI: 100, IncludeVector: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return img
+}
+
+// TestTransparencyGroupAlphaAppliesOnce is the difference a group makes.
+//
+// Two half-transparent squares drawn straight onto a page darken twice
+// where they cross. Drawn inside a half-transparent group they are
+// composited together first and the group's alpha is spent once, so the
+// overlap is the same grey as the rest.
+func TestTransparencyGroupAlphaAppliesOnce(t *testing.T) {
+	img := groupDoc(t, true, false, 0.5)
+	// A point in one square alone, and a point where they cross.
+	alone, _, _, _ := at(t, img, 100, 120, 841.89-620)
+	cross, _, _, _ := at(t, img, 100, 175, 841.89-675)
+	if alone == 255 || cross == 255 {
+		t.Fatalf("the fixture drew nothing: alone=%d cross=%d", alone, cross)
+	}
+	if !near(alone, 128, 12) {
+		t.Errorf("a half-transparent group painted %d, want about 128", alone)
+	}
+	if !near(cross, alone, 6) {
+		t.Errorf("the overlap is %d and the rest is %d; the group's alpha was "+
+			"spent twice", cross, alone)
+	}
+}
+
+// TestIsolatedGroupDoesNotBlendWithThePage: a Multiply *inside* an
+// isolated group has only the group's own contents to multiply with, so
+// a group meant to darken itself does not darken the page under it.
+//
+// The mode has to be inside the group to test this. A mode in force
+// outside applies when the group's result is composited onto the page,
+// which is true of an isolated group as much as any other.
+func TestIsolatedGroupDoesNotBlendWithThePage(t *testing.T) {
+	build := func(isolated bool) uint8 {
+		doc := New()
+		doc.Compress = false
+		page := doc.AddPage()
+		// A mid grey on the page, then a group whose contents multiply.
+		page.op("0.5 g 100 600 200 100 re f")
+		page.op("q /Fm0 Do Q")
+		src := withResources(t, docBytes(t, doc), func(u *Updater) Dict {
+			grp := Dict{"S": Name("Transparency"), "CS": Name("DeviceRGB")}
+			if isolated {
+				grp["I"] = true
+			}
+			form := u.add(&rawStream{
+				dict: Dict{
+					"Type": Name("XObject"), "Subtype": Name("Form"),
+					"BBox": Array{0.0, 0.0, 600.0, 800.0}, "Group": grp,
+					"Resources": Dict{"ExtGState": Dict{"GSm": Dict{
+						"Type": Name("ExtGState"), "BM": Name("Multiply"),
+					}}},
+				},
+				data: []byte("/GSm gs 0.5 g 100 600 200 100 re f\n"),
+			})
+			return Dict{"XObject": Dict{"Fm0": Ref{Num: form}}}
+		})
+		img, err := NewReaderOrFail(t, src).RenderPage(0,
+			RenderOpts{DPI: 100, IncludeVector: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		v, _, _, _ := at(t, img, 100, 200, 841.89-650)
+		return v
+	}
+	// Not isolated: the group sees the page and its grey multiplies with
+	// the grey already there, giving a quarter.
+	plain := build(false)
+	if !near(plain, 64, 14) {
+		t.Errorf("a plain group multiplied to %d, want about 64", plain)
+	}
+	// Isolated: the group starts from nothing, so the Multiply has
+	// nothing to darken and the grey reaches the page as itself.
+	iso := build(true)
+	if !near(iso, 128, 14) {
+		t.Errorf("an isolated group came out %d, want about 128 — its contents "+
+			"blended with the page it was isolated from", iso)
+	}
+}
+
+// TestKnockoutGroupCoversItsOwnShapes: inside a knockout group each
+// shape composites against what the group started with, so the second
+// covers the first rather than blending with it.
+func TestKnockoutGroupCoversItsOwnShapes(t *testing.T) {
+	build := func(knockout bool) (uint8, uint8) {
+		doc := New()
+		doc.Compress = false
+		page := doc.AddPage()
+		page.op("q /Fm0 Do Q")
+		src := withResources(t, docBytes(t, doc), func(u *Updater) Dict {
+			grp := Dict{"S": Name("Transparency"), "CS": Name("DeviceRGB"), "I": true}
+			if knockout {
+				grp["K"] = true
+			}
+			form := u.add(&rawStream{
+				dict: Dict{
+					"Type": Name("XObject"), "Subtype": Name("Form"),
+					"BBox": Array{0.0, 0.0, 600.0, 800.0}, "Group": grp,
+					"Resources": Dict{"ExtGState": Dict{"GSh": Dict{
+						"Type": Name("ExtGState"), "ca": 0.5,
+					}}},
+				},
+				// Two half-transparent black squares that overlap.
+				data: []byte("/GSh gs 0 0 0 rg 100 600 100 100 re f " +
+					"150 650 100 100 re f\n"),
+			})
+			return Dict{"XObject": Dict{"Fm0": Ref{Num: form}}}
+		})
+		img, err := NewReaderOrFail(t, src).RenderPage(0,
+			RenderOpts{DPI: 100, IncludeVector: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		alone, _, _, _ := at(t, img, 100, 120, 841.89-620)
+		cross, _, _, _ := at(t, img, 100, 175, 841.89-675)
+		return alone, cross
+	}
+	// Without knockout the two half-transparent squares compound where
+	// they cross, and the overlap is darker.
+	alone, cross := build(false)
+	if cross >= alone {
+		t.Errorf("without knockout the overlap is %d and a single square is %d; "+
+			"they should compound", cross, alone)
+	}
+	// With knockout each composites against the group's initial
+	// backdrop, so the overlap is the same as one square alone.
+	kAlone, kCross := build(true)
+	if !near(kCross, kAlone, 6) {
+		t.Errorf("in a knockout group the overlap is %d and a single square is "+
+			"%d; the second should have covered the first", kCross, kAlone)
+	}
+}
+
+// TestOrdinaryGroupIsUnchanged: a group with neither flag is drawn
+// straight onto the page, and must look exactly as it did before any of
+// this existed.
+func TestOrdinaryGroupIsUnchanged(t *testing.T) {
+	plain := groupDoc(t, false, false, 1)
+	// Two opaque black squares: everything they cover is black.
+	for _, pt := range [][2]float64{{120, 620}, {175, 675}, {230, 720}} {
+		if v, _, _, _ := at(t, plain, 100, pt[0], 841.89-pt[1]); v != 0 {
+			t.Errorf("at (%g,%g) the page is %d, want black", pt[0], pt[1], v)
+		}
+	}
+	if v, _, _, _ := at(t, plain, 100, 400, 841.89-650); v != 255 {
+		t.Error("the group painted outside its shapes")
+	}
+}
