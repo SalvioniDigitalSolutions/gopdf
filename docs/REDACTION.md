@@ -43,7 +43,7 @@ err = rd.Save("redacted.pdf")
 | Content | What happens |
 |---|---|
 | **Text** | Glyphs cut from the content stream. The characters kept are written back as the codes that originally drew them, and a gap of the same width is left behind, so nothing else on the line moves. |
-| **Images** | Pixels inside the area are overwritten and the image re-encoded, so the original samples are gone. One that cannot be decoded — JPEG 2000, or a JBIG2 using a symbol dictionary — is dropped whole rather than left in. |
+| **Images** | Pixels inside the area are overwritten and the image re-encoded, so the original samples are gone. One that cannot be decoded — JPEG 2000, or a Huffman-coded JBIG2 — is dropped whole rather than left in. |
 | **Vector artwork** | A path lying entirely inside the area is deleted. One straddling the edge is reported by `PartialArtwork()`, not silently kept. A path that establishes a clip is never removed. |
 | **Annotations** | Removed with whatever text they hold, unless `KeepAnnotations(true)`. |
 | **Metadata** | Information dictionary and XMP discarded, unless `StripMetadata(false)`. Named destinations survive: they are structure, not metadata. |

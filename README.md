@@ -566,11 +566,12 @@ Stated plainly, because they matter when choosing a library:
   practice — a font that is not embedded, an encrypted file, a script,
   a missing intent. It is not a certificate: a full validator also checks
   colour management and the internals of embedded font programs.
-- A JBIG2 image is decoded when it is coded as a generic region, which is
-  what a scanner in its ordinary mode produces. One using a symbol
-  dictionary is reported rather than guessed at, and JPEG 2000 is not
-  decoded at all; both are dropped whole by redaction rather than
-  part-scrubbed.
+- A JBIG2 image is decoded whether it is coded pixel by pixel as a
+  generic region or shape by shape through a symbol dictionary and a text
+  region, which is what a scanner produces for a page of prose. The
+  Huffman-coded variants, refinement coding and halftone regions are
+  reported rather than guessed at, and JPEG 2000 is not decoded at all;
+  those are dropped whole by redaction rather than part-scrubbed.
 - Rendering draws a glyph from the outlines the document carries. A font
   the document names but does not embed has no outlines to draw, and a
   bare PostScript font is addressed by glyph name through the built-in
@@ -591,7 +592,7 @@ Stated plainly, because they matter when choosing a library:
 
 Nothing outstanding from the original plan. Candidates, in no order:
 CID-keyed CFF subsetting, PAdES timestamps, public-key (certificate)
-security handlers, JPEG 2000 decoding, JBIG2 symbol dictionaries,
+security handlers, JPEG 2000 decoding, Huffman-coded JBIG2,
 linearization, and reflow that cascades across pages.
 
 ## License

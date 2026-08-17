@@ -35,9 +35,10 @@ func decodeJBIG2(data, globals []byte, width, height int) ([]byte, error) {
 	page := newBitmap(width, height)
 	found := false
 
-	// The globals stream carries segments shared between images; a
-	// generic region needs nothing from it, but a file may put its page
-	// information there and it costs nothing to read.
+	// The globals stream carries the segments shared between images,
+	// which for a scanned document is where the symbol dictionary lives:
+	// one set of shapes for every page. It is read first for that reason.
+	var symbols []*bitmap
 	for _, part := range [][]byte{globals, data} {
 		segs, err := parseJBIG2Segments(part)
 		if err != nil {
@@ -45,19 +46,33 @@ func decodeJBIG2(data, globals []byte, width, height int) ([]byte, error) {
 		}
 		for _, s := range segs {
 			switch s.kind {
-			case 36, 38, 39: // immediate generic region, and its variants
+			case 0: // symbol dictionary
+				got, err := decodeSymbolDictionary(s.data, symbols)
+				if err != nil {
+					return nil, err
+				}
+				symbols = append(symbols, got...)
+			case 4, 6, 7: // text region, and its immediate variants
+				if err := decodeTextRegion(s.data, symbols, page); err != nil {
+					return nil, err
+				}
+				found = true
+			case 36, 38, 39: // generic region, and its variants
 				if err := decodeGenericSegment(s.data, page); err != nil {
 					return nil, err
 				}
 				found = true
-			case 0, 4, 6, 7: // symbol dictionary and text regions
-				return nil, errors.New("gopdf: JBIG2 image uses a symbol " +
-					"dictionary, which is not decoded")
+			case 40, 42, 43: // refinement regions
+				return nil, errors.New("gopdf: JBIG2 image uses refinement " +
+					"coding, which is not decoded")
+			case 20, 22, 23: // halftone regions
+				return nil, errors.New("gopdf: JBIG2 image uses a halftone " +
+					"region, which is not decoded")
 			}
 		}
 	}
 	if !found {
-		return nil, errors.New("gopdf: JBIG2 image has no generic region")
+		return nil, errors.New("gopdf: JBIG2 image has no region to decode")
 	}
 	return page.pix, nil
 }
