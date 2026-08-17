@@ -499,7 +499,7 @@ go run ./examples/redact -in case.pdf -list -text "Ada Lovelace"
 Coordinates are in points (1/72 inch) with the origin at the **top-left**
 of the page; `Mm`, `Cm` and `Inch` convert other units.
 
-- **485 tests** at **85% statement coverage**, covering the writer, the
+- **489 tests** at **85% statement coverage**, covering the writer, the
   parser, the font subsetter, the filters, encryption, editing, reflow,
   flow, forms, signatures, redaction, rendering and attachments
 - **Text extraction measured against `pdftotext`** over 918 real
@@ -532,6 +532,12 @@ of the page; `Mm`, `Cm` and `Inch` convert other units.
 - **Validated against Poppler** in both directions: files gopdf writes are
   read by an independent implementation, and files other tools wrote are
   read, edited and rewritten by gopdf with their text preserved.
+  The JBIG2 decoder is checked against Poppler's own, which is an
+  independent implementation of the same specification: a stream goes
+  through both and every pixel has to match, for each generic-region
+  template, for the typical-prediction shortcut, and for a symbol
+  dictionary and text region — the comparison found two conformance
+  mistakes in the test encoder that a round trip could not see.
   Attachments extracted by gopdf are byte-identical to `pdfdetach`, and
   every font a stream selects is checked to be declared where that
   stream resolves names — a thing gopdf's own forgiving reader could not

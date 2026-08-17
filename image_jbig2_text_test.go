@@ -267,15 +267,25 @@ func encodeTextRegion(t *testing.T, w, h int, symbols []*bitmap,
 	b.Write([]byte{byte(flags >> 8), byte(flags)})
 	put32(len(places))
 	b.Write(coded)
-	return segmentWrap(2, 6, b.Bytes())
+	return segmentWrap(2, 6, b.Bytes(), 1)
 }
 
 // segmentWrap puts a segment header round a payload.
-func segmentWrap(num, kind int, body []byte) []byte {
+func segmentWrap(num, kind int, body []byte, refers ...int) []byte {
 	var b bytes.Buffer
 	b.Write([]byte{byte(num >> 24), byte(num >> 16), byte(num >> 8), byte(num)})
 	b.WriteByte(byte(kind))
-	b.WriteByte(0) // no referred-to segments
+	// The referred-to segments, in the short form: a count in the top
+	// three bits, then one byte per segment number. A text region that
+	// names no dictionary has no symbols in scope, and a conforming
+	// reader draws nothing at all — which is what Poppler did.
+	if len(refers) > 4 {
+		panic("the short form of the header holds four references")
+	}
+	b.WriteByte(byte(len(refers) << 5))
+	for _, r := range refers {
+		b.WriteByte(byte(r))
+	}
 	b.WriteByte(1) // page 1
 	b.Write([]byte{byte(len(body) >> 24), byte(len(body) >> 16),
 		byte(len(body) >> 8), byte(len(body))})
