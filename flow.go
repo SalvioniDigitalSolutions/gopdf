@@ -875,13 +875,14 @@ func (p *UpdatablePage) Flows() []*Flow {
 // styling of the text it replaces, and lets a paragraph grow or shrink by
 // whole lines. It returns the number of paragraphs rewritten.
 func (e *EditablePage) ReplaceTextFlow(old, new string) (int, error) {
-	return replaceFlows(e.Flows(), old, new)
+	return replaceFlows(e.Flows(), old, new, e.Page.h)
 }
 
 // ReplaceTextFlow replaces occurrences of old across the page's
 // paragraphs, re-wrapping each one it changes and keeping its styling.
 func (p *UpdatablePage) ReplaceTextFlow(old, new string) (int, error) {
-	return replaceFlows(p.Flows(), old, new)
+	pi := p.u.r.pages[p.index]
+	return replaceFlows(p.Flows(), old, new, pi.mediaBox[3]-pi.mediaBox[1])
 }
 
 // replaceFlows rewrites every paragraph containing old and moves the ones
@@ -891,7 +892,7 @@ func (p *UpdatablePage) ReplaceTextFlow(old, new string) (int, error) {
 // Every rewrite is planned first. A font that cannot represent the new
 // text then fails before anything has been written, rather than half way
 // down the page.
-func replaceFlows(flows []*Flow, old, new string) (int, error) {
+func replaceFlows(flows []*Flow, old, new string, pageHeight float64) (int, error) {
 	if old == "" {
 		return 0, fmt.Errorf("gopdf: ReplaceTextFlow called with empty search text")
 	}
@@ -925,6 +926,14 @@ func replaceFlows(flows []*Flow, old, new string) (int, error) {
 			continue
 		}
 		f.place(shift)
+	}
+	// A paragraph that grew past the bottom of the page has put its text
+	// where the file holds it and no reader sees it: it extracts, it
+	// verifies, and it is invisible. Saying it does not fit is the only
+	// honest answer, and the paragraphs are already placed so the
+	// caller's own copy shows what went wrong.
+	if err := checkPageOverflow(flows, pageHeight); err != nil {
+		return 0, err
 	}
 	return n, nil
 }

@@ -928,3 +928,100 @@ func TestFlowKeepsAKernedWordWhole(t *testing.T) {
 		t.Errorf("replaced %d of the whole word, want 1", n2)
 	}
 }
+
+// TestFlowRefusesToWriteBelowThePage is a silent failure turned into an
+// error.
+//
+// A paragraph on the last line of a page, given a replacement several
+// times longer, grew downwards past the bottom edge. The lines were in
+// the file and on no page: PageText reported them, the substitution
+// check verified them, and no reader could see any of it. That is worse
+// than saying the text does not fit.
+func TestFlowRefusesToWriteBelowThePage(t *testing.T) {
+	doc := New()
+	doc.Compress = false
+	p := doc.AddPage()
+	p.SetFont(Helvetica, 12)
+	p.Text(72, 830, "Contact Ada Lovelace about it.")
+	src := docBytes(t, doc)
+
+	long := strings.Repeat("[[LONG_TOKEN]] ", 10)
+
+	// Through the flow API directly.
+	r := NewReaderOrFail(t, src)
+	u := Update(r)
+	page, err := u.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := page.ReplaceTextFlow("Ada Lovelace", long); err == nil {
+		t.Error("a paragraph was allowed to grow past the bottom of the page")
+	} else if !strings.Contains(err.Error(), "fit") {
+		t.Errorf("the error does not explain itself: %v", err)
+	}
+
+	// And through pseudonymization, which is where it mattered.
+	var buf bytes.Buffer
+	if _, err := Pseudonymize(NewReaderOrFail(t, src), &buf,
+		[]Pseudonym{{From: "Ada Lovelace", To: long}}); err == nil {
+		t.Error("a substitution wrote text below the page")
+	}
+	if buf.Len() != 0 {
+		t.Error("a document that did not fit was written anyway")
+	}
+
+	// A replacement that does fit still works, on the same page.
+	var ok bytes.Buffer
+	if _, err := Pseudonymize(NewReaderOrFail(t, src), &ok,
+		[]Pseudonym{{From: "Ada Lovelace", To: "[[NAME_1]]"}}); err != nil {
+		t.Fatalf("a replacement that fits was refused: %v", err)
+	}
+	got, err := NewReaderOrFail(t, ok.Bytes()).PageText(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "[[NAME_1]]") {
+		t.Errorf("the fitting replacement is not on the page: %q", got)
+	}
+}
+
+// TestFlowGrowsWithinThePage: a paragraph with room below it may still
+// grow, which is the whole point of the flow engine.
+func TestFlowGrowsWithinThePage(t *testing.T) {
+	doc := New()
+	doc.Compress = false
+	p := doc.AddPage()
+	p.SetFont(Helvetica, 12)
+	p.Text(72, 100, "Contact Ada Lovelace about it.")
+	src := docBytes(t, doc)
+
+	long := strings.Repeat("[[LONG_TOKEN]] ", 10)
+	var buf bytes.Buffer
+	if _, err := Pseudonymize(NewReaderOrFail(t, src), &buf,
+		[]Pseudonym{{From: "Ada Lovelace", To: long}}); err != nil {
+		t.Fatalf("a paragraph with room below it was refused: %v", err)
+	}
+	out := NewReaderOrFail(t, buf.Bytes())
+	size, err := out.PageSize(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frags, err := out.PageTextFragments(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grew := 0
+	for _, f := range frags {
+		if !strings.Contains(f.Text, "LONG_TOKEN") {
+			continue
+		}
+		grew++
+		if f.Y > size.H {
+			t.Errorf("a line was written at y=%.1f, below the %.0f-point page",
+				f.Y, size.H)
+		}
+	}
+	if grew < 2 {
+		t.Errorf("the paragraph did not grow: %d lines carry the token", grew)
+	}
+}

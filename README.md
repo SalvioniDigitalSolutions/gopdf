@@ -555,7 +555,9 @@ Stated plainly, because they matter when choosing a library:
   lines and moves the text below. A flow moves text, not images or
   rules, and needs the font to have a space glyph — a document that
   positions every word separately and never draws a space cannot be
-  re-wrapped.
+  re-wrapped. A paragraph may grow, and not past the bottom of its page:
+  text written below the edge is in the file and on no page, so that is
+  refused rather than written.
 - `FillForm` flattens; `FillFormInteractive` keeps fields editable.
 - Permission flags on encrypted documents are advisory, as the PDF
   specification defines them — they are not a security boundary.
@@ -593,7 +595,7 @@ Stated plainly, because they matter when choosing a library:
 Nothing outstanding from the original plan. Candidates, in no order:
 CID-keyed CFF subsetting, PAdES timestamps, public-key (certificate)
 security handlers, JPEG 2000 decoding, Huffman-coded JBIG2,
-linearization, and reflow that cascades across pages.
+linearization, and reflow that carries a paragraph onto the next page.
 
 ## License
 
