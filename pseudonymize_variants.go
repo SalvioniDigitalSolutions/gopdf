@@ -53,7 +53,7 @@ func expandVariants(sub Pseudonym) []Pseudonym {
 	}
 	out := make([]Pseudonym, 0, len(forms))
 	for _, form := range forms {
-		out = append(out, Pseudonym{From: form, To: sub.To})
+		out = append(out, Pseudonym{From: form, To: sub.To, FitWidth: sub.FitWidth})
 	}
 	return out
 }

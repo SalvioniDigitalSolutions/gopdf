@@ -801,6 +801,39 @@ lines it needs. Every part keeps the styling it had, so replacing a name
 inside a bold phrase leaves the phrase bold and the sentence around it
 alone.</p>
 
+<h3>Or the paragraph need not move at all</h3>
+<p>Re-wrapping keeps the token whole and lets the lines fall where they
+may. <code>FitWidth</code> makes the other trade: keep the token whole
+<em>and</em> keep the lines, by setting the token at the size that makes
+it exactly as wide as the text it replaced.</p>
+<pre><code>gopdf.<span class="f">Pseudonymize</span>(r, out, []gopdf.Pseudonym{
+	{From: <span class="s">"G. Verdi"</span>, To: <span class="s">"[REDACTED]"</span>, FitWidth: <span class="k">true</span>},
+})</code></pre>
+<p>The baseline does not move, only the size, and only for the token —
+the words around it and the space in front of it stay as the document
+set them. It never enlarges: a token narrower than what it replaces
+keeps its size and the line gains a little slack.</p>
+<p>The size is solved for rather than scaled to. Character spacing is an
+absolute number of points per glyph and does not shrink when the font
+does, so the advance is affine in the size rather than proportional to
+it; a token with more characters than the name carries more of that
+fixed part, and a plain <code>wFrom/wTo</code> ratio would leave it too
+wide. With no extra spacing set, which is the usual case, the solved
+answer <em>is</em> that ratio.</p>
+<p>There is a floor at 45% of the run's size. Where even that leaves the
+token wider than what it replaced, it is set at the floor and the
+paragraph re-wraps as it otherwise would — a token nobody can read has
+failed at the only thing it was for. Over 127 documents of a real
+corpus, <code>FitWidth</code> returned the page with its line breaks
+exactly where they were on 63 of them, against 22 without it; of the
+tokens it fitted, 67 fitted exactly and 12 came to rest on the floor.</p>
+<p><code>Reverse</code> drops the flag: putting the original text back
+has no width to fit. And each occurrence is fitted on its own, since the
+run behind one may be in a different size from the run behind the next.
+For a caller working through the <a href="#flow">flow engine</a> rather
+than through <code>Pseudonymize</code>, the same switch is
+<code>Flow.SetFitWidth</code>.</p>
+
 <h3>Where it looks</h3>
 <p>Page text is the visible half. The same name sits in places nothing
 draws and everything reads, and all of them are rewritten: the
@@ -1382,6 +1415,7 @@ this is the shape of it.</p>
 <tr><td><code>Marks</code>, <code>RedactionMark</code>, <code>RedactionKind</code>, <code>PartialArtwork</code></td><td>Review before writing.</td></tr>
 <tr><td><code>SetFill</code>, <code>SetLabel</code>, <code>SetLabelColor</code>, <code>SetOverlay</code>, <code>SetVerify</code>, <code>StripMetadata</code>, <code>KeepAnnotations</code></td><td>How it looks and how hard it checks.</td></tr>
 <tr><td><code>Pseudonymize</code>, <code>PseudonymizeFile</code>, <code>Pseudonym</code>, <code>PseudonymizeResult</code></td><td>Substitute rather than blank.</td></tr>
+<tr><td><code>Pseudonym.FitWidth</code>, <code>Flow.SetFitWidth</code></td><td>Keep the whole token and shrink it to the width it replaced, so the line breaks do not move.</td></tr>
 <tr><td><code>Reverse</code>, <code>Key</code></td><td>Undo a substitution, where the pixels were not destroyed.</td></tr>
 <tr><td><code>SetOCR</code>, <code>SetOCRConfidence</code>, <code>OCREngine</code>, <code>OCRWord</code></td><td>Reach text inside a scan; the engine is yours to supply.</td></tr>
 </tbody>

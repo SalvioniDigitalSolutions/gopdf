@@ -66,8 +66,12 @@ func (f *Flow) shrinkInserted(spans []FlowSpan) ([]FlowSpan, bool) {
 			size = f.shrinkFloor
 		}
 		if size < out[i].style.fontSizeRaw {
+			// Scaled by what the size actually became, not by what it
+			// would have become: at the floor those differ, and the two
+			// fields have to describe the same text.
+			out[i].FontSize *= size / out[i].style.fontSizeRaw
 			out[i].style.fontSizeRaw = size
-			out[i].FontSize = out[i].FontSize * scale
+			out[i].fitted = true
 			changed = true
 		}
 	}
@@ -115,4 +119,73 @@ func checkPageOverflow(flows []*Flow, pageHeight float64) error {
 		}
 	}
 	return nil
+}
+
+// --- fitting a token to the width it replaces ---
+
+// A different answer to the same problem shrinkInserted solves. That one
+// asks whether the token fits the column and shrinks it until it does,
+// which keeps the paragraph readable but lets the line breaks fall
+// wherever the new width puts them. This one asks the narrower question:
+// make the token exactly as wide as the words it replaced, so every line
+// break in the paragraph lands where it already was and nothing below it
+// moves. It is what a reader wants from a redaction — the page they had,
+// with one phrase covered — and it is worth a smaller token to get.
+
+// fitWidthFloor is the fraction of a run's size below which a fitted
+// token is not shrunk. Past this the token is legible only in theory,
+// and a re-wrapped paragraph is the better failure.
+const fitWidthFloor = 0.45
+
+// SetFitWidth makes a replacement occupy the width of the text it
+// replaces, by setting it smaller rather than by re-wrapping.
+//
+// It applies to the replacements this package inserts, never to the
+// document's own words, and it only ever shrinks: a replacement narrower
+// than what it replaces keeps its size and the line simply gains slack.
+// Where even the floor leaves it wider, it is set at the floor and the
+// paragraph re-wraps as it otherwise would — being able to read the
+// token matters more than where the line ends.
+func (f *Flow) SetFitWidth(on bool) { f.fitWidth = on }
+
+// fitSize returns the size at which text, set in style, is exactly want
+// wide, and whether that is smaller than the size style already has.
+//
+// The advance of a string is affine in the font size — each glyph's
+// width scales with it, while character and word spacing are absolute
+// and do not — so measuring at two sizes recovers both parts and the
+// answer can be solved for rather than guessed at and iterated. With no
+// extra spacing set, which is the usual case, this comes to exactly
+// size × want/width.
+func fitSize(style flowStyle, text string, want float64) (float64, bool) {
+	size := style.fontSizeRaw
+	if size <= 0 || want <= 0 || text == "" {
+		return 0, false
+	}
+	full, ok := style.advance(text)
+	if !ok || full <= want {
+		return 0, false // it already fits, and fitting never enlarges
+	}
+	half := style
+	half.fontSizeRaw = size / 2
+	halfWidth, ok := half.advance(text)
+	if !ok {
+		return 0, false
+	}
+	// width(s) = scaled*s + fixed, solved from the two measurements.
+	scaled := (full - halfWidth) / (size / 2)
+	if scaled <= 0 {
+		return 0, false // no glyph width to trade away
+	}
+	fixed := full - scaled*size
+	fitted := (want - fixed) / scaled
+	if floor := size * fitWidthFloor; fitted < floor {
+		// Clamped: the token stays readable and the paragraph re-wraps
+		// around a width this could not bring down far enough.
+		fitted = floor
+	}
+	if fitted >= size {
+		return 0, false
+	}
+	return fitted, true
 }

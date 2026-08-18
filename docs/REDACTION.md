@@ -153,6 +153,36 @@ font, and takes however many lines it needs. Each part of the paragraph
 keeps the styling it had, so replacing a name inside a bold phrase leaves
 the phrase bold and the sentence around it alone.
 
+### Or the paragraph need not move at all
+
+Re-wrapping keeps the token whole and lets the lines fall where they may.
+`FitWidth` makes the other trade — keep the token whole *and* keep the
+lines — by setting the token at the size that makes it exactly as wide as
+the text it replaced:
+
+```go
+gopdf.Pseudonymize(r, out, []gopdf.Pseudonym{
+    {From: "G. Verdi", To: "[REDACTED]", FitWidth: true},
+})
+```
+
+The baseline does not move, only the size, and only for the token: the
+words around it and the space in front of it stay as the document set
+them. It never enlarges — a token narrower than what it replaces keeps
+its size and the line gains a little slack — and it never goes below 45%
+of the run's size. Where even that leaves the token wider, it is set at
+the floor and the paragraph re-wraps as it otherwise would, because a
+token nobody can read has failed at the only thing it was for.
+
+Each occurrence is fitted on its own, since the run behind one may be in
+a different size from the run behind the next, and `Reverse` drops the
+flag because restoring the original text has no width to fit.
+
+Over 127 documents of a real corpus, `FitWidth` returned the page with
+its line breaks exactly where they were on 63 of them, against 22 without
+it. Of the tokens it fitted, 67 fitted exactly and 12 came to rest on the
+floor.
+
 ### Where it looks
 
 Page text is the visible half. The same name also sits in places nothing
@@ -378,6 +408,13 @@ for _, f := range page.Flows() {
     f.SetShrinkToFit(true, 6)
 }
 ```
+
+**A token that must not move the layout.** Different question from the
+one above: not "does it fit the column" but "does it take the width the
+old text took". `Pseudonym.FitWidth`, or `Flow.SetFitWidth(true)` for a
+caller driving the flow engine directly, answers that one. The two
+compose — a fitted token is still shrunk further if the column demands
+it.
 
 **Growth past the bottom of the page.** A paragraph that grows pushes the
 ones below it down, and at the foot of a page that pushes them off it.

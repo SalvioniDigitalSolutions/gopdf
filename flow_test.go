@@ -375,7 +375,7 @@ func TestFlowReplaceInSpansUnit(t *testing.T) {
 		{Text: "500", style: b},
 		{Text: " due", style: a},
 	}
-	out, n := replaceInSpans(spans, "500", "12,345", matchWords)
+	out, n := replaceInSpans(spans, "500", "12,345", matchWords, false)
 	if n != 1 {
 		t.Fatalf("count = %d, want 1", n)
 	}
@@ -393,7 +393,7 @@ func TestFlowReplaceInSpansUnit(t *testing.T) {
 	}
 
 	// A replacement spanning a style boundary takes the style it starts in.
-	out2, n2 := replaceInSpans(spans, "500 due", "nothing owed", matchWords)
+	out2, n2 := replaceInSpans(spans, "500 due", "nothing owed", matchWords, false)
 	if n2 != 1 {
 		t.Fatalf("count = %d, want 1", n2)
 	}

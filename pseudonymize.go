@@ -26,6 +26,21 @@ import (
 // Pseudonym is one substitution: every occurrence of From becomes To.
 type Pseudonym struct {
 	From, To string
+	// FitWidth keeps the whole token and makes it fit, instead of
+	// re-wrapping the paragraph around it.
+	//
+	// When To would set wider than From did — measured with the replaced
+	// occurrence's own font and size — To is set at a smaller size, so
+	// that it takes exactly the width From took and every line break in
+	// the paragraph stays where it was. It never enlarges: a token
+	// narrower than what it replaces keeps its size, and the line gains
+	// slack. It never goes below 45% of the run's size either; where
+	// even that leaves the token wider, it is set at the floor and the
+	// paragraph re-wraps as it otherwise would, because a token nobody
+	// can read is the worse of the two failures.
+	//
+	// Reverse drops it: restoring the original text has no width to fit.
+	FitWidth bool
 }
 
 // PseudonymizeResult reports what a substitution pass did.
@@ -98,7 +113,7 @@ func Pseudonymize(r *Reader, w io.Writer, subs []Pseudonym) (PseudonymizeResult,
 			return PseudonymizeResult{}, fmt.Errorf("gopdf: page %d: %w", i, err)
 		}
 		for _, s := range clean {
-			n, err := page.ReplaceTextFlow(s.From, s.To)
+			n, err := page.replaceTextFlowFit(s.From, s.To, s.FitWidth)
 			if err != nil {
 				return PseudonymizeResult{}, fmt.Errorf(
 					"gopdf: replacing %q on page %d: %w", s.From, i, err)
