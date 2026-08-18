@@ -14,14 +14,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          # The version go.mod declares, to prove the floor still builds.
+          # Only on Linux: a binary from this toolchain carries no
+          # LC_UUID, and current macOS refuses to launch one, so every
+          # test binary aborts before it runs a test.
+          - os: ubuntu-latest
+            go: '1.22'
+          - os: ubuntu-latest
+            go: stable
+          - os: macos-latest
+            go: stable
     runs-on: ${{ matrix.os }}
+    name: ${{ matrix.os }} / go ${{ matrix.go }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: ${{ matrix.go }}
           check-latest: true
 
       # Several tests measure this package against an independent
