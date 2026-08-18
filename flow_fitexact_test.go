@@ -384,3 +384,76 @@ func TestFitExactAcrossOperations(t *testing.T) {
 		t.Errorf("the line ends at %.3f, want %.3f", got, want)
 	}
 }
+
+// leaderPage sets a line whose dash leader fills the measure exactly, so
+// the smallest disagreement between the advance the document accounted
+// for and the one a re-wrap computes flips the leader onto a line of its
+// own. A paragraph on that knife edge is the reason the wrap is not
+// recomputed at all when every token fits: the question never has to be
+// asked, so it cannot be answered differently.
+func leaderPage(t *testing.T, name string) []byte {
+	t.Helper()
+	const size = 11
+	head := name + ", il 12 (dodici) marzo 2026 (due mila venti sei)."
+	// Fill what is left of a 475pt measure with the leader, to the point
+	// where one more dash would not fit.
+	dashes := ""
+	for Helvetica.TextWidth(head+dashes+"-", size) <= 475 {
+		dashes += "-"
+	}
+	var b strings.Builder
+	b.WriteString("BT /F1 11 Tf 1 0 0 1 60 700 Tm (" + head + dashes + ") Tj ET\n")
+	b.WriteString("BT /F1 11 Tf 1 0 0 1 60 686 Tm (Davanti a me notaio, oggi.) Tj ET\n")
+	return rawPageDoc(t, b.String())
+}
+
+// TestFitExactLeaderDoesNotWrap: the line is full to the last dash, and
+// a token of exactly the same width as the name must leave it that way.
+// A line gained here would push every line below it down the page, and
+// anything painted at fixed coordinates would be left behind.
+func TestFitExactLeaderDoesNotWrap(t *testing.T) {
+	src := leaderPage(t, "Locarno")
+	out := fitExact(t, src, []Pseudonym{
+		{From: "Locarno", To: "*****", FitWidth: true},
+	})
+
+	before, after := lineYs(t, src), lineYs(t, out)
+	if len(after) != len(before) {
+		t.Fatalf("the paragraph re-wrapped: %d lines, want %d", len(after), len(before))
+	}
+	for i := range before {
+		if before[i] != after[i] {
+			t.Errorf("line %d moved from %.4f to %.4f", i, before[i], after[i])
+		}
+	}
+	if got := joinFrags(fragsOf(t, out)); !strings.Contains(got, "*****") ||
+		strings.Contains(got, "Locarno") {
+		t.Errorf("the substitution did not happen: %q", got)
+	}
+	// Line count and baselines are necessary but not sufficient: a
+	// re-wrap that happened to land on the same lines would pass them.
+	// The line the substitution did not touch has to come through as the
+	// operators the document wrote, or the page went round the paragraph
+	// engine after all and only luck put it back.
+	const untouched = "(Davanti a me notaio, oggi.) Tj"
+	if !bytes.Contains(pageContent(t, out), []byte(untouched)) {
+		t.Errorf("the untouched line was rewritten, so the page was "+
+			"re-laid-out:\n%s", pageContent(t, out))
+	}
+}
+
+// lineYs returns the distinct baselines of page one, in order.
+func lineYs(t *testing.T, data []byte) []float64 {
+	t.Helper()
+	var ys []float64
+	for _, f := range fragsOf(t, data) {
+		if strings.TrimSpace(f.Text) == "" {
+			continue
+		}
+		if n := len(ys); n > 0 && ys[n-1] == f.Y {
+			continue
+		}
+		ys = append(ys, f.Y)
+	}
+	return ys
+}
