@@ -640,9 +640,10 @@ Stated plainly, because they matter when choosing a library:
 - Reflow (`TextBlock`) re-wraps within the lines a paragraph already
   occupies. Use a `Flow` when the length changes: it adds or removes
   lines and moves the text below. A flow moves text, not images or
-  rules, and needs the font to have a space glyph — a document that
-  positions every word separately and never draws a space cannot be
-  re-wrapped. A paragraph may grow, and not past the bottom of its page:
+  rules. Where the font has no space glyph — a document that sets every
+  word separately and never draws one embeds a subset without it — the
+  gap is written as a move, which is what that document already did.
+  A paragraph may grow, and not past the bottom of its page:
   text written below the edge is in the file and on no page, so that is
   refused rather than written.
 - `FillForm` flattens; `FillFormInteractive` keeps fields editable.

@@ -818,27 +818,6 @@ func TestFlowSpaceCharacterFallback(t *testing.T) {
 	}
 }
 
-// TestFlowRefusesWithoutASpaceGlyph checks that a paragraph whose font
-// cannot set a space is declined rather than run together.
-func TestFlowRefusesWithoutASpaceGlyph(t *testing.T) {
-	f := &Flow{widthTS: 1000, maxExtra: -1}
-	st := flowStyle{font: &fontInfo{
-		encode: map[rune][]byte{'a': {'a'}, 'b': {'b'}},
-		built:  true,
-	}, fontSizeRaw: 10, horizScale: 1}
-	_, err := f.wrap([]FlowSpan{{Text: "a b", style: st}})
-	if err == nil {
-		t.Fatal("wrapping two words with no space glyph should be refused")
-	}
-	if !strings.Contains(err.Error(), "space") {
-		t.Errorf("the error should say why: %v", err)
-	}
-	// A single word needs no space and is fine.
-	if _, err := f.wrap([]FlowSpan{{Text: "ab", style: st}}); err != nil {
-		t.Errorf("a single word should not need a space: %v", err)
-	}
-}
-
 func TestFlowTextScale(t *testing.T) {
 	if got := textScale(&TextRun{FontSize: 24, fontSizeRaw: 12}); got != 2 {
 		t.Errorf("textScale = %v, want 2", got)

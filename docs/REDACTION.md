@@ -409,6 +409,15 @@ for _, f := range page.Flows() {
 }
 ```
 
+**A font with no space in it.** Some producers set every word on its own
+and make the gaps by moving the pen, so the subset they embed has no
+space glyph — there was never one to include. Re-wrapping such a
+paragraph would once be refused, since writing the words with nothing
+between them is worse than declining. The gap is now written the way the
+document already wrote it, as a positioning move, using the width the
+font declares for a space or a quarter of the size where it declares
+none. Nothing is asked of the caller.
+
 **A token that must not move the layout.** Different question from the
 one above: not "does it fit the column" but "does it take the width the
 old text took". `Pseudonym.FitWidth`, or `Flow.SetFitWidth(true)` for a

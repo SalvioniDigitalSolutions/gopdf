@@ -35,6 +35,11 @@ type FlowSpan struct {
 	// fallback font: restyling what the document itself drew would
 	// change a page the caller did not ask to change.
 	inserted bool
+	// gap, on a span with no text, is a horizontal move in text space
+	// standing in for a space the font has no glyph to draw. Some
+	// producers set every word separately and make the gaps by moving
+	// the pen, and their subset fonts carry no space at all.
+	gap float64
 	// fitted marks inserted text whose size this package chose, to make
 	// it fit, rather than took from the document. The distinction
 	// matters to the space in front of it, which is the document's and
@@ -79,6 +84,36 @@ func (s flowStyle) advance(text string) (float64, bool) {
 	}
 	em := s.font.stringWidth(codes, s.charSpacing, s.wordSpacing, s.fontSizeRaw)
 	return em / 1000 * s.fontSizeRaw * s.horizScale, true
+}
+
+// gapWidth is how far apart two words should be in this style when the
+// font has no space glyph to put between them.
+//
+// A font that draws no spaces may still declare a width for one, since
+// the width array covers a range of codes rather than the glyphs that
+// happen to be present, and that number is the producer's own answer.
+// Where even that is missing there is nothing to go on but the
+// convention that a space is about a quarter of the size.
+func (s flowStyle) gapWidth() float64 {
+	if s.font == nil || s.fontSizeRaw == 0 {
+		return 0
+	}
+	if w, ok := s.font.spaceWidth1000(); ok {
+		return w / 1000 * s.fontSizeRaw * s.horizScale
+	}
+	return s.fontSizeRaw * 0.25 * s.horizScale
+}
+
+// gapAdjust returns the TJ number that moves the pen forward by width in
+// the style currently in force. The numbers in a TJ array are thousandths
+// of a unit of text space and are *subtracted* from the displacement, so
+// moving forward takes a negative one.
+func gapAdjust(s flowStyle, width float64) float64 {
+	scale := s.fontSizeRaw * s.horizScale
+	if scale == 0 || width == 0 {
+		return 0
+	}
+	return -width * 1000 / scale
 }
 
 // spaceText returns the character to set between words in this style. An
@@ -392,22 +427,39 @@ func (f *Flow) lineOps(line []FlowSpan) (string, error) {
 	// inserted text may change font. By the time it is written the
 	// distinction is spent, so neighbours in one style become one
 	// show-text operation again rather than several.
-	for i, span := range coalesceForOutput(line) {
+	//
+	// first tracks whether anything has been drawn yet, rather than the
+	// index, because a leading gap draws nothing and must not be taken
+	// for the span that establishes the line's text state.
+	first := true
+	for _, span := range coalesceForOutput(line) {
+		if span.gap != 0 {
+			// A gap is a move, and it is measured against the state
+			// already in force rather than its own style, so the number
+			// written means what the reader will make of it.
+			if first {
+				continue // a line does not begin with a gap
+			}
+			if adj := gapAdjust(cur, span.gap); adj != 0 {
+				fmt.Fprintf(&b, " [%s] TJ", fl(adj))
+			}
+			continue
+		}
 		st := span.style
-		if i == 0 || !st.sameAs(cur) {
-			if i == 0 || st.fontName != cur.fontName || st.fontSizeRaw != cur.fontSizeRaw {
+		if first || !st.sameAs(cur) {
+			if first || st.fontName != cur.fontName || st.fontSizeRaw != cur.fontSizeRaw {
 				fmt.Fprintf(&b, " /%s %s Tf", st.fontName, fl(st.fontSizeRaw))
 			}
-			if st.fillOp != "" && (i == 0 || st.fillOp != cur.fillOp) {
+			if st.fillOp != "" && (first || st.fillOp != cur.fillOp) {
 				fmt.Fprintf(&b, " %s", st.fillOp)
 			}
-			if i == 0 || st.charSpacing != cur.charSpacing {
+			if first || st.charSpacing != cur.charSpacing {
 				fmt.Fprintf(&b, " %s Tc", fl(st.charSpacing))
 			}
-			if i == 0 || st.wordSpacing != cur.wordSpacing {
+			if first || st.wordSpacing != cur.wordSpacing {
 				fmt.Fprintf(&b, " %s Tw", fl(st.wordSpacing))
 			}
-			if i == 0 || st.horizScale != cur.horizScale {
+			if first || st.horizScale != cur.horizScale {
 				fmt.Fprintf(&b, " %s Tz", fl(st.horizScale*100))
 			}
 			cur = st
@@ -417,6 +469,7 @@ func (f *Flow) lineOps(line []FlowSpan) (string, error) {
 			return "", err
 		}
 		fmt.Fprintf(&b, " <%X> Tj", codes)
+		first = false
 	}
 	return strings.TrimSpace(b.String()), nil
 }
@@ -446,23 +499,32 @@ func (f *Flow) wrap(spans []FlowSpan) ([][]FlowSpan, error) {
 		}
 		gap, joiner := 0.0, ""
 		if len(line) > 0 {
-			if w.spaceText == "" {
-				// Without a space glyph the words would be set flush
-				// against each other, which is worse than declining.
-				return nil, fmt.Errorf("gopdf: font /%s cannot represent a space, "+
-					"so the words in this paragraph cannot be separated",
-					w.spaceStyle.fontName)
-			}
 			gap, joiner = w.spaceWidth, w.spaceText
+			if joiner == "" && gap <= 0 {
+				// No glyph to draw the space with and no width to move by
+				// either. Setting the words flush against each other is
+				// worse than declining.
+				return nil, fmt.Errorf("gopdf: font /%s can neither draw a space "+
+					"nor say how wide one is, so the words in this paragraph "+
+					"cannot be separated", w.spaceStyle.fontName)
+			}
+			if used+gap+w.width > f.widthTS {
+				push()
+				gap, joiner = 0, ""
+			}
 		}
-		if joiner != "" && used+gap+w.width > f.widthTS {
-			push()
-			gap, joiner = 0, ""
-		}
-		if joiner != "" {
+		switch {
+		case joiner != "":
 			// The joining space belongs to the style before it, which is
 			// what a word processor would do.
 			line = append(line, FlowSpan{Text: joiner, style: w.spaceStyle,
+				FontName: string(w.spaceStyle.fontName)})
+		case gap > 0:
+			// This font has no space in it, because the document never
+			// drew one: its producer set each word separately and moved
+			// the pen between them. Doing the same is the only way to
+			// re-wrap the paragraph, and it is what the page already did.
+			line = append(line, FlowSpan{gap: gap, style: w.spaceStyle,
 				FontName: string(w.spaceStyle.fontName)})
 		}
 		line = append(line, w.parts...)
@@ -573,7 +635,9 @@ func flowWords(spans []FlowSpan, fallback func(flowStyle) (flowStyle, bool)) ([]
 		}
 		out[i].spaceStyle = st
 		out[i].spaceText = st.spaceText()
-		if w, ok := st.advance(out[i].spaceText); ok {
+		if out[i].spaceText == "" {
+			out[i].spaceWidth = st.gapWidth()
+		} else if w, ok := st.advance(out[i].spaceText); ok {
 			out[i].spaceWidth = w
 		}
 	}
@@ -616,7 +680,7 @@ func mergeSpans(in []FlowSpan) []FlowSpan {
 		// style: merging would spread the flag onto text the document
 		// already had, and with it permission to restyle that text.
 		if n := len(out); n > 0 && out[n-1].style.sameAs(s.style) &&
-			out[n-1].inserted == s.inserted &&
+			out[n-1].inserted == s.inserted && out[n-1].gap == 0 && s.gap == 0 &&
 			!out[n-1].lineBreak && !s.lineBreak {
 			out[n-1].Text += s.Text
 			continue
@@ -1006,7 +1070,8 @@ func replaceFlows(flows []*Flow, old, new string, pageHeight float64,
 func coalesceForOutput(in []FlowSpan) []FlowSpan {
 	var out []FlowSpan
 	for _, s := range in {
-		if n := len(out); n > 0 && out[n-1].style.sameAs(s.style) {
+		if n := len(out); n > 0 && out[n-1].style.sameAs(s.style) &&
+			out[n-1].gap == 0 && s.gap == 0 {
 			out[n-1].Text += s.Text
 			continue
 		}

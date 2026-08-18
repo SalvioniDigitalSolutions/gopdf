@@ -131,7 +131,7 @@ func joinKind(prev, next *TextRun) joinMode {
 // spaceWidthPts returns how wide a space is in a run's own font and size.
 func (run *TextRun) spaceWidthPts() float64 {
 	if run.font != nil && run.fontSizeRaw != 0 {
-		if w := run.font.codeWidth(32); w > 0 {
+		if w, ok := run.font.spaceWidth1000(); ok {
 			return w / 1000 * run.FontSize * run.horizScale
 		}
 	}

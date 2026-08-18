@@ -523,7 +523,9 @@ is taken from the leading on the page, not from the difference between two
 text matrices: a document may position each line under its own transform,
 which leaves those matrices identical while the lines are plainly
 apart.</p>
-<pre><code>f.<span class="f">SetMaxExtraLines</span>(<span class="n">2</span>)   <span class="c">// refuse to grow by more than two lines</span></code></pre>
+<pre><code>f.<span class="f">SetMaxExtraLines</span>(<span class="n">2</span>)   <span class="c">// refuse to grow by more than two lines</span>
+f.<span class="f">SetShrinkToFit</span>(<span class="k">true</span>, <span class="n">6</span>)   <span class="c">// or set an oversized token smaller, to a floor of 6pt</span>
+f.<span class="f">SetFitWidth</span>(<span class="k">true</span>)      <span class="c">// or size it to the width it replaced, and do not re-wrap at all</span></code></pre>
 <div class="note warn">
 <p><strong>A flow moves text, not everything.</strong> Images, rules and
 other artwork below a paragraph stay where they are, so leave room or
@@ -801,7 +803,7 @@ lines it needs. Every part keeps the styling it had, so replacing a name
 inside a bold phrase leaves the phrase bold and the sentence around it
 alone.</p>
 
-<h3>Or the paragraph need not move at all</h3>
+<h3 id="fitwidth">Or the paragraph need not move at all</h3>
 <p>Re-wrapping keeps the token whole and lets the lines fall where they
 may. <code>FitWidth</code> makes the other trade: keep the token whole
 <em>and</em> keep the lines, by setting the token at the size that makes
@@ -887,6 +889,20 @@ down to a floor below which it is left alone rather than made unreadable.
 And a paragraph that grows pushes the ones below it down, which at the
 foot of a page pushes them off it: <code>OverflowsPage</code> answers that
 before you write, rather than clipping silently.</p>
+<p>Some producers never draw a space at all: they set each word on its
+own and make the gaps by moving the pen, so the subset font they embed
+has no space glyph in it. Re-wrapping one of those paragraphs would once
+be refused, because setting the words flush against each other is worse
+than declining. The gap is now written the way the document already
+wrote it — as a positioning move, the width the font declares for a
+space, or a quarter of the size where it declares none. It needs nothing
+from the caller.</p>
+<p><code>SetFitWidth</code> answers a different question from
+<code>SetShrinkToFit</code>: not "does the token fit the column" but
+"does it take the width the old text took". The two compose — a fitted
+token is shrunk further if the column still demands it — and both apply
+only to inserted text. See <a href="#fitwidth">width-fitted
+substitutions</a>.</p>
 
 <h3>The output parses strictly</h3>
 <p>Every writer here splices replacements into a content stream somebody

@@ -461,6 +461,32 @@ func (fi *fontInfo) stringWidth(s []byte, charSpacing, wordSpacing, fontSize flo
 	return total
 }
 
+// spaceWidth1000 returns how wide a space is in this font, in
+// thousandths of an em, and whether the font actually says.
+//
+// Asking for code 32 is only right for a simple font. In a CID font the
+// codes are CIDs, so 32 is whichever glyph happens to sit there, and
+// codeWidth answers for a code the font does not list with /DW — a full
+// em, three times too wide for a space. Either way that is a guess in a
+// measurement's clothes, and a space three times too wide stops the
+// extractor seeing word breaks at all.
+//
+// Going through the encoder asks the question properly: what code does
+// this font use for a space, and how wide is that? A font that has no
+// space says so, which is its own useful answer.
+func (fi *fontInfo) spaceWidth1000() (float64, bool) {
+	fi.buildEncoder()
+	code, ok := fi.encode[' ']
+	if !ok {
+		return 0, false
+	}
+	// A size of 1000 with no spacing leaves the glyph width alone.
+	if w := fi.stringWidth(code, 0, 0, 1000); w > 0 {
+		return w, true
+	}
+	return 0, false
+}
+
 // encodeText converts text into the font's character codes, reporting the
 // first character the font cannot represent.
 func (fi *fontInfo) encodeText(s string) ([]byte, error) {

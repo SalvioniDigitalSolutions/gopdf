@@ -369,7 +369,7 @@ func (d *fontDecoder) advance(s String, size, charSpacing, wordSpacing, horizSca
 // reasonable share of the size when the font does not say.
 func (d *fontDecoder) spaceWidth(size, horizScale float64) float64 {
 	if d.info != nil && size != 0 {
-		if w := d.info.codeWidth(32); w > 0 {
+		if w, ok := d.info.spaceWidth1000(); ok {
 			return w / 1000 * size * horizScale
 		}
 	}
