@@ -178,6 +178,9 @@ type Flow struct {
 	// fitWidth makes a replacement take the width of what it replaced,
 	// by being set smaller, so the paragraph's line breaks do not move.
 	fitWidth bool
+	// fitFloor is how far such a replacement may be shrunk, as a
+	// fraction of the run's size. Zero means the default.
+	fitFloor float64
 }
 
 // joinedText returns the paragraph as a person reads it, with words
@@ -228,7 +231,7 @@ func (f *Flow) Replace(old, new string) (int, error) {
 	if !containsBounded(f.joinedText(), old, f.mode) {
 		return 0, nil
 	}
-	spans, n := replaceInSpans(f.spans, old, new, f.mode, f.fitWidth)
+	spans, n := replaceInSpans(f.spans, old, new, f.mode, f.fitWidth, f.fitFloor)
 	if n == 0 {
 		return 0, nil
 	}
@@ -700,7 +703,7 @@ func mergeSpans(in []FlowSpan) []FlowSpan {
 // so a split word takes its dangling hyphen and the break with it and the
 // paragraph re-wraps without either.
 func replaceInSpans(spans []FlowSpan, old, new string, mode matchMode,
-	fit bool) ([]FlowSpan, int) {
+	fit bool, floor float64) ([]FlowSpan, int) {
 	reading := readParagraph(spans)
 	text := reading.flat
 
@@ -778,7 +781,7 @@ func replaceInSpans(spans []FlowSpan, old, new string, mode matchMode,
 			// this one may be in a different font or size from the last.
 			if fit {
 				if want, ok := widthOf(h[0], h[1]); ok {
-					if size, did := fitSize(host.style, new, want); did {
+					if size, did := fitSize(host.style, new, want, floor); did {
 						ins.FontSize *= size / ins.style.fontSizeRaw
 						ins.style.fontSizeRaw = size
 						ins.fitted = true
@@ -995,20 +998,21 @@ func (p *UpdatablePage) Flows() []*Flow {
 // styling of the text it replaces, and lets a paragraph grow or shrink by
 // whole lines. It returns the number of paragraphs rewritten.
 func (e *EditablePage) ReplaceTextFlow(old, new string) (int, error) {
-	return replaceFlows(e.Flows(), old, new, e.Page.h, false)
+	return replaceFlows(e.Flows(), old, new, e.Page.h, false, 0)
 }
 
 // ReplaceTextFlow replaces occurrences of old across the page's
 // paragraphs, re-wrapping each one it changes and keeping its styling.
 func (p *UpdatablePage) ReplaceTextFlow(old, new string) (int, error) {
-	return p.replaceTextFlowFit(old, new, false)
+	return p.replaceTextFlowFit(old, new, false, 0)
 }
 
 // replaceTextFlowFit is ReplaceTextFlow with the option of setting each
 // replacement to the width of the text it replaces.
-func (p *UpdatablePage) replaceTextFlowFit(old, new string, fit bool) (int, error) {
+func (p *UpdatablePage) replaceTextFlowFit(old, new string, fit bool,
+	floor float64) (int, error) {
 	pi := p.u.r.pages[p.index]
-	return replaceFlows(p.Flows(), old, new, pi.mediaBox[3]-pi.mediaBox[1], fit)
+	return replaceFlows(p.Flows(), old, new, pi.mediaBox[3]-pi.mediaBox[1], fit, floor)
 }
 
 // replaceFlows rewrites every paragraph containing old and moves the ones
@@ -1019,7 +1023,7 @@ func (p *UpdatablePage) replaceTextFlowFit(old, new string, fit bool) (int, erro
 // text then fails before anything has been written, rather than half way
 // down the page.
 func replaceFlows(flows []*Flow, old, new string, pageHeight float64,
-	fit bool) (int, error) {
+	fit bool, floor float64) (int, error) {
 	if old == "" {
 		return 0, fmt.Errorf("gopdf: ReplaceTextFlow called with empty search text")
 	}
@@ -1029,7 +1033,8 @@ func replaceFlows(flows []*Flow, old, new string, pageHeight float64,
 		if !containsBounded(f.joinedText(), old, f.mode) {
 			continue
 		}
-		spans, count := replaceInSpans(f.spans, old, new, f.mode, fit || f.fitWidth)
+		spans, count := replaceInSpans(f.spans, old, new, f.mode,
+			fit || f.fitWidth, floorOr(floor, f.fitFloor))
 		if count == 0 {
 			continue
 		}

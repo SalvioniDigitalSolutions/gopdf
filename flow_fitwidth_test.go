@@ -435,7 +435,7 @@ func TestFitSizeRefusals(t *testing.T) {
 		{"already narrower", base, "i", 500},
 		{"font cannot set it", base, "儀", 20},
 	} {
-		if got, ok := fitSize(c.st, c.text, c.want); ok {
+		if got, ok := fitSize(c.st, c.text, c.want, 0); ok {
 			t.Errorf("%s: fitSize returned %v, want no fit", c.name, got)
 		}
 	}
@@ -444,13 +444,13 @@ func TestFitSizeRefusals(t *testing.T) {
 	// away, however much spacing is set around them.
 	zero := base
 	zero.charSpacing = 50
-	if got, ok := fitSize(zero, " ", 1); ok && got <= 0 {
+	if got, ok := fitSize(zero, " ", 1, 0); ok && got <= 0 {
 		t.Errorf("a zero-width run fitted to %v", got)
 	}
 
 	// And the ordinary case still works, so the guards are not simply
 	// refusing everything.
-	if _, ok := fitSize(base, fitTo, Helvetica.TextWidth(fitName, base.fontSizeRaw)); !ok {
+	if _, ok := fitSize(base, fitTo, Helvetica.TextWidth(fitName, base.fontSizeRaw), 0); !ok {
 		t.Error("fitSize refused a fit it should have made")
 	}
 }

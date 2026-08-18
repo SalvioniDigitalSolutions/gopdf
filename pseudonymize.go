@@ -41,6 +41,32 @@ type Pseudonym struct {
 	//
 	// Reverse drops it: restoring the original text has no width to fit.
 	FitWidth bool
+	// MinScale is how far FitWidth may shrink this token, as a fraction
+	// of the size the run is set in. Zero means the default of 0.45.
+	//
+	// The default suits a marker meant to be read. It does not suit one
+	// meant to be matched: a key-reversible stand-in is long by
+	// construction, and dropped over a short word — "[[PII_LOCATION_001]]"
+	// where "Milo" was — it needs a fifth of the size, not a half.
+	// Refusing to go that small means the paragraph re-wraps, and a
+	// caller who would rather have a small marker than a moved page can
+	// say so here. The marker is still text: searchable, extractable,
+	// and exactly what the key file holds.
+	MinScale float64
+}
+
+// floor is how far this substitution's token may be shrunk, as a
+// fraction of the run's size.
+func (s Pseudonym) floor() float64 {
+	switch {
+	case s.MinScale <= 0:
+		return fitWidthFloor
+	case s.MinScale > 1:
+		return 1 // never enlarged, whatever is asked for
+	case s.MinScale < minFitScale:
+		return minFitScale
+	}
+	return s.MinScale
 }
 
 // PseudonymizeResult reports what a substitution pass did.
@@ -126,7 +152,7 @@ func Pseudonymize(r *Reader, w io.Writer, subs []Pseudonym) (PseudonymizeResult,
 			continue
 		}
 		for _, s := range clean {
-			n, err := page.replaceTextFlowFit(s.From, s.To, s.FitWidth)
+			n, err := page.replaceTextFlowFit(s.From, s.To, s.FitWidth, s.floor())
 			if err != nil {
 				return PseudonymizeResult{}, fmt.Errorf(
 					"gopdf: replacing %q on page %d: %w", s.From, i, err)

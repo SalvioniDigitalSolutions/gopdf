@@ -173,8 +173,18 @@ size and is padded with a kern. Either way it claims exactly the width
 that was there, so nothing after it moves. Where every token on a page
 fits, the page is edited in place — the strings holding them are
 rewritten and nothing else is, kerns included, so a highlight or a rule
-still sits over the same text afterwards. Shrinking stops at 45%
-of the run's size. Where even that leaves the token wider, it is set at
+still sits over the same text afterwards. Shrinking stops at 45% of the run's size, or wherever `MinScale` says:
+
+```go
+{From: "Locarno", To: "[[PII_LOCATION_001]]", FitWidth: true, MinScale: 0.18}
+```
+
+A key-reversible marker is long by construction, and over a short word it
+needs a fifth of the size rather than a half. The default suits a token
+meant to be read; a marker is meant to be matched, and stays searchable,
+extractable and exactly what the key file holds however small it is set.
+Asking for less than 5% is refused, and asking for more than the run's own
+size does not enlarge anything. Where even that leaves the token wider, it is set at
 the floor and the paragraph re-wraps as it otherwise would, because a
 token nobody can read has failed at the only thing it was for.
 

@@ -32,6 +32,9 @@ type fitHit struct {
 	// wantPts, when set, is the width the token must claim, in points,
 	// because the occurrence ran past this run's own text into the next.
 	wantPts float64
+	// floor is how far this token may be shrunk, as a fraction of the
+	// run's size.
+	floor float64
 }
 
 // fittedRun is one run's worth of planned edit.
@@ -107,7 +110,7 @@ func (p *UpdatablePage) planPageFitted(subs []Pseudonym, mode matchMode) (
 					if overlapsAny(byRun[pt.run], pt.at) {
 						continue
 					}
-					h := fitHit{at: pt.at}
+					h := fitHit{at: pt.at, floor: sub.floor()}
 					if i == 0 {
 						h.new, h.wantPts = sub.To, want
 					}
@@ -382,7 +385,7 @@ func writeFitted(b *strings.Builder, run *TextRun, st flowStyle, h fitHit,
 		// whole of what it covered, and the runs after it give up theirs.
 		want = pointsToTS(run, h.wantPts)
 	}
-	size, pad, ok := fitTokenSize(tok, h.new, want)
+	size, pad, ok := fitTokenSize(tok, h.new, want, h.floor)
 	if !ok {
 		return false
 	}
@@ -440,9 +443,9 @@ func hitWidth(run *TextRun, st flowStyle, at [2]int, from int) (float64, bool) {
 // A token wider than what it replaces is set smaller, down to the floor.
 // A narrower one keeps its size and is padded: shrinking is a concession
 // to necessity, and enlarging text nobody asked to enlarge is not.
-func fitTokenSize(st flowStyle, text string, want float64) (size, pad float64, ok bool) {
+func fitTokenSize(st flowStyle, text string, want, floor float64) (size, pad float64, ok bool) {
 	size = st.fontSizeRaw
-	if s, shrunk := fitSize(st, text, want); shrunk {
+	if s, shrunk := fitSize(st, text, want, floor); shrunk {
 		size = s
 	}
 	set := st

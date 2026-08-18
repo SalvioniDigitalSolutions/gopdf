@@ -137,6 +137,25 @@ func checkPageOverflow(flows []*Flow, pageHeight float64) error {
 // and a re-wrapped paragraph is the better failure.
 const fitWidthFloor = 0.45
 
+// minFitScale is the smallest floor a caller may ask for. Below this a
+// token is not small, it is absent: a mark a page or two wide at a
+// tenth of a point, which no reader will find and no eye will see.
+const minFitScale = 0.05
+
+// floorOr picks the floor an edit should use: the one asked for, or the
+// paragraph's own where the edit named none.
+func floorOr(asked, own float64) float64 {
+	if asked > 0 {
+		return asked
+	}
+	return own
+}
+
+// SetFitWidthFloor sets how far a fitted replacement in this paragraph
+// may be shrunk, as a fraction of the run's size. Zero restores the
+// default of 0.45.
+func (f *Flow) SetFitWidthFloor(min float64) { f.fitFloor = min }
+
 // SetFitWidth makes a replacement occupy the width of the text it
 // replaces, by setting it smaller rather than by re-wrapping.
 //
@@ -157,7 +176,7 @@ func (f *Flow) SetFitWidth(on bool) { f.fitWidth = on }
 // answer can be solved for rather than guessed at and iterated. With no
 // extra spacing set, which is the usual case, this comes to exactly
 // size × want/width.
-func fitSize(style flowStyle, text string, want float64) (float64, bool) {
+func fitSize(style flowStyle, text string, want float64, floor float64) (float64, bool) {
 	size := style.fontSizeRaw
 	if size <= 0 || want <= 0 || text == "" {
 		return 0, false
@@ -179,10 +198,13 @@ func fitSize(style flowStyle, text string, want float64) (float64, bool) {
 	}
 	fixed := full - scaled*size
 	fitted := (want - fixed) / scaled
-	if floor := size * fitWidthFloor; fitted < floor {
+	if floor <= 0 {
+		floor = fitWidthFloor
+	}
+	if bottom := size * floor; fitted < bottom {
 		// Clamped: the token stays readable and the paragraph re-wraps
 		// around a width this could not bring down far enough.
-		fitted = floor
+		fitted = bottom
 	}
 	if fitted >= size {
 		return 0, false

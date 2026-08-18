@@ -519,10 +519,12 @@ one with a kern — so nothing after it moves. Where every token on a page
 fits, the page is edited in place: the strings holding them are
 rewritten and nothing else is, kerns included, so a highlight or a rule
 or the dots of a dash leader still sit over the same text afterwards.
-Shrinking stops at 45% of the run's size; a token that would need less
-than that is set at the floor and the paragraph re-wraps as it otherwise
-would, because a token nobody can read has failed at the only thing it
-was for. Across 127 documents of a real corpus the page came back
+Shrinking stops at 45% of the run's size, or wherever `MinScale` says: a
+key-reversible marker like `[[PII_LOCATION_001]]` is long by
+construction, and over a short word it needs a fifth of the size rather
+than a half — still searchable, still extractable, still exactly what the
+key file holds. A token that will not come down that far is set at the
+floor and the paragraph re-wraps as it otherwise would. Across 127 documents of a real corpus the page came back
 exactly as it was, tokens aside, on 108 of them — against 22 without
 the flag. Where the document's own subset font cannot set the
 token (no `[` in it), the inserted text falls back to a standard font

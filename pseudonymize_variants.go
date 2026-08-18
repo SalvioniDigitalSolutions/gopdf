@@ -53,7 +53,13 @@ func expandVariants(sub Pseudonym) []Pseudonym {
 	}
 	out := make([]Pseudonym, 0, len(forms))
 	for _, form := range forms {
-		out = append(out, Pseudonym{From: form, To: sub.To, FitWidth: sub.FitWidth})
+		// The whole mapping is carried over and only the spelling
+		// changed. Naming the fields instead lost FitWidth once and
+		// MinScale after it: a variant is the same substitution, so it
+		// has to be the same substitution in every respect there is.
+		v := sub
+		v.From = form
+		out = append(out, v)
 	}
 	return out
 }
