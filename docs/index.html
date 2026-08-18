@@ -1239,6 +1239,25 @@ the document only names is not something any parser can supply, so
 substitute gives shapes only: every advance still comes from the widths
 in the document, so the text lands where the document says.</p>
 
+<h3>Only the large text</h3>
+<p><code>MinTextSize</code> draws only glyphs at or above a size in
+points, measured after the text matrix and the transform have scaled
+them — the size <code>PageTextFragments</code> reports for the same
+glyph, so a threshold taken from extracted text means the same thing
+here.</p>
+<pre><code>backdrop, _ := r.<span class="f">RenderPage</span>(<span class="n">0</span>, gopdf.RenderOpts{
+	DPI: <span class="n">150</span>, IncludeText: <span class="k">true</span>, MinTextSize: <span class="n">72</span>, Transparent: <span class="k">true</span>,
+})</code></pre>
+<p>A watermark is set many times larger than the body it sits over, so a
+threshold between the two draws the watermark alone — from the
+document's own matrices, and so in exactly the place the document puts
+it. The body is not drawn and painted over: it is never drawn, which is
+the difference between a backdrop that can be handed on and one that has
+the text in it. A glyph below the threshold neither paints nor clips,
+and counts neither drawn nor missing, since it was not attempted; it
+still advances the pen, so the glyphs that do draw land where they
+would have.</p>
+
 <h3>What it draws</h3>
 <table>
 <tbody>

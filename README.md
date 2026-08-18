@@ -328,6 +328,22 @@ Text that clips is followed whether or not text is drawn, because a
 headline used as a clip decides where a gradient shows through — ignore
 it and the gradient covers the page.
 
+`MinTextSize` draws only glyphs at or above a size, measured after the
+text matrix and the transform have scaled them — the size
+`PageTextFragments` reports. A watermark is set many times larger than
+the body it sits over, so a threshold between the two renders the
+watermark alone, from the document's own matrices and therefore in
+exactly the place the document puts it:
+
+```go
+backdrop, _ := r.RenderPage(0, gopdf.RenderOpts{
+    DPI: 150, IncludeText: true, MinTextSize: 72, Transparent: true,
+})
+```
+
+The body is not drawn and painted over; it is never drawn. What comes
+back can be handed on without a stripped copy of the file ever existing.
+
 ### Reach the object graph
 
 Everything else in the package is an opinion about what a PDF is for.

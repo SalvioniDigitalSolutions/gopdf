@@ -46,6 +46,23 @@ type RenderOpts struct {
 	// content stream at all, so a render of a form without this is a
 	// render of an empty form.
 	IncludeAnnotations bool
+	// MinTextSize draws only glyphs whose effective size is at least this
+	// many points — the /Tf operand after the text matrix and the current
+	// transformation have scaled it, which is the size
+	// PageTextFragments reports for the same glyph. Zero draws them all.
+	//
+	// A page's watermark is set many times larger than its body, so a
+	// threshold between the two draws the watermark and nothing else,
+	// from the document's own matrices and so in exactly the place the
+	// document puts it. The body glyphs are never drawn at all rather
+	// than drawn and painted over, which is the difference between a
+	// backdrop that can be handed on and one that has the text in it.
+	//
+	// A glyph below the threshold neither paints nor clips, and is
+	// counted neither drawn nor missing: it was not attempted. It still
+	// advances the pen, so the glyphs that do draw land where they
+	// would have.
+	MinTextSize float64
 	// Transparent leaves untouched pixels clear instead of white.
 	Transparent bool
 	// SubstituteFont supplies a font program for a font the document

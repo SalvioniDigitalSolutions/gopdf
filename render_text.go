@@ -1,5 +1,7 @@
 package gopdf
 
+import "math"
+
 // Drawing text.
 //
 // A glyph is a path like any other, so once its outline can be read the
@@ -78,6 +80,12 @@ func (rn *renderer) showText(s []byte, gs *renderState, ts *glyphState, res Dict
 	// the clipping modes still have work to do, because what a text clip
 	// removes from the artwork is part of the artwork.
 	quiet := ts.mode == 3 || (!rn.opts.IncludeText && ts.mode < 4)
+	// A threshold turns off everything below it, clipping included. The
+	// scale is the text matrix's and the CTM's, and neither changes as
+	// the pen advances through the string, so it is asked once.
+	if rn.opts.MinTextSize > 0 && ts.effectiveSize(gs) < rn.opts.MinTextSize {
+		quiet = true
+	}
 	for _, code := range textCodes(s, ts) {
 		w := ts.advance(code.code)
 		if !quiet {
@@ -124,6 +132,16 @@ func textCodes(s []byte, ts *glyphState) []textCode {
 		out = append(out, textCode{code: uint32(s[len(s)-1])})
 	}
 	return out
+}
+
+// effectiveSize is the size a glyph is drawn at on the page: the size
+// the text state carries, after the text matrix and the current
+// transformation have scaled it. It is the number PageTextFragments
+// reports, so a threshold taken from extracted text means the same thing
+// here.
+func (ts *glyphState) effectiveSize(gs *renderState) float64 {
+	m := ts.tm.mul(gs.ctm)
+	return ts.size * math.Hypot(m[2], m[3])
 }
 
 // advance is a glyph's width in text space, where an em is 1.
