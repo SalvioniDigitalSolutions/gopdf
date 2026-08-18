@@ -121,7 +121,7 @@ func joinKind(prev, next *TextRun) joinMode {
 		return joinBreak // the pen went backwards: a new column or overprint
 	case gap > size*2.5:
 		return joinBreak // far enough to be somewhere else entirely
-	case needsSpace(next.Text, gap, prev.spaceWidthPts()):
+	case needsSpace(prev.Text, next.Text, gap, prev.spaceWidthPts()):
 		return joinSpace
 	default:
 		return joinTight

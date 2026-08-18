@@ -17,6 +17,11 @@ type fontInfo struct {
 	encode   map[rune][]byte // text -> character code(s)
 	widths   map[uint32]float64
 	defWidth float64
+	// ligatures maps a run of runes to the single code that draws them,
+	// for a font that only ever drew those letters joined together.
+	ligatures map[string][]byte
+	// maxLigature is the longest such run, in runes.
+	maxLigature int
 
 	// A font embedded as a subset contains only the glyphs the document
 	// actually draws, so an encoding table alone does not prove a glyph
@@ -212,15 +217,20 @@ func (fi *fontInfo) buildEncoder() {
 	for code, text := range fi.decoder.toUnicode {
 		runes := []rune(text)
 		if len(runes) != 1 {
-			continue // ligatures and multi-rune mappings are not invertible
+			// A ligature is not invertible one rune at a time, but it is
+			// invertible as a run: a face whose every f is joined to the
+			// letter after it has no code for a lone f, and the only way
+			// to write "fine" is to draw the fi its map already
+			// describes. Refusing here is what made a document
+			// unreplaceable for want of a single letter.
+			fi.addLigature(code, text, runes)
+			continue
 		}
 		if _, taken := fi.encode[runes[0]]; taken || !fi.canUse(code) {
 			continue
 		}
-		if fi.cid {
-			fi.encode[runes[0]] = []byte{byte(code >> 8), byte(code)}
-		} else if code < 256 {
-			fi.encode[runes[0]] = []byte{byte(code)}
+		if b := fi.codeBytes(code); b != nil {
+			fi.encode[runes[0]] = b
 		}
 	}
 	if fi.decoder.encoding != nil {
@@ -241,6 +251,56 @@ func (fi *fontInfo) buildEncoder() {
 			}
 		}
 	}
+}
+
+// codeBytes renders a character code as the bytes that select it, or nil
+// where the code cannot be written at all.
+func (fi *fontInfo) codeBytes(code uint32) []byte {
+	if fi.cid {
+		return []byte{byte(code >> 8), byte(code)}
+	}
+	if code < 256 {
+		return []byte{byte(code)}
+	}
+	return nil
+}
+
+// addLigature records that one code draws several characters.
+func (fi *fontInfo) addLigature(code uint32, text string, runes []rune) {
+	if len(runes) < 2 || !fi.canUse(code) {
+		return
+	}
+	b := fi.codeBytes(code)
+	if b == nil {
+		return
+	}
+	if fi.ligatures == nil {
+		fi.ligatures = make(map[string][]byte)
+	}
+	if _, taken := fi.ligatures[text]; taken {
+		return
+	}
+	fi.ligatures[text] = b
+	if len(runes) > fi.maxLigature {
+		fi.maxLigature = len(runes)
+	}
+}
+
+// ligatureAt returns the longest ligature starting at i and the code
+// that draws it, or 0 when none does.
+//
+// Longest first, so a font carrying both "ffi" and "fi" spells "office"
+// with the three-letter glyph its producer used rather than with two.
+func (fi *fontInfo) ligatureAt(runes []rune, i int) (int, []byte) {
+	for n := fi.maxLigature; n > 1; n-- {
+		if i+n > len(runes) {
+			continue
+		}
+		if code, ok := fi.ligatures[string(runes[i:i+n])]; ok {
+			return n, code
+		}
+	}
+	return 0, nil
 }
 
 // contradicts reports whether the font's own ToUnicode map says a code
@@ -492,18 +552,28 @@ func (fi *fontInfo) spaceWidth1000() (float64, bool) {
 func (fi *fontInfo) encodeText(s string) ([]byte, error) {
 	fi.buildEncoder()
 	out := make([]byte, 0, len(s)*2)
-	for _, r := range s {
-		code, ok := fi.encode[r]
-		if !ok {
-			hint := "the font in the source file has no glyph for it"
-			if fi.embedded {
-				hint = "the source file embeds only a subset of this font, " +
-					"which does not include that character"
-			}
-			return nil, fmt.Errorf("gopdf: font /%s cannot represent %q: %s",
-				fi.name, r, hint)
+	runes := []rune(s)
+	for i := 0; i < len(runes); {
+		if code, ok := fi.encode[runes[i]]; ok {
+			// A character the font has on its own is written on its own,
+			// so nothing that already worked is spelled differently now.
+			out = append(out, code...)
+			i++
+			continue
 		}
-		out = append(out, code...)
+		// Otherwise the font may still have it joined to what follows.
+		if n, code := fi.ligatureAt(runes, i); n > 0 {
+			out = append(out, code...)
+			i += n
+			continue
+		}
+		hint := "the font in the source file has no glyph for it"
+		if fi.embedded {
+			hint = "the source file embeds only a subset of this font, " +
+				"which does not include that character"
+		}
+		return nil, fmt.Errorf("gopdf: font /%s cannot represent %q: %s",
+			fi.name, runes[i], hint)
 	}
 	return out, nil
 }

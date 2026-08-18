@@ -923,7 +923,7 @@ func newFlow(lines []flowLine, onChange func()) *Flow {
 			// here the way PageText reports it.
 			if prev != nil {
 				gap := run.X - (prev.X + prev.Width)
-				if needsSpace(run.Text, gap, prev.spaceWidthPts()) {
+				if needsSpace(prev.Text, run.Text, gap, prev.spaceWidthPts()) {
 					f.spans = append(f.spans, FlowSpan{Text: " ",
 						style: styleOf(prev), FontName: prev.FontName})
 				}

@@ -889,6 +889,18 @@ down to a floor below which it is left alone rather than made unreadable.
 And a paragraph that grows pushes the ones below it down, which at the
 foot of a page pushes them off it: <code>OverflowsPage</code> answers that
 before you write, rather than clipping silently.</p>
+<p>Two more things a producer does that used to hide text from a search.
+Justified lines are set by drawing the space between two words and then
+moving the pen the rest of the way to the margin, and reading that move
+as a second word break put two spaces between every pair of words — so a
+name typed with one space matched nothing, silently. And a face that
+sets <code>fi</code> as one glyph may never draw a lone <code>f</code>,
+so a subset of it has no code for one: the text reads back correctly,
+but writing the same word again was refused for want of a letter that
+exists only joined to the next. The move that follows a space is now
+read as justification rather than a break, and a ligature is inverted as
+a run, so writing <code>fi</code> draws the fi the document already
+carries.</p>
 <p>Some producers never draw a space at all: they set each word on its
 own and make the gaps by moving the pen, so the subset font they embed
 has no space glyph in it. Re-wrapping one of those paragraphs would once

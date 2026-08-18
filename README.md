@@ -78,6 +78,11 @@ go get github.com/SalvioniDigitalSolutions/gopdf
   and render mode, in content-stream order, descending into forms —
   enough to anchor a frame over a word or to feed a detector that reports
   offsets
+- **Justified text and ligatures**: a line justified by drawing a space
+  and then moving the pen reads with one space, not two, so a name typed
+  the only way anyone types it still matches; and a face whose `f` exists
+  only inside an `fi` can still be written back, because a ligature is
+  inverted as a run rather than a rune at a time
 - **Text extraction** through ToUnicode CMaps and simple-font encodings,
   descending into nested form XObjects, with word breaks decided by
   measuring the gap rather than guessing — troff and TeX output reads as

@@ -112,7 +112,7 @@ func (ex *textExtractor) run(content []byte, resources any, base matrix, depth i
 			switch {
 			case ex.started && math.Abs(across) > 0.5:
 				ex.sb.WriteByte('\n')
-			case ex.started && needsSpace(text, along,
+			case ex.started && needsSpace(ex.sb.String(), text, along,
 				cur.spaceWidth(fontSize, horizScale)*scale):
 				ex.sb.WriteByte(' ')
 			}
@@ -697,9 +697,17 @@ func scaleOf(m matrix) float64 {
 // TeX move the pen a fraction of a point between letters to kern them,
 // and treating every forward move as a space breaks words apart. Only a
 // gap approaching the width of a real space is one.
-func needsSpace(text string, gap, spaceWidth float64) bool {
+func needsSpace(prev, text string, gap, spaceWidth float64) bool {
 	if r, _ := utf8.DecodeRuneInString(text); unicode.IsSpace(r) || r == 0x00A0 {
 		return false // the text supplies its own separator
+	}
+	// And the same rule from the other side. Justified text is set by
+	// drawing the space and then moving the pen the rest of the way, so
+	// the gap that follows a space is the justification, not a second
+	// word break. Reading it as one puts two spaces between every pair
+	// of words, which no literal search for a name will survive.
+	if r, _ := utf8.DecodeLastRuneInString(prev); unicode.IsSpace(r) || r == 0x00A0 {
+		return false
 	}
 	if spaceWidth <= 0 {
 		spaceWidth = 1

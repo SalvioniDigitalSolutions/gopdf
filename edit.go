@@ -433,7 +433,7 @@ func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth
 				if pendingGap > 0 && text.Len() > 0 && part != "" {
 					gap := pendingGap / 1000 * st.fontSize * st.horizScale
 					space := fi.decoder.spaceWidth(st.fontSize, st.horizScale)
-					if needsSpace(part, gap, space) {
+					if needsSpace(text.String(), part, gap, space) {
 						spaceAt = append(spaceAt, text.Len())
 					}
 				}

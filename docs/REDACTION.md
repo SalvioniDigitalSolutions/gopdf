@@ -409,6 +409,18 @@ for _, f := range page.Flows() {
 }
 ```
 
+**Justified text, and ligatures.** Two things a producer does that used
+to hide text from a search. Justified lines are set by drawing the space
+between two words and then moving the pen the rest of the way to the
+margin; reading that move as a second word break put two spaces between
+every pair of words, so a name typed with one space matched nothing. And
+a face that sets "fi" as a single glyph may never draw a lone `f`, so a
+subset of it carries no code for one — the text reads back correctly,
+but writing "notificare" again was refused for want of a letter that
+only exists joined to the next. Both are handled: the move after a space
+is the justification rather than a break, and a ligature is inverted as
+a run, so writing "fi" draws the fi the document already has.
+
 **A font with no space in it.** Some producers set every word on its own
 and make the gaps by moving the pen, so the subset they embed has no
 space glyph — there was never one to include. Re-wrapping such a

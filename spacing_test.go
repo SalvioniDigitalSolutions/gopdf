@@ -103,25 +103,34 @@ func TestSpacingTextSuppliesItsOwn(t *testing.T) {
 
 func TestSpacingNeedsSpaceUnit(t *testing.T) {
 	cases := []struct {
+		prev string
 		text string
 		gap  float64
 		want bool
 	}{
-		{"a", 0, false},
-		{"a", -3, false},  // the pen went backwards
-		{"a", 1.0, false}, // kerning, well under a space
-		{"a", 2.5, false}, // still inside the plateau
-		{"a", 4.0, true},  // a real gap
-		{" a", 9, false},  // the text carries its own space
-		{" a", 9, false},  // including a non-breaking one
+		{"x", "a", 0, false},
+		{"x", "a", -3, false},  // the pen went backwards
+		{"x", "a", 1.0, false}, // kerning, well under a space
+		{"x", "a", 2.5, false}, // still inside the plateau
+		{"x", "a", 4.0, true},  // a real gap
+		{"x", " a", 9, false},  // the text carries its own space
+		{"x", " a", 9, false},  // including a non-breaking one
+		// Justified text draws the space and then moves the pen the rest
+		// of the way. That move is the justification, not a second word
+		// break, and reading it as one doubles every space on the page.
+		{"x ", "a", 9, false},
+		{"x\u00a0", "a", 9, false},
+		// With nothing before it, the gap decides on its own.
+		{"", "a", 9, true},
 	}
 	for _, c := range cases {
-		if got := needsSpace(c.text, c.gap, 5); got != c.want {
-			t.Errorf("needsSpace(%q, %v, 5) = %v, want %v", c.text, c.gap, got, c.want)
+		if got := needsSpace(c.prev, c.text, c.gap, 5); got != c.want {
+			t.Errorf("needsSpace(%q, %q, %v, 5) = %v, want %v",
+				c.prev, c.text, c.gap, got, c.want)
 		}
 	}
 	// A font that reports no space width must not divide by zero.
-	if needsSpace("a", 0.1, 0) {
+	if needsSpace("x", "a", 0.1, 0) {
 		t.Error("a tiny gap should not be a space even without metrics")
 	}
 }
