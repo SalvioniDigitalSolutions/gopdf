@@ -821,10 +821,17 @@ it exactly as wide as the text it replaced.</p>
 <pre><code>gopdf.<span class="f">Pseudonymize</span>(r, out, []gopdf.Pseudonym{
 	{From: <span class="s">"G. Verdi"</span>, To: <span class="s">"[REDACTED]"</span>, FitWidth: <span class="k">true</span>},
 })</code></pre>
-<p>The baseline does not move, only the size, and only for the token —
-the words around it and the space in front of it stay as the document
-set them. It never enlarges: a token narrower than what it replaces
-keeps its size and the line gains a little slack.</p>
+<p>The baseline does not move, and only the token changes: the words
+around it and the space in front of it stay as the document set them. A
+token wider than what it replaced is set smaller; a narrower one keeps
+its size and is padded with a kern. Either way it claims exactly the
+width that was there, so nothing after it moves.</p>
+<p>Where every token on a page fits, the page is edited in place. The
+strings holding the tokens are rewritten and nothing else is — not the
+other strings of the same operation, and not the kerns between them,
+which on a justified line are most of what puts the words where they
+are. So a highlight, a rule, an underline or the dots of a dash leader,
+painted against those bytes, still sit over the same text afterwards.</p>
 <p>The size is solved for rather than scaled to. Character spacing is an
 absolute number of points per glyph and does not shrink when the font
 does, so the advance is affine in the size rather than proportional to
@@ -836,9 +843,9 @@ answer <em>is</em> that ratio.</p>
 token wider than what it replaced, it is set at the floor and the
 paragraph re-wraps as it otherwise would — a token nobody can read has
 failed at the only thing it was for. Over 127 documents of a real
-corpus, <code>FitWidth</code> returned the page with its line breaks
-exactly where they were on 63 of them, against 22 without it; of the
-tokens it fitted, 67 fitted exactly and 12 came to rest on the floor.</p>
+corpus, <code>FitWidth</code> returned the page exactly as it was, the
+tokens aside, on 107 of them — against 22 without it — and refused on
+one, where a token was too long for the floor to bring down.</p>
 <p><code>Reverse</code> drops the flag: putting the original text back
 has no width to fit. And each occurrence is fitted on its own, since the
 run behind one may be in a different size from the run behind the next.

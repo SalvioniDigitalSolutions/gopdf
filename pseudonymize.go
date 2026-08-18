@@ -112,6 +112,19 @@ func Pseudonymize(r *Reader, w io.Writer, subs []Pseudonym) (PseudonymizeResult,
 		if err != nil {
 			return PseudonymizeResult{}, fmt.Errorf("gopdf: page %d: %w", i, err)
 		}
+		// Every width-fitted substitution on the page is settled at once.
+		// Each run is rewritten from the bytes the document holds, so
+		// doing one mapping and then another would build the second
+		// rewrite from the original operation and undo the first; and
+		// the paragraph engine, which rebuilds whole paragraphs, would
+		// write over any splice it followed.
+		if counts, ok := page.replacePageFitted(clean, matchWords); ok {
+			for from, n := range counts {
+				out.Replaced[from] += n
+				touched[i] = true
+			}
+			continue
+		}
 		for _, s := range clean {
 			n, err := page.replaceTextFlowFit(s.From, s.To, s.FitWidth)
 			if err != nil {

@@ -166,10 +166,14 @@ gopdf.Pseudonymize(r, out, []gopdf.Pseudonym{
 })
 ```
 
-The baseline does not move, only the size, and only for the token: the
-words around it and the space in front of it stay as the document set
-them. It never enlarges — a token narrower than what it replaces keeps
-its size and the line gains a little slack — and it never goes below 45%
+The baseline does not move, and only the token changes: the words around
+it and the space in front of it stay as the document set them. A token
+wider than what it replaced is set smaller; a narrower one keeps its
+size and is padded with a kern. Either way it claims exactly the width
+that was there, so nothing after it moves. Where every token on a page
+fits, the page is edited in place — the strings holding them are
+rewritten and nothing else is, kerns included, so a highlight or a rule
+still sits over the same text afterwards. Shrinking stops at 45%
 of the run's size. Where even that leaves the token wider, it is set at
 the floor and the paragraph re-wraps as it otherwise would, because a
 token nobody can read has failed at the only thing it was for.
@@ -178,10 +182,9 @@ Each occurrence is fitted on its own, since the run behind one may be in
 a different size from the run behind the next, and `Reverse` drops the
 flag because restoring the original text has no width to fit.
 
-Over 127 documents of a real corpus, `FitWidth` returned the page with
-its line breaks exactly where they were on 63 of them, against 22 without
-it. Of the tokens it fitted, 67 fitted exactly and 12 came to rest on the
-floor.
+Over 127 documents of a real corpus, `FitWidth` returned the page exactly
+as it was, the tokens aside, on 107 of them — against 22 without it — and
+refused on one, where a token was too long for the floor to bring down.
 
 ### Where it looks
 

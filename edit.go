@@ -27,6 +27,13 @@ const (
 	FitNone
 )
 
+// textPiece is one string of a show-text operation: where it sits in the
+// content stream, and the range of the run's Text it produced.
+type textPiece struct {
+	start, end int // byte span of the string literal in the stream
+	from, to   int // byte range within the run's Text
+}
+
 // TextRun is one run of text in an existing page, as the page's content
 // stream draws it: a single show-text operation with its position, font
 // and size. Runs are the unit of editing.
@@ -63,6 +70,19 @@ type TextRun struct {
 	codes    []byte
 	codeStep int
 	codeText []int
+	// op is the show-text operator that drew this run. A lone Tj has
+	// nothing around its string to preserve, so it can be rewritten
+	// freely; a TJ array carries the kerns that justify a line, and only
+	// its strings may be touched.
+	op string
+	// pieces records, for each string this operation drew, where that
+	// string sits in the content stream and which part of Text it
+	// produced. A show-text operation is often an array of strings with
+	// kerns between them, and an edit that rewrites the whole operation
+	// throws those kerns away — which on a justified line is every gap
+	// between its words. Knowing the pieces lets a replacement touch one
+	// string and leave the rest of the operation byte for byte.
+	pieces []textPiece
 	// spaceAt holds the byte offsets in Text where the operation moved
 	// the pen far enough that a reader sees a word break. The text is
 	// left as the document encoded it; anything matching against a run
@@ -411,7 +431,7 @@ func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth
 
 	// record builds a TextRun for a show-text operation and advances the
 	// text matrix by the run's width.
-	record := func(pieces []any, end int) {
+	record := func(pieces []any, pieceSpans [][2]int, op string, end int) {
 		fi := fontInfoFor(st.fontName)
 		var text strings.Builder
 		var advanceEm float64
@@ -425,11 +445,13 @@ func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth
 		// without it a search for "Messaggio" finds nothing, because in
 		// the run's own text it follows a digit.
 		var spaceAt []int
+		var drawn []textPiece
 		pendingGap := 0.0
-		for _, piece := range pieces {
+		for pi, piece := range pieces {
 			switch v := piece.(type) {
 			case String:
 				part, spans := fi.decoder.decodeSpans(v)
+				at := text.Len()
 				if pendingGap > 0 && text.Len() > 0 && part != "" {
 					gap := pendingGap / 1000 * st.fontSize * st.horizScale
 					space := fi.decoder.spaceWidth(st.fontSize, st.horizScale)
@@ -439,6 +461,12 @@ func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth
 				}
 				pendingGap = 0
 				text.WriteString(part)
+				if pi < len(pieceSpans) {
+					drawn = append(drawn, textPiece{
+						start: pieceSpans[pi][0], end: pieceSpans[pi][1],
+						from: at, to: text.Len(),
+					})
+				}
 				codeText = append(codeText, spans...)
 				encoded = append(encoded, v...)
 				fi.observe(v)
@@ -465,6 +493,8 @@ func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth
 		widthText := advanceEm / 1000 * st.fontSize * st.horizScale
 
 		run := &TextRun{
+			op:          op,
+			pieces:      drawn,
 			Text:        text.String(),
 			X:           x,
 			Y:           y,
@@ -578,14 +608,14 @@ func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth
 		case "Tj":
 			if len(operands) >= 1 {
 				if s, ok := operands[0].val.(String); ok {
-					record([]any{s}, tok.end)
+					record([]any{s}, operandSpans(operands[0]), "Tj", tok.end)
 				}
 			}
 		case "'":
 			translateLine(0, -st.leading)
 			if len(operands) >= 1 {
 				if s, ok := operands[0].val.(String); ok {
-					record([]any{s}, tok.end)
+					record([]any{s}, operandSpans(operands[0]), "'", tok.end)
 				}
 			}
 		case "\"":
@@ -594,18 +624,44 @@ func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth
 				st.charSpacing = num(1)
 				translateLine(0, -st.leading)
 				if s, ok := operands[2].val.(String); ok {
-					record([]any{s}, tok.end)
+					record([]any{s}, operandSpans(operands[2]), "\"", tok.end)
 				}
 			}
 		case "TJ":
 			if len(operands) >= 1 {
 				if arr, ok := operands[0].val.(Array); ok {
-					record([]any(arr), tok.end)
+					record([]any(arr), arrayElementSpans(target.content, operands[0]),
+						"TJ", tok.end)
 				}
 			}
 		}
 		operands = operands[:0]
 	}
+}
+
+// operandSpans is the span list for an operator that shows one string.
+func operandSpans(tok contentToken) [][2]int {
+	return [][2]int{{tok.start, tok.end}}
+}
+
+// arrayElementSpans returns where each element of a shown array sits in
+// the content stream, so a replacement can rewrite one of them and leave
+// the kerns around it alone.
+//
+// The lexer hands back an array as a single value, its own span and no
+// more, so the body is lexed again to find the elements inside it.
+func arrayElementSpans(data []byte, tok contentToken) [][2]int {
+	if tok.start < 0 || tok.end > len(data) || tok.end-tok.start < 2 {
+		return nil
+	}
+	body := tok.start + 1 // past the opening bracket
+	inner := data[body : tok.end-1]
+	toks := tokenizeContent(inner)
+	out := make([][2]int, 0, len(toks))
+	for _, t := range toks {
+		out = append(out, [2]int{body + t.start, body + t.end})
+	}
+	return out
 }
 
 // scanForm descends into a form XObject, making its copied content stream

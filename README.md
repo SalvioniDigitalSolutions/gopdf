@@ -513,15 +513,18 @@ and keeps its styling. Or it need not move the paragraph at all:
 {From: "Ada Lovelace", To: "[[PII_NAME_1]]", FitWidth: true}
 ```
 
-`FitWidth` keeps the whole token and makes it fit, by setting it at the
-size that makes it exactly as wide as the name it replaced — so every
-line break in the paragraph stays where it was and nothing below it
-moves. It only ever shrinks, and never below 45% of the run's size;
-where even that leaves the token wider, it is set at the floor and the
-paragraph re-wraps as it otherwise would, because a token nobody can
-read has failed at the only thing it was for. Across 127 documents of a
-real corpus it held the page exactly as it was on 63 of them, against 22
-without it. Where the document's own subset font cannot set the
+`FitWidth` keeps the whole token and makes it claim exactly the width
+the words it replaced took — shrinking a wider one, padding a narrower
+one with a kern — so nothing after it moves. Where every token on a page
+fits, the page is edited in place: the strings holding them are
+rewritten and nothing else is, kerns included, so a highlight or a rule
+or the dots of a dash leader still sit over the same text afterwards.
+Shrinking stops at 45% of the run's size; a token that would need less
+than that is set at the floor and the paragraph re-wraps as it otherwise
+would, because a token nobody can read has failed at the only thing it
+was for. Across 127 documents of a real corpus the page came back
+exactly as it was, tokens aside, on 107 of them — against 22 without
+the flag. Where the document's own subset font cannot set the
 token (no `[` in it), the inserted text falls back to a standard font
 matched to the face, and only ever the inserted text. Mappings are also
 expanded into the spellings a document might have used, so a name typed
