@@ -779,6 +779,16 @@ name, an embedded file's name. Those are left alone. Check
 output.</p>
 </div>
 
+<h3>Two fonts, one name</h3>
+<p>A form XObject carries its own <code>/Font</code> dictionary, and
+producers reuse the same short names inside it: <code>/TT0</code> on the
+page and <code>/TT0</code> in a form are routinely two different faces.
+Fonts are cached by the object they are rather than by the name a
+content stream calls them, because drawn with each other's metrics — a
+widths array that does not cover the codes being drawn, an advance of
+zero for each — a whole heading is painted one glyph on top of another
+as a single blot of ink.</p>
+
 <h2 id="pseudonymize">Pseudonymization</h2>
 <p>Redaction takes text out and leaves a gap. Pseudonymization puts
 something in its place — a stable token, so the same person can be

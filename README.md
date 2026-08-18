@@ -125,6 +125,11 @@ go get github.com/SalvioniDigitalSolutions/gopdf
 - **OCR-driven redaction**: plug in an engine (a tesseract adapter ships
   in the repo) and text rules also reach words inside a scan — pixels
   overwritten, a token drawn in their place, then read again to prove it
+- **Fonts are told apart by identity, not by name**: a form XObject
+  carries its own `/Font` dictionary and producers reuse the same short
+  names inside it, so `/TT0` on the page and `/TT0` in a form are
+  routinely two different faces — drawn with each other's metrics, a
+  heading comes out as one blot of ink
 - **Page rendering**: `RenderPage` draws a page to an image — paths,
   fills, strokes with caps, joins and dashes, clips, colour spaces, axial
   and radial shadings, mesh shadings, tiling and shading patterns, soft

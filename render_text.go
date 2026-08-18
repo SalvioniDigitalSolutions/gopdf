@@ -35,7 +35,15 @@ func newGlyphState() glyphState {
 
 // textRenderer carries what drawing text needs across a content stream.
 type textRenderer struct {
-	fonts map[Name]*glyphFont
+	// fonts and info are keyed by the font's own object identity, never
+	// by the resource name. A form XObject carries its own /Font
+	// dictionary and producers reuse the same short names inside it, so
+	// /TT0 on the page and /TT0 inside a form are routinely two
+	// different fonts. Keying by name handed the second one the first
+	// one's widths and glyph program — widths that did not cover the
+	// codes being drawn, an advance of zero for each, and a whole run of
+	// glyphs painted one on top of another as a single blot.
+	fonts map[any]*glyphFont
 	// clip accumulates the glyphs of modes 4 to 7, which do not take
 	// effect until the text object ends.
 	clip    *rasterPath
@@ -44,7 +52,19 @@ type textRenderer struct {
 	// told rather than left to wonder.
 	missing int
 	drawn   int
-	info    map[Name]*fontInfo
+	info    map[any]*fontInfo
+}
+
+// fontKey identifies a font by the object it is, so two resource
+// dictionaries using the same name cannot be taken for one another. An
+// indirect reference names the object outright; a font written directly
+// into its resource dictionary is reachable only through that
+// dictionary, so within it the name is identity enough.
+func fontKey(fonts Dict, name Name) any {
+	if ref, ok := fonts[name].(Ref); ok {
+		return ref
+	}
+	return name
 }
 
 // showText draws one string and advances the text matrix.
@@ -214,22 +234,20 @@ func (rn *renderer) setFont(res Dict, name Name, size float64, ts *glyphState) {
 	if !ok {
 		return
 	}
+	key := fontKey(fonts, name)
 	ts.fontDict = dict
 	ts.singleByte = rn.r.resolve(dict["Subtype"]) != Name("Type0")
-	ts.widths = rn.fontInfoFor(res, name, dict)
+	ts.widths = rn.fontInfoFor(key, name, dict)
 
 	if rn.text.fonts == nil {
-		rn.text.fonts = make(map[Name]*glyphFont)
+		rn.text.fonts = make(map[any]*glyphFont)
 	}
-	// The cache is keyed by resource name, which is what the content
-	// stream says; a form with its own resources gets its own renderer
-	// state, so the names cannot collide across dictionaries.
-	if f, seen := rn.text.fonts[name]; seen {
+	if f, seen := rn.text.fonts[key]; seen {
 		ts.font = f
 		return
 	}
 	f := loadGlyphFont(rn.r, dict, rn.opts.SubstituteFont)
-	rn.text.fonts[name] = f
+	rn.text.fonts[key] = f
 	ts.font = f
 }
 
@@ -239,11 +257,11 @@ func identity() matrix { return matrix{1, 0, 0, 1, 0, 0} }
 // fontInfoFor builds the metric tables for a font, reusing the same
 // machinery text extraction uses so a glyph is stepped over by exactly
 // the width the extractor would have measured.
-func (rn *renderer) fontInfoFor(res Dict, name Name, dict Dict) *fontInfo {
+func (rn *renderer) fontInfoFor(key any, name Name, dict Dict) *fontInfo {
 	if rn.text.info == nil {
-		rn.text.info = make(map[Name]*fontInfo)
+		rn.text.info = make(map[any]*fontInfo)
 	}
-	if fi, seen := rn.text.info[name]; seen {
+	if fi, seen := rn.text.info[key]; seen {
 		return fi
 	}
 	d := &fontDecoder{cid: rn.r.resolve(dict["Subtype"]) == Name("Type0")}
@@ -251,7 +269,7 @@ func (rn *renderer) fontInfoFor(res Dict, name Name, dict Dict) *fontInfo {
 		d.encoding = simpleEncoding(rn.r, dict["Encoding"])
 	}
 	fi := newFontInfo(rn.r, name, dict, d)
-	rn.text.info[name] = fi
+	rn.text.info[key] = fi
 	return fi
 }
 

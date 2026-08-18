@@ -102,6 +102,30 @@ func writeValue(w io.Writer, v any, ctx *writeCtx) {
 		fmt.Fprintf(w, "%t", t)
 	case int64:
 		fmt.Fprintf(w, "%d", t)
+	// The integer a caller most naturally writes is an int, and every
+	// other width is as reasonable a thing to hand over. Falling through
+	// to the default put null in the file: a document that parses, says
+	// nothing where a number was meant, and gives no sign it happened.
+	case int:
+		fmt.Fprintf(w, "%d", t)
+	case int8:
+		fmt.Fprintf(w, "%d", t)
+	case int16:
+		fmt.Fprintf(w, "%d", t)
+	case int32:
+		fmt.Fprintf(w, "%d", t)
+	case uint:
+		fmt.Fprintf(w, "%d", t)
+	case uint8:
+		fmt.Fprintf(w, "%d", t)
+	case uint16:
+		fmt.Fprintf(w, "%d", t)
+	case uint32:
+		fmt.Fprintf(w, "%d", t)
+	case uint64:
+		fmt.Fprintf(w, "%d", t)
+	case float32:
+		io.WriteString(w, fl(float64(t)))
 	case float64:
 		io.WriteString(w, fl(t))
 	case String:

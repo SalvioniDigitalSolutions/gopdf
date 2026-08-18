@@ -417,3 +417,78 @@ func firstBytes(b []byte) []byte {
 	}
 	return b
 }
+
+// TestWriteIntegerKinds: an integer written into the object graph has to
+// arrive as a number.
+//
+// The writer knew int64 and float64, and everything else fell through to
+// null — so a caller building a dictionary the way anyone would, with an
+// untyped constant, produced a file that parses cleanly and says nothing
+// where the number was meant. Nothing reported it. The /W array of a CID
+// font written that way came back [null [null]] and every glyph took the
+// default width.
+func TestWriteIntegerKinds(t *testing.T) {
+	doc := New()
+	doc.Compress = false
+	doc.AddPage()
+	r := NewReaderOrFail(t, docBytes(t, doc))
+
+	u := Update(r)
+	ref := u.AddObject(Dict{
+		"Plain":   7,
+		"Int8":    int8(-8),
+		"Int16":   int16(1600),
+		"Int32":   int32(-32000),
+		"Int64":   int64(64),
+		"Uint":    uint(11),
+		"Uint8":   uint8(255),
+		"Uint16":  uint16(65535),
+		"Uint32":  uint32(4000000),
+		"Uint64":  uint64(9),
+		"Float32": float32(1.5),
+		"Nested":  Array{1, 2, Array{3}},
+	})
+	if err := u.SetCatalogEntry("TestNumbers", ref); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if _, err := u.WriteTo(&buf); err != nil {
+		t.Fatal(err)
+	}
+
+	out := NewReaderOrFail(t, buf.Bytes())
+	got, ok := out.Resolve(out.Catalog()["TestNumbers"]).(Dict)
+	if !ok {
+		t.Fatal("the dictionary did not come back")
+	}
+	for _, c := range []struct {
+		key  Name
+		want float64
+	}{
+		{"Plain", 7}, {"Int8", -8}, {"Int16", 1600}, {"Int32", -32000},
+		{"Int64", 64}, {"Uint", 11}, {"Uint8", 255}, {"Uint16", 65535},
+		{"Uint32", 4000000}, {"Uint64", 9}, {"Float32", 1.5},
+	} {
+		v := out.Resolve(got[c.key])
+		if v == nil {
+			t.Errorf("/%s came back null; it was written as nothing", c.key)
+			continue
+		}
+		f, ok := toFloat(v)
+		if !ok || f != c.want {
+			t.Errorf("/%s = %v (%T), want %v", c.key, v, v, c.want)
+		}
+	}
+	arr, ok := out.Resolve(got["Nested"]).(Array)
+	if !ok || len(arr) != 3 {
+		t.Fatalf("/Nested = %v", out.Resolve(got["Nested"]))
+	}
+	if f, ok := toFloat(out.Resolve(arr[0])); !ok || f != 1 {
+		t.Errorf("integers inside an array were not written: %v", arr)
+	}
+	if inner, ok := out.Resolve(arr[2]).(Array); !ok || len(inner) != 1 {
+		t.Errorf("a nested array did not survive: %v", arr[2])
+	} else if f, ok := toFloat(out.Resolve(inner[0])); !ok || f != 3 {
+		t.Errorf("an integer nested two deep was not written: %v", inner)
+	}
+}
