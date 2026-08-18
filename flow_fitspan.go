@@ -29,6 +29,9 @@ import (
 type fitHit struct {
 	at  [2]int
 	new string
+	// wantPts, when set, is the width the token must claim, in points,
+	// because the occurrence ran past this run's own text into the next.
+	wantPts float64
 }
 
 // fittedRun is one run's worth of planned edit.
@@ -83,17 +86,33 @@ func (p *UpdatablePage) planPageFitted(subs []Pseudonym, mode matchMode) (
 		for _, chain := range buildChains(p.runs) {
 			for _, rg := range literalRanges(chain.text, sub.From, mode) {
 				spread := chain.chainRanges(rg[0], rg[1])
-				if len(spread) != 1 {
-					return nil, nil, false // straddles runs; not ours to do
+				parts := orderedParts(chain, spread)
+				if len(parts) == 0 {
+					return nil, nil, false
 				}
-				for run, rs := range spread {
-					for _, at := range rs {
-						if overlapsAny(byRun[run], at) {
-							continue
-						}
-						byRun[run] = append(byRun[run], fitHit{at: at, new: sub.To})
+				// A name written across two operations — the producer
+				// broke the line, or changed face part way — is still one
+				// name. The first run takes the token, at the width the
+				// whole occurrence covered on the page; the others give
+				// up their share of it and keep their own width, so the
+				// words after them do not move either.
+				want := 0.0
+				if len(parts) > 1 {
+					want = spanPoints(parts)
+					if want <= 0 {
+						return nil, nil, false
 					}
-					seen[run] = true
+				}
+				for i, pt := range parts {
+					if overlapsAny(byRun[pt.run], pt.at) {
+						continue
+					}
+					h := fitHit{at: pt.at}
+					if i == 0 {
+						h.new, h.wantPts = sub.To, want
+					}
+					byRun[pt.run] = append(byRun[pt.run], h)
+					seen[pt.run] = true
 				}
 				found = true
 			}
@@ -125,6 +144,60 @@ func (p *UpdatablePage) planPageFitted(subs []Pseudonym, mode matchMode) (
 		return nil, nil, false
 	}
 	return plan, counts, true
+}
+
+// runPart is one run's share of an occurrence.
+type runPart struct {
+	run *TextRun
+	at  [2]int
+}
+
+// orderedParts puts the runs an occurrence covers into reading order,
+// which is the order the operators appear in.
+func orderedParts(chain runChain, spread map[*TextRun][][2]int) []runPart {
+	var out []runPart
+	for _, run := range chain.runs {
+		rs, ok := spread[run]
+		if !ok {
+			continue
+		}
+		for _, at := range rs {
+			out = append(out, runPart{run: run, at: at})
+		}
+	}
+	return out
+}
+
+// spanPoints is how far an occurrence reaches across the page, from
+// where it starts in the first run to where it ends in the last.
+func spanPoints(parts []runPart) float64 {
+	first, last := parts[0], parts[len(parts)-1]
+	fs := styleOf(first.run)
+	ls := styleOf(last.run)
+	head, ok1 := fs.advance(first.run.Text[:first.at[0]])
+	tail, ok2 := ls.advance(last.run.Text[:last.at[1]])
+	if !ok1 || !ok2 {
+		return 0
+	}
+	return (last.run.X + tsToPoints(last.run, tail)) -
+		(first.run.X + tsToPoints(first.run, head))
+}
+
+// tsToPoints converts a width in the run's text space to points on the
+// page, which is what the text matrix scales it by.
+func tsToPoints(run *TextRun, ts float64) float64 {
+	if run.fontSizeRaw == 0 {
+		return ts
+	}
+	return ts * run.FontSize / run.fontSizeRaw
+}
+
+// pointsToTS is the other direction.
+func pointsToTS(run *TextRun, pts float64) float64 {
+	if run.FontSize == 0 {
+		return pts
+	}
+	return pts * run.fontSizeRaw / run.FontSize
 }
 
 // overlapsAny reports whether a range meets one already claimed, which
@@ -303,6 +376,11 @@ func writeFitted(b *strings.Builder, run *TextRun, st flowStyle, h fitHit,
 	want, ok := hitWidth(run, st, h.at, pi)
 	if !ok {
 		return false
+	}
+	if h.wantPts > 0 {
+		// The occurrence reached past this run: the token claims the
+		// whole of what it covered, and the runs after it give up theirs.
+		want = pointsToTS(run, h.wantPts)
 	}
 	size, pad, ok := fitTokenSize(tok, h.new, want)
 	if !ok {

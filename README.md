@@ -523,7 +523,7 @@ Shrinking stops at 45% of the run's size; a token that would need less
 than that is set at the floor and the paragraph re-wraps as it otherwise
 would, because a token nobody can read has failed at the only thing it
 was for. Across 127 documents of a real corpus the page came back
-exactly as it was, tokens aside, on 107 of them — against 22 without
+exactly as it was, tokens aside, on 108 of them — against 22 without
 the flag. Where the document's own subset font cannot set the
 token (no `[` in it), the inserted text falls back to a standard font
 matched to the face, and only ever the inserted text. Mappings are also

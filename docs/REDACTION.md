@@ -182,9 +182,14 @@ Each occurrence is fitted on its own, since the run behind one may be in
 a different size from the run behind the next, and `Reverse` drops the
 flag because restoring the original text has no width to fit.
 
+A name split across two show-text operations — the producer changed face
+part way through it, or broke the line — is still one name: the first
+operation takes the token, at the width the whole name covered, and the
+rest give up their share and keep their own width.
+
 Over 127 documents of a real corpus, `FitWidth` returned the page exactly
-as it was, the tokens aside, on 107 of them — against 22 without it — and
-refused on one, where a token was too long for the floor to bring down.
+as it was, the tokens aside, on 108 of them, against 22 without it, and
+refused on none.
 
 ### Where it looks
 

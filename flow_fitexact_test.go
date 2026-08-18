@@ -338,3 +338,49 @@ func TestFitExactWidthCountsInnerKerns(t *testing.T) {
 	}
 	t.Fatal("no run holds the word")
 }
+
+// splitAcrossOpsPage draws a name in two operations — the producer
+// changed face part way through it, which is how a company name set half
+// in bold reaches the page. The two halves read as one name and have to
+// be replaced as one.
+func splitAcrossOpsPage(t *testing.T) []byte {
+	t.Helper()
+	head := Helvetica.TextWidth("con Salvioni ", 11)
+	var b strings.Builder
+	b.WriteString("BT /F1 11 Tf 1 0 0 1 60 700 Tm (con Salvioni ) Tj ET\n")
+	b.WriteString("BT /F1 11 Tf 1 0 0 1 " + fl(60+head) + " 700 Tm (Digital Sagl oggi) Tj ET\n")
+	return rawPageDoc(t, b.String())
+}
+
+// TestFitExactAcrossOperations: a name split across two show-text
+// operations used to send the whole page to the paragraph engine, and
+// with it every other substitution on that page. The first operation
+// takes the token, at the width the name covered on the page; the second
+// gives up its share and keeps its own width, so what follows stays put.
+func TestFitExactAcrossOperations(t *testing.T) {
+	src := splitAcrossOpsPage(t)
+	if got := joinFrags(fragsOf(t, src)); !strings.Contains(got, "Salvioni Digital Sagl") {
+		t.Fatalf("the fixture does not read as one name: %q", got)
+	}
+	out := fitExact(t, src, []Pseudonym{
+		{From: "Salvioni Digital Sagl", To: "***", FitWidth: true},
+	})
+
+	text := joinFrags(fragsOf(t, out))
+	if strings.Contains(text, "Salvioni Digital Sagl") {
+		t.Errorf("the original survived: %q", text)
+	}
+	if !strings.Contains(text, "***") {
+		t.Errorf("the token was not written: %q", text)
+	}
+	if !strings.Contains(text, "oggi") {
+		t.Errorf("the word after the name was lost: %q", text)
+	}
+	// The word after the name is where it was: the second operation
+	// keeps its own width even though its head was taken away.
+	before, after := fragsOf(t, src), fragsOf(t, out)
+	b, a := before[len(before)-1], after[len(after)-1]
+	if got, want := a.X+a.W, b.X+b.W; got < want-0.05 || got > want+0.05 {
+		t.Errorf("the line ends at %.3f, want %.3f", got, want)
+	}
+}
