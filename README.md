@@ -2,6 +2,7 @@
 
 **Create, read, edit, fill, sign and redact PDFs — in pure Go, with nothing but the standard library.**
 
+[![test](https://github.com/SalvioniDigitalSolutions/gopdf/actions/workflows/test.yml/badge.svg)](https://github.com/SalvioniDigitalSolutions/gopdf/actions/workflows/test.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/SalvioniDigitalSolutions/gopdf.svg)](https://pkg.go.dev/github.com/SalvioniDigitalSolutions/gopdf)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -595,13 +596,20 @@ go run ./examples/redact -in case.pdf -list -text "Ada Lovelace"
 Coordinates are in points (1/72 inch) with the origin at the **top-left**
 of the page; `Mm`, `Cm` and `Inch` convert other units.
 
-- **489 tests** at **85% statement coverage**, covering the writer, the
+- **547 tests** at **85% statement coverage**, covering the writer, the
   parser, the font subsetter, the filters, encryption, editing, reflow,
   flow, forms, signatures, redaction, rendering and attachments
 - **Text extraction measured against `pdftotext`** over 918 real
   documents: agreement rose from 0.773 to 0.849 when word breaks started
   being measured rather than guessed, improving 581 files and regressing
-  35
+  35. Two later corrections were measured the same way, over 127
+  documents: asking the font's own encoder how wide a space is rather
+  than assuming code 32 — which in a CID font is whichever glyph happens
+  to sit there — changed one document and moved it closer to Poppler;
+  and reading the pen move that follows a drawn space as justification
+  rather than as a second word break cut runs of two-or-more spaces from
+  2,172 to 1,621, changing 30 documents, 29 of them closer to Poppler and
+  none farther
 - **Swept against 4,635 real PDFs** — macOS and application resources, Go
   module fixtures, and a 130,000-file legal corpus spanning Word,
   StarOffice, LibreOffice, iText, Aspose, Quartz, groff and TeX, PDF 1.1
@@ -647,8 +655,14 @@ of the page; `Mm`, `Cm` and `Inch` convert other units.
 
 Stated plainly, because they matter when choosing a library:
 
-- Editing can only use glyphs a document's fonts actually contain. Subset
-  fonts routinely lack characters; those edits are refused, not mangled.
+- The document's own words can only be re-set in the document's own
+  fonts, and a subset carries only the glyphs its pages draw. Inserted
+  text is not held to that: a token whose characters the subset lacks is
+  set in a standard font matched to the face, and only ever the inserted
+  text. A letter the document draws only inside a ligature — an `f` in a
+  face that always joins it — can be written back, because the ligature
+  is invertible as a run even though it is not invertible one rune at a
+  time. What remains impossible is refused rather than mangled.
 - An incremental update only grows a file; superseded objects stay in it.
 - Object streams are opt-in and skipped for encrypted documents, whose
   strings are protected per object rather than by the enclosing stream.
@@ -696,9 +710,9 @@ Stated plainly, because they matter when choosing a library:
 ## Roadmap
 
 Nothing outstanding from the original plan. Candidates, in no order:
-CID-keyed CFF subsetting, PAdES timestamps, public-key (certificate)
-security handlers, JPEG 2000 decoding, Huffman-coded JBIG2,
-linearization, and reflow that carries a paragraph onto the next page.
+PAdES timestamps, public-key (certificate) security handlers, JPEG 2000
+decoding, Huffman-coded JBIG2, linearization, and reflow that carries a
+paragraph onto the next page.
 
 ## License
 
