@@ -42,12 +42,24 @@ jobs:
       # the suite quietly stepping over its most interesting parts.
       - name: Install Poppler and a font
         if: matrix.os == 'ubuntu-latest'
+        # A package mirror that stops answering hangs the job until the
+        # whole workflow times out, which has happened. Bound it, and try
+        # again rather than losing the run to one bad mirror.
+        timeout-minutes: 6
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends poppler-utils fonts-dejavu-core
+          for attempt in 1 2 3; do
+            if sudo apt-get update && sudo apt-get install -y \
+                --no-install-recommends poppler-utils fonts-dejavu-core; then
+              exit 0
+            fi
+            echo "apt attempt $attempt failed; retrying"
+            sleep 10
+          done
+          exit 1
 
       - name: Install Poppler
         if: matrix.os == 'macos-latest'
+        timeout-minutes: 10
         run: brew install poppler
 
       - name: gofmt
@@ -64,7 +76,9 @@ jobs:
         run: go build ./...
 
       - name: test
+        timeout-minutes: 25
         run: go test ./... -timeout 20m
 
       - name: test -race
+        timeout-minutes: 35
         run: go test -race ./... -timeout 30m
