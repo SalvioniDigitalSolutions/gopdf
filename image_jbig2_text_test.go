@@ -326,7 +326,7 @@ func TestJBIG2SymbolDictionaryRoundTrip(t *testing.T) {
 			t.Fatalf("template %d: %d segments of kind %v", template,
 				len(segs), segs[0].kind)
 		}
-		got, err := decodeSymbolDictionary(segs[0].data, nil)
+		got, err := decodeSymbolDictionary(segs[0].data, nil, nil)
 		if err != nil {
 			t.Fatalf("template %d: %v", template, err)
 		}
@@ -440,7 +440,7 @@ func TestJBIG2SymbolGarbageIsSurvivable(t *testing.T) {
 					t.Fatalf("symbol dictionary input %d panicked: %v", i, e)
 				}
 			}()
-			decodeSymbolDictionary(data, nil)
+			decodeSymbolDictionary(data, nil, nil)
 		}()
 		func() {
 			defer func() {

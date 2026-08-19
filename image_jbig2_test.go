@@ -5,6 +5,7 @@ import (
 	"image"
 	"math/rand"
 	"testing"
+	"time"
 )
 
 // The JBIG2 decoder has no reference data to check against: no file in
@@ -512,3 +513,63 @@ func TestJBIG2TypicalPrediction(t *testing.T) {
 }
 
 var _ = image.NewGray
+
+// TestJBIG2BoundedWork is the denial-of-service guard.
+//
+// The sizes a JBIG2 stream declares — a region's, a symbol's — decide
+// how many pixels the decoder walks, and they arrive from the file. An
+// absolute cap alone is too loose to help: at the 268 million pixels a
+// cap of 1<<28 allows, the input below kept the decoder busy for
+// thirteen seconds and then reported the stream malformed. The page is
+// the real bound, since a region larger than the image it composites
+// onto has nothing to contribute, and a dictionary gets a budget for
+// the whole of its symbols rather than a limit on each.
+func TestJBIG2BoundedWork(t *testing.T) {
+	cases := []struct {
+		name          string
+		data, globals []byte
+		width, height int
+	}{
+		{
+			// Found by FuzzJBIG2: forty-three bytes, thirteen seconds.
+			name:    "fuzz case",
+			data:    []byte("0000\x00\x000\x00\x00\x00 0000000000\x00\x00\x00\x80\x00\x000000000000000000"),
+			globals: []byte("0"),
+			width:   64, height: 64,
+		},
+		{
+			// A generic region claiming to be enormous on a small page.
+			name: "region larger than the page",
+			data: append([]byte{0, 0, 0, 1, 0x26, 0, 1, 0, 0, 0, 0, 40},
+				bytes32(0xFFFF, 0xFFFF)...),
+			width: 32, height: 32,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				// The result does not matter — an error is the expected
+				// answer for all of these. How long it takes does.
+				decodeJBIG2(c.data, c.globals, c.width, c.height)
+			}()
+			select {
+			case <-done:
+			case <-time.After(3 * time.Second):
+				t.Fatalf("decoding %d bytes has taken over three seconds; the "+
+					"sizes in the stream are deciding how much work to do",
+					len(c.data))
+			}
+		})
+	}
+}
+
+// bytes32 lays out big-endian words, for building a region header.
+func bytes32(vals ...uint32) []byte {
+	out := make([]byte, 0, len(vals)*4)
+	for _, v := range vals {
+		out = append(out, byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
+	}
+	return out
+}

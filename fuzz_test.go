@@ -172,3 +172,117 @@ func FuzzReader(f *testing.F) {
 		}
 	})
 }
+
+// FuzzParseCFF throws arbitrary bytes at the CFF parser and, when
+// something parses, walks the charstrings for outlines and widths.
+//
+// A CFF is a nest of indexes holding offsets into each other, and every
+// one of those offsets comes from the file: an index whose count says a
+// thousand entries in twenty bytes, a charstring whose subroutine calls
+// itself, a private dictionary pointing past the end. None of that may
+// be a panic, and none of it may run for ever.
+func FuzzParseCFF(f *testing.F) {
+	f.Add([]byte{})
+	f.Add([]byte{1, 0, 4, 1})             // a bare, plausible header
+	f.Add([]byte{1, 0, 4, 4, 0, 0, 0, 0}) // and one with an empty index
+	if data, err := os.ReadFile("/System/Library/Fonts/Supplemental/STIXGeneral.otf"); err == nil {
+		if ttf, err := parseTTF(data); err == nil {
+			if cff, ok := ttf.tables["CFF "]; ok {
+				f.Add(cff)
+			}
+		}
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		out, err := parseCFFOutlines(data)
+		if err != nil || out == nil {
+			return
+		}
+		n := out.numGlyphs()
+		if n > 2000 {
+			n = 2000
+		}
+		for gid := 0; gid < n; gid++ {
+			out.outline(uint16(gid))
+			out.gidForCID(uint16(gid))
+		}
+	})
+}
+
+// FuzzTokenizeContent throws arbitrary bytes at the content-stream
+// lexer. Every editing path in this package starts by tokenizing a
+// stream somebody else wrote, and the spans it reports are used to cut
+// that stream up — so a span outside the input would splice from
+// nowhere.
+func FuzzTokenizeContent(f *testing.F) {
+	f.Add([]byte(""))
+	f.Add([]byte("BT /F1 12 Tf (hi) Tj ET"))
+	f.Add([]byte("[ (a) -20 (b) ] TJ"))
+	f.Add([]byte("<</A 1>> BDC q 1 0 0 1 0 0 cm Q EMC"))
+	f.Add([]byte("(unterminated"))
+	f.Add([]byte("<0102"))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		for _, tok := range tokenizeContent(data) {
+			if tok.start < 0 || tok.end > len(data) || tok.start > tok.end {
+				t.Fatalf("token span [%d,%d) is outside %d bytes",
+					tok.start, tok.end, len(data))
+			}
+		}
+	})
+}
+
+// FuzzToUnicodeCMap throws arbitrary bytes at the CMap parser, which
+// decides what a character code means. It is reached from every
+// document that carries a /ToUnicode, and it has found a
+// denial-of-service before.
+func FuzzToUnicodeCMap(f *testing.F) {
+	f.Add([]byte(""))
+	f.Add([]byte("1 beginbfchar <20> <0041> endbfchar"))
+	f.Add([]byte("1 beginbfrange <20> <7e> <0041> endbfrange"))
+	f.Add([]byte("2 begincidrange <0000> <ffff> 0 endcidrange"))
+	f.Add([]byte("beginbfchar <20> [<0041> <0042>] endbfchar"))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		for code, text := range parseToUnicodeCMap(data) {
+			// A mapping to an enormous string from a two-byte code would
+			// mean the parser had been talked into building one.
+			if len(text) > 4096 {
+				t.Fatalf("code %d maps to %d bytes", code, len(text))
+			}
+		}
+	})
+}
+
+// FuzzFilters throws arbitrary bytes at the stream decoders. They are
+// the first thing to touch a hostile file: the bytes arrive compressed
+// and something has to expand them before anything else can look.
+func FuzzFilters(f *testing.F) {
+	f.Add([]byte(""))
+	f.Add([]byte("~>"))
+	f.Add([]byte("z~>"))
+	f.Add([]byte{0x80, 0x01, 0x02})
+	f.Add([]byte("!!!!!~>"))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		ascii85Decode(data)
+		runLengthDecode(data)
+		// The predictors read their configuration from the document, so
+		// a few plausible shapes are tried against the same bytes.
+		for _, parm := range []Dict{
+			{"Predictor": 12, "Columns": 4},
+			{"Predictor": 15, "Columns": 1, "Colors": 3},
+			{"Predictor": 2, "Columns": 8, "BitsPerComponent": 4},
+		} {
+			applyPredictor(data, parm, nil)
+		}
+	})
+}
+
+// FuzzJBIG2 throws arbitrary bytes at the JBIG2 decoder, which reads a
+// segment header giving lengths and counts and then believes them.
+func FuzzJBIG2(f *testing.F) {
+	f.Add([]byte{}, []byte{})
+	f.Add([]byte{0, 0, 0, 1, 0x30, 0, 1, 0}, []byte{})
+	f.Fuzz(func(t *testing.T, data, globals []byte) {
+		// The size is bounded so a fuzz case cannot ask for a gigabyte
+		// of bitmap; what is under test is the parsing, not the limit.
+		decodeJBIG2(data, globals, 64, 64)
+	})
+}

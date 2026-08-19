@@ -51,7 +51,8 @@ func decodeJBIG2(data, globals []byte, width, height int) ([]byte, error) {
 		for _, s := range segs {
 			switch s.kind {
 			case 0: // symbol dictionary
-				got, err := decodeSymbolDictionary(s.data, inputSymbols(dicts, s.refers))
+				got, err := decodeSymbolDictionary(s.data,
+					inputSymbols(dicts, s.refers), page)
 				if err != nil {
 					return nil, err
 				}
@@ -228,6 +229,31 @@ func parseJBIG2Segments(data []byte) ([]jbig2Segment, error) {
 
 var errJBIG2 = errors.New("gopdf: malformed JBIG2 stream")
 
+// regionFits reports whether a region's declared size is one worth
+// decoding onto this page.
+//
+// The size comes out of the stream and the decoder then walks every
+// pixel of it, so a number nobody checked is a number that decides how
+// long this takes. An absolute cap alone is too loose to help: at 268
+// million pixels — which is what a cap of 1<<28 allows — forty-three
+// bytes of input kept the decoder busy for thirteen seconds and then
+// returned an error.
+//
+// The page is the real bound. It is the image's own /Width and /Height,
+// which the caller has from the document, and a region larger than the
+// image it is being composited onto has nothing to contribute: whatever
+// hangs over the edge is clipped. So a region is allowed to be as large
+// as the page and no larger.
+func regionFits(w, h int, page *bitmap) bool {
+	if w <= 0 || h <= 0 {
+		return false
+	}
+	if page == nil {
+		return w <= 1<<16 && h <= 1<<16 && w*h <= 1<<26
+	}
+	return w <= page.w && h <= page.h
+}
+
 // decodeGenericSegment decodes one immediate generic region onto a page.
 func decodeGenericSegment(data []byte, page *bitmap) error {
 	// The region segment information field: position, size and the
@@ -252,7 +278,7 @@ func decodeGenericSegment(data []byte, page *bitmap) error {
 		return errors.New("gopdf: JBIG2 generic region uses MMR coding, " +
 			"which is not decoded")
 	}
-	if w <= 0 || h <= 0 || w > 1<<16 || h > 1<<16 || w*h > 1<<28 {
+	if !regionFits(w, h, page) {
 		return errJBIG2
 	}
 

@@ -123,7 +123,7 @@ func symbolCodeLen(n int) int {
 // most of the saving. Every symbol's bitmap is decoded by the generic
 // region procedure, sharing one set of contexts across the whole
 // dictionary so the coder keeps learning.
-func decodeSymbolDictionary(data []byte, input []*bitmap) ([]*bitmap, error) {
+func decodeSymbolDictionary(data []byte, input []*bitmap, page *bitmap) ([]*bitmap, error) {
 	if len(data) < 2 {
 		return nil, errJBIG2
 	}
@@ -170,6 +170,16 @@ func decodeSymbolDictionary(data []byte, input []*bitmap) ([]*bitmap, error) {
 	iaex, iaai := newArithIntCtx(), newArithIntCtx()
 
 	newSymbols := make([]*bitmap, 0, nNew)
+	// Every symbol is decoded pixel by pixel, and both the count and the
+	// sizes come out of the stream. Bounding each one against the page
+	// is not enough on its own — a thousand page-sized symbols are a
+	// thousand pages of work — so the dictionary also gets a budget for
+	// the whole of it. A page's worth of glyphs, several times over, is
+	// far more than any real scan needs and still a bounded amount.
+	budget := 1 << 26
+	if page != nil {
+		budget = 4 * page.w * page.h
+	}
 	height := 0
 	for len(newSymbols) < nNew {
 		dh, ok := iadh.decodeInt(dec)
@@ -188,6 +198,13 @@ func decodeSymbolDictionary(data []byte, input []*bitmap) ([]*bitmap, error) {
 			}
 			width += dw
 			if width <= 0 || width > 1<<14 || len(newSymbols) >= nNew {
+				return nil, errJBIG2
+			}
+			if !regionFits(width, height, page) {
+				return nil, errJBIG2
+			}
+			budget -= width * height
+			if budget < 0 {
 				return nil, errJBIG2
 			}
 			if refAgg {
@@ -291,7 +308,7 @@ func decodeTextRegion(data []byte, symbols []*bitmap, page *bitmap) error {
 	if len(symbols) == 0 {
 		return errors.New("gopdf: JBIG2 text region refers to no symbols")
 	}
-	if w <= 0 || h <= 0 || w > 1<<16 || h > 1<<16 || w*h > 1<<28 {
+	if !regionFits(w, h, page) {
 		return errJBIG2
 	}
 

@@ -612,7 +612,7 @@ go run ./examples/redact -in case.pdf -list -text "Ada Lovelace"
 Coordinates are in points (1/72 inch) with the origin at the **top-left**
 of the page; `Mm`, `Cm` and `Inch` convert other units.
 
-- **547 tests** at **85% statement coverage**, covering the writer, the
+- **554 tests** at **86% statement coverage**, covering the writer, the
   parser, the font subsetter, the filters, encryption, editing, reflow,
   flow, forms, signatures, redaction, rendering and attachments
 - **Text extraction measured against `pdftotext`** over 918 real
@@ -642,9 +642,24 @@ of the page; `Mm`, `Cm` and `Inch` convert other units.
   than written turned out to be the matcher and the verifier reading the
   same page differently — a gap inside one show-text operation, and a
   word hyphenated across a line — and fixing both left 14
-- **Fuzz targets** for the PDF reader and the TrueType parser, with a
-  checked-in regression corpus of 700+ inputs. Fuzzing has found and fixed
-  real bugs, including a denial-of-service in `cmap` parsing
+- **Generated documents, as many as there is patience for.** A corpus of
+  real files covers what those files happen to do; a generator covers the
+  combinations nobody thought of, and hands back a seed that reproduces a
+  failure exactly. Each seed builds a document from a different mixture of
+  page sizes, rotations, fonts, colours, transforms, transparency,
+  compression and object streams, and the properties asserted are the
+  ones that must hold for any document at all: it parses with a
+  cross-reference table that leads everywhere, every word written comes
+  back out, writing it again changes nothing, it renders, and what
+  redaction says it removed is gone from the text and from the bytes.
+  **250,000 documents** have been through it
+- **Fuzz targets** for the PDF reader, the TrueType and CFF parsers, the
+  content-stream lexer, the CMap parser, the stream filters and the JBIG2
+  decoder, with a checked-in regression corpus. Fuzzing has found and
+  fixed real bugs: a denial-of-service in `cmap` parsing, and one in
+  JBIG2 where the sizes a stream declares decided how many pixels to
+  walk — forty-three bytes kept the decoder busy for thirteen seconds
+  before reporting the stream malformed, and now take 245 microseconds
 - **Rendering measured against `pdftoppm`**: across 1,500 documents
   99.9% of the glyphs a page asks for are drawn, and on the check that
   matters — ink where the reference has none — the median page scores

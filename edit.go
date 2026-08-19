@@ -328,18 +328,32 @@ func tokenizeContent(data []byte) []contentToken {
 
 // maxContentTokens bounds how much of a content stream is lexed at once.
 //
-// A token is at least a byte, so the count is bounded by the stream and
-// the stream is bounded already; the cap is on the memory the token list
-// itself takes, which is some thirty times what the bytes take. Pages
-// that draw every glyph of a large font run to a few million tokens, so
-// the limit sits well above that and truncation is reported rather than
-// quietly handing back a prefix.
-const maxContentTokens = 1 << 23
+// The cap is on memory, not on tokens for their own sake: a token costs
+// around ninety-six bytes once its value is boxed, so a stream of
+// nothing but short tokens allocates some ninety times its own size. A
+// content stream arrives decompressed, and a small file can carry a very
+// large one.
+//
+// Where to put it is a measured question. The densest page of a real
+// justified document runs to about eight thousand tokens for forty
+// kilobytes of operators; the densest this package's own generator makes
+// is a few hundred. Two million is two hundred times the first and still
+// bounds the list at a couple of hundred megabytes. Beyond it the
+// truncation is reported rather than a prefix quietly handed back.
+const maxContentTokens = 1 << 21
 
 // tokenizeContentLimited lexes a content stream, reporting whether it had
 // to stop early.
 func tokenizeContentLimited(data []byte) ([]contentToken, bool) {
-	var out []contentToken
+	// A token cannot be shorter than a byte, and the shortest useful one
+	// is a digit and a space. Starting near the right size keeps the
+	// slice from doubling its way there, which at these lengths is the
+	// difference between one copy of the list and two.
+	guess := len(data)/2 + 8
+	if guess > 1<<16 {
+		guess = 1 << 16
+	}
+	out := make([]contentToken, 0, guess)
 	p := &parser{data: data}
 	for {
 		p.skipWS()
