@@ -22,9 +22,21 @@ func scrubContentStrings(rw *rewriter, subs []Pseudonym) error {
 	if err != nil {
 		return err
 	}
+	// Page content streams, found through the pages AS THEY WILL BE
+	// WRITTEN: the redactor merges a page's content into a new object
+	// and re-points the page at it, so the original page dictionary
+	// would name a stream that no longer ships.
 	contents := map[int]bool{}
-	for _, pg := range rw.r.pages {
-		for _, ref := range refsOf(rw.r.resolve(pg.dict["Contents"]), pg.dict["Contents"]) {
+	for num := range live {
+		obj, err := rw.object(num)
+		if err != nil {
+			continue
+		}
+		d, ok := obj.(Dict)
+		if !ok || d["Type"] != Name("Page") {
+			continue
+		}
+		for _, ref := range contentRefs(rw, d["Contents"]) {
 			contents[ref] = true
 		}
 	}
@@ -75,19 +87,29 @@ func scrubContentStrings(rw *rewriter, subs []Pseudonym) error {
 	return nil
 }
 
-// refsOf lists the object numbers a page's Contents entry names: one
-// reference, or an array of them.
-func refsOf(resolved any, raw any) []int {
+// contentRefs lists the object numbers a page's Contents entry names —
+// one reference, an array of them, or a reference to such an array —
+// following substitutions rather than the source file.
+func contentRefs(rw *rewriter, v any) []int {
 	var out []int
-	add := func(v any) {
-		if r, ok := v.(Ref); ok {
-			out = append(out, r.Num)
+	switch t := v.(type) {
+	case Ref:
+		if obj, err := rw.object(t.Num); err == nil {
+			if arr, ok := obj.(Array); ok {
+				for _, e := range arr {
+					if r, ok := e.(Ref); ok {
+						out = append(out, r.Num)
+					}
+				}
+				return out
+			}
 		}
-	}
-	add(raw)
-	if arr, ok := resolved.(Array); ok {
-		for _, e := range arr {
-			add(e)
+		out = append(out, t.Num)
+	case Array:
+		for _, e := range t {
+			if r, ok := e.(Ref); ok {
+				out = append(out, r.Num)
+			}
 		}
 	}
 	return out
