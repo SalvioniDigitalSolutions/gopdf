@@ -86,3 +86,30 @@ func TestRedact_DropsTaintedAppearance(t *testing.T) {
 		t.Fatal("the viewer was not asked to redraw the annotation")
 	}
 }
+
+// An image's own XMP survives nothing: the redactor drops it from every
+// reachable image, drawn in a redacted area or not.
+func TestRedact_DropsImageMetadataEverywhere(t *testing.T) {
+	const name = "Marialuisa Vanetti"
+	raw := authored(t, "Foto di "+name+".")
+	xmp := "<x:xmpmeta><rdf:Description dc:creator=\"" + name + "\"/></x:xmpmeta>"
+	raw = appendUpdate(t, raw, "", " /Resources << /Font << /F1 4 0 R >> /XObject << /Im1 600 0 R >> >>", func(n int) map[int]string {
+		return map[int]string{
+			600: "<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 /Metadata 601 0 R /Length 1 >>\nstream\n\x80\nendstream",
+			601: fmt.Sprintf("<< /Type /Metadata /Subtype /XML /Length %d >>\nstream\n%s\nendstream", len(xmp), xmp),
+		}
+	})
+	r, err := NewReader(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rd := Redact(r)
+	rd.Text(name)
+	var out bytes.Buffer
+	if _, err := rd.WriteTo(&out); err != nil {
+		t.Fatalf("redact: %v", err)
+	}
+	if bytes.Contains(out.Bytes(), []byte("xmpmeta")) || bytes.Contains(out.Bytes(), []byte(name)) {
+		t.Fatal("image metadata survived the redactor")
+	}
+}

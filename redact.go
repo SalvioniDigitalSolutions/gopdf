@@ -551,6 +551,11 @@ func (rd *Redactor) buildPlan() error {
 			return err
 		}
 	}
+	// Every image the document still reaches sheds its alternates and
+	// its own XMP, whether or not a page drew it into a redacted area.
+	if err := stripLeakRoutesInGraph(rd.rw); err != nil {
+		return err
+	}
 	return nil
 }
 
