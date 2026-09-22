@@ -532,6 +532,22 @@ func (rd *Redactor) buildPlan() error {
 	if rd.stripMeta {
 		rd.stripDocumentMetadata()
 	}
+	// Strings neither the page rewrite nor the object scrub reaches:
+	// the inline dictionaries of marked content (/ActualText, /Alt) and
+	// the XML of an XFA packet. Here they are deleted, since a
+	// redaction has no replacement to offer (pseudonymize_content.go).
+	subs := make([]Pseudonym, 0, len(rd.literals))
+	for _, lit := range rd.literals {
+		subs = append(subs, Pseudonym{From: lit, To: ""})
+	}
+	if len(subs) > 0 {
+		if err := scrubContentStrings(rd.rw, subs); err != nil {
+			return err
+		}
+		if err := scrubXFA(rd.rw, subs); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
