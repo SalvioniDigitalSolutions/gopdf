@@ -35,8 +35,23 @@ func scrubStrings(rw *rewriter, subs []Pseudonym) error {
 		}
 		// A signature's blob is binary held in a string; rewriting bytes
 		// inside it would corrupt it to no purpose, the rewrite having
-		// already broken the signature.
+		// already broken the signature. Its other strings — the signer's
+		// name, reason, location, contact — are text like any other.
 		if d, ok := obj.(Dict); ok && r_isSignature(d) {
+			out := cloneDict(d)
+			changed := false
+			for _, k := range sortedKeys(d) {
+				if k == "Contents" || k == "ByteRange" {
+					continue
+				}
+				if cp, ch := substituteStrings(d[k], subs, 1); ch {
+					out[k] = cp
+					changed = true
+				}
+			}
+			if changed {
+				rw.replace[num] = out
+			}
 			continue
 		}
 		if out, changed := substituteStrings(obj, subs, 0); changed {

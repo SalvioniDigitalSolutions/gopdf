@@ -14,6 +14,8 @@ import "strings"
 //     higher-resolution original kept for print.
 //   - /PieceInfo holds whatever the producing application wanted to keep,
 //     which for a word processor can be the text it laid out.
+//   - /Metadata on an image is the XMP the camera or editor wrote: GPS,
+//     author, captions — none of it drawn, none of it detected.
 //
 // None of these is drawn, all of them travel with the file, and any of
 // them will hand back what the redaction was for. They are dropped.
@@ -24,7 +26,7 @@ var leakRoutesOnPage = []Name{"Thumb", "PieceInfo"}
 
 // leakRoutesOnImage are image entries that can hold another version of
 // the same picture.
-var leakRoutesOnImage = []Name{"Alternates"}
+var leakRoutesOnImage = []Name{"Alternates", "Metadata"}
 
 // stripLeakRoutes removes the entries that can carry an unredacted copy.
 // It reports which it removed, so a caller can be told.
