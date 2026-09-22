@@ -547,6 +547,9 @@ func (rd *Redactor) buildPlan() error {
 		if err := scrubXFA(rd.rw, subs); err != nil {
 			return err
 		}
+		if err := dropTaintedAppearances(rd.rw, subs); err != nil {
+			return err
+		}
 	}
 	return nil
 }

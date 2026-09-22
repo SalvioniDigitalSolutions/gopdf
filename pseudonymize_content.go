@@ -1,6 +1,9 @@
 package gopdf
 
-import "bytes"
+import (
+	"bytes"
+	"strings"
+)
 
 // Strings that live inside content streams as operands.
 //
@@ -205,4 +208,97 @@ func stripLeakRoutesInGraph(rw *rewriter) error {
 		}
 	}
 	return nil
+}
+
+// dropTaintedAppearances removes the appearance streams of annotations
+// that draw a target — a FreeText note, a filled field, a stamp — and
+// deletes the target from the annotation's own strings, asking the
+// viewer to draw the annotation again from what it now says. The
+// pseudonymizer does this for every annotation whose strings it
+// rewrites; the redactor cannot rewrite a drawn appearance, so it
+// drops the ones that show a literal.
+func dropTaintedAppearances(rw *rewriter, subs []Pseudonym) error {
+	live, err := rw.reachableFromTrailer()
+	if err != nil {
+		return err
+	}
+	for num := range live {
+		obj, err := rw.object(num)
+		if err != nil {
+			continue
+		}
+		d, ok := obj.(Dict)
+		if !ok || !isAnnotation(d) {
+			continue
+		}
+		ap, hasAP := rw.r.resolve(d["AP"]).(Dict)
+		tainted := false
+		for _, key := range []Name{"Contents", "V", "T", "TU", "RC", "DV"} {
+			if s, ok := rw.r.resolve(d[key]).(String); ok && mentionsAny(decodeTextString(s), subs) {
+				tainted = true
+			}
+		}
+		if hasAP && !tainted {
+			for _, stm := range appearanceStreamsOf(rw, ap) {
+				data, err := rw.r.decodeStream(stm.dict, stm.data)
+				if err != nil {
+					continue
+				}
+				for _, t := range tokenizeContent(data) {
+					if s, ok := t.val.(String); ok && mentionsAny(string(s), subs) {
+						tainted = true
+						break
+					}
+				}
+				if tainted {
+					break
+				}
+			}
+		}
+		if !tainted {
+			continue
+		}
+		nd := cloneDict(d)
+		for _, key := range []Name{"Contents", "V", "T", "TU", "RC", "DV"} {
+			if s, ok := rw.r.resolve(nd[key]).(String); ok {
+				nd[key] = String(textStringBytes(applySubs(decodeTextString(s), subs)))
+			}
+		}
+		if hasAP {
+			delete(nd, "AP")
+			nd["NeedAppearances"] = true
+		}
+		rw.replace[num] = nd
+	}
+	return nil
+}
+
+// appearanceStreamsOf lists the streams an /AP dictionary reaches: the
+// normal, rollover and down appearances, each either a stream or a
+// dictionary of state-named streams.
+func appearanceStreamsOf(rw *rewriter, ap Dict) []*rawStream {
+	var out []*rawStream
+	for _, key := range []Name{"N", "R", "D"} {
+		switch v := rw.r.resolve(ap[key]).(type) {
+		case *rawStream:
+			out = append(out, v)
+		case Dict:
+			for _, k := range sortedKeys(v) {
+				if stm, ok := rw.r.resolve(v[k]).(*rawStream); ok {
+					out = append(out, stm)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// mentionsAny reports whether s contains the From of any mapping.
+func mentionsAny(s string, subs []Pseudonym) bool {
+	for _, sub := range subs {
+		if sub.From != "" && strings.Contains(s, sub.From) {
+			return true
+		}
+	}
+	return false
 }
