@@ -307,19 +307,22 @@ func rebuildRun(run *TextRun, st flowStyle, hits []fitHit,
 		cursor = run.pieces[0].start
 	}
 
-	// Which occurrence, if any, a stretch of the run's text falls in.
-	inHit := func(from, to int) (int, bool) {
+	// Every occurrence a stretch of the run's text falls in, in the
+	// order they appear. One string can hold several — a name and an
+	// account number in the same sentence — and each needs its token.
+	hitsIn := func(from, to int) []int {
+		var idx []int
 		for i, h := range hits {
 			if from < h.at[1] && to > h.at[0] {
-				return i, true
+				idx = append(idx, i)
 			}
 		}
-		return 0, false
+		return idx
 	}
 
 	for pi, pc := range run.pieces {
-		hi, covered := inHit(pc.from, pc.to)
-		if !covered {
+		idx := hitsIn(pc.from, pc.to)
+		if len(idx) == 0 {
 			if run.op == "Tj" {
 				if err := writeCodes(&b, st, run.Text[pc.from:pc.to]); err != nil {
 					return "", false
@@ -330,31 +333,38 @@ func rebuildRun(run *TextRun, st flowStyle, hits []fitHit,
 			cursor = pc.end
 			continue
 		}
-		h := hits[hi]
-		if !done[hi] {
-			// The first string this occurrence touches. Everything
-			// before it stands; then the text ahead of the token.
-			if run.op != "Tj" {
-				b.Write(data[cursor:pc.start])
-			}
-			if h.at[0] > pc.from {
-				if err := writeCodes(&b, st, run.Text[pc.from:h.at[0]]); err != nil {
+		// A string that begins outside every occurrence keeps what
+		// precedes it; one that begins inside a continuing occurrence
+		// drops those bytes, kerns and all, along with the text.
+		if run.op != "Tj" && hits[idx[0]].at[0] >= pc.from {
+			b.Write(data[cursor:pc.start])
+		}
+		pos := pc.from
+		for _, hi := range idx {
+			h := hits[hi]
+			if h.at[0] > pos {
+				if err := writeCodes(&b, st, run.Text[pos:h.at[0]]); err != nil {
 					return "", false
 				}
 			}
-			if !writeFitted(&b, run, st, h, pi, hits, fallback) {
-				return "", false
+			if !done[hi] {
+				// The first string this occurrence touches takes the
+				// token; the strings it continues into give up their
+				// share.
+				if !writeFitted(&b, run, st, h, pi, hits, fallback) {
+					return "", false
+				}
+				done[hi] = true
 			}
-			done[hi] = true
+			pos = h.at[1]
+			if pos > pc.to {
+				pos = pc.to
+			}
 		}
-		// Whatever of this string lies past the occurrence is drawn as
-		// it was; what lay inside it is gone, kerns and all.
-		if pc.to > h.at[1] {
-			from := h.at[1]
-			if from < pc.from {
-				from = pc.from
-			}
-			if err := writeCodes(&b, st, run.Text[from:pc.to]); err != nil {
+		// Whatever of this string lies past the last occurrence is
+		// drawn as it was.
+		if pc.to > pos {
+			if err := writeCodes(&b, st, run.Text[pos:pc.to]); err != nil {
 				return "", false
 			}
 		}
