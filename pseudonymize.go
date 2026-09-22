@@ -184,6 +184,12 @@ func Pseudonymize(r *Reader, w io.Writer, subs []Pseudonym) (PseudonymizeResult,
 	if err := scrubStrings(rw, clean); err != nil {
 		return PseudonymizeResult{}, err
 	}
+	// And the strings content streams carry as operands — the
+	// ActualText of tagged text, which is the page's words a second
+	// time (pseudonymize_content.go).
+	if err := scrubContentStrings(rw, clean); err != nil {
+		return PseudonymizeResult{}, err
+	}
 	var final bytes.Buffer
 	if _, err := rw.writeTo(&final); err != nil {
 		return PseudonymizeResult{}, err
