@@ -190,6 +190,15 @@ func Pseudonymize(r *Reader, w io.Writer, subs []Pseudonym) (PseudonymizeResult,
 	if err := scrubContentStrings(rw, clean); err != nil {
 		return PseudonymizeResult{}, err
 	}
+	// The XML of an XFA form, and the copies of a page or an image a
+	// file may carry beside what it draws (thumbnails, alternates,
+	// producer private data).
+	if err := scrubXFA(rw, clean); err != nil {
+		return PseudonymizeResult{}, err
+	}
+	if err := stripLeakRoutesInGraph(rw); err != nil {
+		return PseudonymizeResult{}, err
+	}
 	var final bytes.Buffer
 	if _, err := rw.writeTo(&final); err != nil {
 		return PseudonymizeResult{}, err

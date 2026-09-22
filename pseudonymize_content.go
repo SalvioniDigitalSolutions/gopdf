@@ -92,3 +92,95 @@ func refsOf(resolved any, raw any) []int {
 	}
 	return out
 }
+
+// scrubXFA substitutes inside an XFA form's XML streams. A dynamic form
+// keeps every field value in its datasets packet — a stream of XML the
+// string pass never reads — under /AcroForm /XFA, either one stream or
+// an array of (name, stream) pairs.
+func scrubXFA(rw *rewriter, subs []Pseudonym) error {
+	rootRef, ok := rw.r.trailer["Root"].(Ref)
+	if !ok {
+		return nil
+	}
+	root, _ := rw.r.resolve(rootRef).(Dict)
+	acro, _ := rw.r.resolve(root["AcroForm"]).(Dict)
+	if acro == nil {
+		return nil
+	}
+	var refs []Ref
+	switch x := acro["XFA"].(type) {
+	case Ref:
+		refs = append(refs, x)
+	case Array:
+		for _, e := range x {
+			if r, ok := e.(Ref); ok {
+				refs = append(refs, r)
+			}
+		}
+	default:
+		if arr, ok := rw.r.resolve(acro["XFA"]).(Array); ok {
+			for _, e := range arr {
+				if r, ok := e.(Ref); ok {
+					refs = append(refs, r)
+				}
+			}
+		}
+	}
+	for _, ref := range refs {
+		obj, err := rw.object(ref.Num)
+		if err != nil {
+			continue
+		}
+		stm, ok := obj.(*rawStream)
+		if !ok {
+			continue
+		}
+		data, err := rw.r.decodeStream(stm.dict, stm.data)
+		if err != nil {
+			continue
+		}
+		got := applySubs(string(data), subs)
+		if got == string(data) {
+			continue
+		}
+		rw.replace[ref.Num] = compressedStreamWith(stm.dict, []byte(got))
+	}
+	return nil
+}
+
+// stripLeakRoutesInGraph drops, from every reachable page and image, the
+// entries that carry a copy of the unredacted content (see
+// redact_harden.go): a page's /Thumb and /PieceInfo, an image's
+// /Alternates. The redactor does this per page as it works; the
+// pseudonymizer rewrites the graph instead, so it does it here.
+func stripLeakRoutesInGraph(rw *rewriter) error {
+	live, err := rw.reachableFromTrailer()
+	if err != nil {
+		return err
+	}
+	for num := range live {
+		obj, err := rw.object(num)
+		if err != nil || obj == nil {
+			continue
+		}
+		switch t := obj.(type) {
+		case Dict:
+			if t["Type"] != Name("Page") {
+				continue
+			}
+			d := cloneDict(t)
+			if len(stripLeakRoutes(d, leakRoutesOnPage)) > 0 {
+				rw.replace[num] = d
+			}
+		case *rawStream:
+			if t.dict["Subtype"] != Name("Image") {
+				continue
+			}
+			d := cloneDict(t.dict)
+			if len(stripLeakRoutes(d, leakRoutesOnImage)) > 0 {
+				rw.replace[num] = &rawStream{dict: d, data: t.data}
+			}
+		}
+	}
+	return nil
+}
