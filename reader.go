@@ -38,6 +38,11 @@ type Reader struct {
 	// repaired records that the file's cross-reference table was unusable
 	// and the objects were found by scanning instead.
 	repaired bool
+
+	// doNames remembers which names each content stream passes to Do,
+	// by object number, so PageForms decodes a stream shared by many
+	// pages once.
+	doNames map[int]doNames
 }
 
 // maxObjectNumber returns the highest object number the file defines.
