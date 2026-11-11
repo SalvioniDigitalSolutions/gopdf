@@ -348,10 +348,46 @@ output is withheld.
 - **Recognition is not exhaustive.** An engine misses words, especially on
   a poor scan, and a word it misses stays in the document. Review
   `Marks()`; prefer `Area` where you know the region.
-- **A literal of several words is matched a word at a time**, since an
-  engine reports one box per word. Redacting `Ada Lovelace` therefore also
-  removes a lone `Ada`. That removes slightly more than asked, which is
-  the right way round here.
+- **A literal of several words is also matched a word at a time**, since
+  an engine reports one box per word. Redacting `Ada Lovelace` therefore
+  also removes a lone `Ada`. That removes slightly more than asked, which
+  is the right way round here.
+
+### Words that may not match alone
+
+The right way round for a name is the wrong way round for a literal such
+as `Stiftung für die Kinder`: matched a word at a time, it bars every
+`die` and every `für` in the scan, which protects nothing and leaves a
+page nobody can read.
+
+So a literal is looked for twice. Where its words stand together in
+reading order — along a line, or wrapping onto the next — the whole run
+goes, short words and all. Only a word met away from the rest of its
+literal falls to the one-word rule, and a filter says which words that
+rule may take:
+
+```go
+stop := map[string]bool{"die": true, "für": true, "von": true}
+
+rd.SetOCRWordFilter(func(word string) bool {
+    return len(word) > 2 && !stop[word]
+})
+```
+
+The filter is asked about each word of a literal as the rule spelled it.
+Which words identify nobody depends on the language of the document, so
+the list is yours to keep; the library carries none. Without a filter a
+word matches alone when it is longer than two bytes.
+
+A literal seen whole is removed whatever the filter says, and so is
+anything a `Pattern` matches. The read-back applies the same rule, so a
+word the filter let stand is not reported as left behind.
+
+Reading order is worked out from the boxes the engine reports — straight
+across the image, and down each column where a line has a wide gap in
+it. A badly tilted scan or an unusual layout can defeat it, and a literal
+that is not recognised as written out keeps the words the filter holds
+back. So let the filter hold back only words that identify nobody.
 
 ---
 

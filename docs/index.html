@@ -757,10 +757,22 @@ alternate — and the output is withheld if a word can still be read.</p>
 <p><strong>Recognition is not exhaustive.</strong> An engine misses words,
 especially on a poor scan, and a word it misses stays in the document.
 Review <code>Marks()</code>, and prefer an area where you know the region.
-A literal of several words is matched one word at a time, so redacting
-<code>Ada Lovelace</code> also removes a lone <code>Ada</code> — more than
-asked, which is the right way round.</p>
+A literal of several words is also matched one word at a time, so
+redacting <code>Ada Lovelace</code> also removes a lone <code>Ada</code> —
+more than asked, which is the right way round.</p>
 </div>
+<p>For a name, that is. For a literal such as <code>Stiftung für die
+Kinder</code> it bars every <code>die</code> in the scan. So a literal is
+looked for twice: where its words stand together in reading order the
+whole run goes, and only a word met away from the rest falls to the
+one-word rule — which a filter can narrow. The list of words that
+identify nobody depends on the language, so it is yours to keep. Reading
+order is worked out from the boxes the engine reports, and a badly tilted
+scan can defeat it: let the filter hold back only words that identify
+nobody.</p>
+<pre><code>rd.<span class="f">SetOCRWordFilter</span>(<span class="k">func</span>(word <span class="k">string</span>) <span class="k">bool</span> {
+    <span class="k">return</span> <span class="f">len</span>(word) &gt; 2 &amp;&amp; !stop[word]
+})</code></pre>
 
 <h3>Second copies of the page</h3>
 <p>Scrubbing what a page draws is necessary and not sufficient. A file may
@@ -1492,6 +1504,7 @@ this is the shape of it.</p>
 <tr><td><code>Pseudonym.FitWidth</code>, <code>Flow.SetFitWidth</code></td><td>Keep the whole token and shrink it to the width it replaced, so the line breaks do not move.</td></tr>
 <tr><td><code>Reverse</code>, <code>Key</code></td><td>Undo a substitution, where the pixels were not destroyed.</td></tr>
 <tr><td><code>SetOCR</code>, <code>SetOCRConfidence</code>, <code>OCREngine</code>, <code>OCRWord</code></td><td>Reach text inside a scan; the engine is yours to supply.</td></tr>
+<tr><td><code>SetOCRWordFilter</code></td><td>Say which words of a longer literal may be removed from a scan where they stand alone, so an article in a name does not bar every article on the page.</td></tr>
 </tbody>
 </table>
 

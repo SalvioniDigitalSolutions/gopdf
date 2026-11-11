@@ -140,18 +140,35 @@ func (rd *Redactor) SetLabelColor(c Color) {
 // naming that word wins; otherwise the general label is used.
 func (rd *Redactor) tokenFor(word string) string {
 	for _, s := range rd.tokens {
-		if strings.Contains(word, s.From) || wordOf(s.From, word) {
+		if strings.Contains(word, s.From) || rd.wordOf(s.From, word) {
 			return s.To
 		}
 	}
 	return rd.label
 }
 
-// wordOf reports whether word is one of the words of a literal.
-func wordOf(literal, word string) bool {
+// tokenForHit returns the token to set over a word an engine read. A
+// word covered by a literal read in place takes that literal's token,
+// which is how the words that could not have matched alone come by one.
+// Where that literal has none — it was a Text, not a Substitute — the
+// word is looked up by itself, as every word used to be.
+func (rd *Redactor) tokenForHit(h ocrHit) string {
+	if h.literal != "" {
+		for _, s := range rd.tokens {
+			if s.From == h.literal {
+				return s.To
+			}
+		}
+	}
+	return rd.tokenFor(h.word.Text)
+}
+
+// wordOf reports whether word is one of the words of a literal that may
+// stand for it alone.
+func (rd *Redactor) wordOf(literal, word string) bool {
 	trimmed := strings.Trim(word, ".,;:()[]{}\"'`?!")
 	for _, part := range strings.Fields(literal) {
-		if len(part) > 2 && trimmed == part {
+		if trimmed == part && rd.matchesAlone(part) {
 			return true
 		}
 	}

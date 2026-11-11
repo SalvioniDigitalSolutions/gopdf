@@ -92,6 +92,9 @@ type Redactor struct {
 	// rules also reach words in a scan.
 	ocr        OCREngine
 	ocrMinConf float64
+	// ocrAlone, when set, says which words of a longer literal may match
+	// by themselves in an image. See SetOCRWordFilter.
+	ocrAlone func(word string) bool
 	// label is written into each bar, and labelColor is its colour.
 	label        string
 	tokens       []Pseudonym
@@ -619,24 +622,30 @@ func (rd *Redactor) planPage(page int, byImage map[Ref][]rect) error {
 		imgs, err := rd.r.PageImages(page)
 		if err == nil {
 			for _, img := range imgs {
-				regions, matched, err := rd.ocrRegions(img)
+				// What an Area takes out of this image goes first: the
+				// words beside it are read as they will then stand.
+				var cleared []rect
+				if a, drawn, ok := areaOver(img, areas); ok {
+					cleared = []rect{imageRegion(a, drawn)}
+				}
+				hits, err := rd.ocrRegions(img, cleared)
 				if err != nil {
 					return err
 				}
-				for i, reg := range regions {
+				for _, hit := range hits {
 					if _, whole := byImage[img.ref]; whole && byImage[img.ref] == nil {
 						break // already going entirely
 					}
-					byImage[img.ref] = append(byImage[img.ref], reg)
-					box := pageRectFor(img, reg)
+					byImage[img.ref] = append(byImage[img.ref], hit.region)
+					box := pageRectFor(img, hit.region)
 					rd.marks = append(rd.marks, RedactionMark{
 						Kind: RedactImageText, Page: page,
 						X: box.x0, Y: box.y0,
 						W: box.x1 - box.x0, H: box.y1 - box.y0,
-						Text: matched[i].Text, Partial: true,
+						Text: hit.word.Text, Partial: true,
 					})
 					rd.bars[page] = append(rd.bars[page],
-						redactBar{box: box, label: rd.tokenFor(matched[i].Text)})
+						redactBar{box: box, label: rd.tokenForHit(hit)})
 				}
 			}
 		}
@@ -647,27 +656,21 @@ func (rd *Redactor) planPage(page int, byImage map[Ref][]rect) error {
 		imgs, err := rd.r.PageImages(page)
 		if err == nil {
 			for _, img := range imgs {
-				if img.W == 0 || img.H == 0 {
+				a, drawn, ok := areaOver(img, areas)
+				if !ok {
 					continue
 				}
-				drawn := rect{img.X, img.Y, img.X + img.W, img.Y + img.H}
-				for _, a := range areas {
-					if !a.intersects(drawn) {
-						continue
-					}
-					if _, whole := byImage[img.ref]; whole && byImage[img.ref] == nil {
-						break // already marked entirely
-					}
-					byImage[img.ref] = append(byImage[img.ref], imageRegion(a, drawn))
-					rd.mark(RedactionMark{
-						Kind: RedactImage, Page: page,
-						X: maxF(a.x0, drawn.x0), Y: maxF(a.y0, drawn.y0),
-						W:       minF(a.x1, drawn.x1) - maxF(a.x0, drawn.x0),
-						H:       minF(a.y1, drawn.y1) - maxF(a.y0, drawn.y0),
-						Partial: !a.contains(drawn),
-					})
-					break
+				if _, whole := byImage[img.ref]; whole && byImage[img.ref] == nil {
+					continue // already marked entirely
 				}
+				byImage[img.ref] = append(byImage[img.ref], imageRegion(a, drawn))
+				rd.mark(RedactionMark{
+					Kind: RedactImage, Page: page,
+					X: maxF(a.x0, drawn.x0), Y: maxF(a.y0, drawn.y0),
+					W:       minF(a.x1, drawn.x1) - maxF(a.x0, drawn.x0),
+					H:       minF(a.y1, drawn.y1) - maxF(a.y0, drawn.y0),
+					Partial: !a.contains(drawn),
+				})
 			}
 		}
 	}
@@ -1152,6 +1155,22 @@ func (run *TextRun) codeSlice(lo, hi int) []byte {
 }
 
 // --- image scrubbing ---
+
+// areaOver returns the area that reaches a drawn image, with the
+// rectangle the image is drawn in. An image is scrubbed for the first
+// area that touches it.
+func areaOver(img ImageRef, areas []rect) (area, drawn rect, ok bool) {
+	if img.W == 0 || img.H == 0 {
+		return rect{}, rect{}, false
+	}
+	drawn = rect{img.X, img.Y, img.X + img.W, img.Y + img.H}
+	for _, a := range areas {
+		if a.intersects(drawn) {
+			return a, drawn, true
+		}
+	}
+	return rect{}, rect{}, false
+}
 
 // imageRegion converts a page-space area into the image's own pixel-space
 // fractions, as a rectangle with coordinates from 0 to 1.
