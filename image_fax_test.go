@@ -19,6 +19,14 @@ import (
 // these files look like real scanned faxes.
 func faxFixture(t *testing.T, fax []byte, imageDict string) []byte {
 	t.Helper()
+	return rawImagePage(t, fax, imageDict, "q 153 0 0 55 100 600 cm /Im0 Do Q")
+}
+
+// rawImagePage is the same hand-built page with the content stream
+// given: the image is /Im0, and what is drawn under or around it is
+// the caller's.
+func rawImagePage(t *testing.T, fax []byte, imageDict, content string) []byte {
+	t.Helper()
 	var buf bytes.Buffer
 	offsets := map[int]int{}
 	add := func(num int, body string) {
@@ -30,7 +38,6 @@ func faxFixture(t *testing.T, fax []byte, imageDict string) []byte {
 	add(2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>")
 	add(3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "+
 		"/Resources << /XObject << /Im0 5 0 R >> >> >>")
-	content := "q 153 0 0 55 100 600 cm /Im0 Do Q"
 	add(4, fmt.Sprintf("<< /Length %d >>\nstream\n%s\nendstream", len(content), content))
 	offsets[5] = buf.Len()
 	fmt.Fprintf(&buf, "5 0 obj\n<< /Type /XObject /Subtype /Image %s /Length %d >>\nstream\n", imageDict, len(fax))

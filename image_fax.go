@@ -58,15 +58,13 @@ func (im ImageRef) decodeFax(filters []Name, parms []any) (image.Image, error) {
 	// The fax codecs carry runs of black and white, not sample values;
 	// the image pipeline's polarity is fixed here. PDF's default — 0
 	// bits are black, rendered black in DeviceGray — is the decoder's
-	// own. BlackIs1 flips it, as does an image mask whose /Decode is
-	// [1 0]; both together cancel out.
+	// own. BlackIs1 flips it, as does a /Decode of [1 0], on a stencil
+	// mask and on a gray image alike: for the one it swaps which
+	// samples are painted, for the other which are black. Both
+	// together cancel out.
 	invert := boolParm("BlackIs1")
-	if im.ColorSpace == "ImageMask" {
-		if d, ok := r.resolve(im.stream.dict["Decode"]).(Array); ok && len(d) >= 1 {
-			if f, ok := toFloat(r.resolve(d[0])); ok && f == 1 {
-				invert = !invert
-			}
-		}
+	if d := floatArray(r, im.stream.dict["Decode"]); len(d) >= 2 && d[0] == 1 && d[1] == 0 {
+		invert = !invert
 	}
 
 	dst := image.NewGray(image.Rect(0, 0, cols, rows))

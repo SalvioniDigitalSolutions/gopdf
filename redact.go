@@ -906,13 +906,10 @@ func (rd *Redactor) planImages(byImage map[Ref][]rect) error {
 		if !ok {
 			continue
 		}
-		img := ImageRef{ref: ref, stream: stm, r: rd.r}
-		if w, ok := toInt(rd.r.resolve(stm.dict["Width"])); ok {
-			img.Width = w
-		}
-		if h, ok := toInt(rd.r.resolve(stm.dict["Height"])); ok {
-			img.Height = h
-		}
+		// The full description, not just the size: scrubbing decodes
+		// the picture and writes it back, and a one-bit scan decoded as
+		// eight bits a sample is written back as noise.
+		img := rd.r.describeImage(stm, ref)
 		m, err := img.Decode()
 		if err != nil || regions == nil || img.Width <= 0 || img.Height <= 0 {
 			// An image whose pixels cannot be read is removed whole: a

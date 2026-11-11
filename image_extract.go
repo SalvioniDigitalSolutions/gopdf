@@ -171,19 +171,8 @@ func (sc *imageScanner) visit(name Name, entry any, resources any, ctm matrix, d
 		sc.scan(content, formRes, inner, depth+1)
 
 	case Name("Image"):
-		img := ImageRef{Name: name, Page: sc.page, r: sc.r, stream: stm}
-		if ref, ok := entry.(Ref); ok {
-			img.ref = ref
-		}
-		img.Width, _ = toInt(sc.r.resolve(stm.dict["Width"]))
-		img.Height, _ = toInt(sc.r.resolve(stm.dict["Height"]))
-		img.BitsPerComponent, _ = toInt(sc.r.resolve(stm.dict["BitsPerComponent"]))
-		img.ColorSpace = colorSpaceName(sc.r, stm.dict["ColorSpace"])
-		img.Filter = lastFilterName(sc.r, stm.dict)
-		if b, ok := sc.r.resolve(stm.dict["ImageMask"]).(bool); ok && b {
-			img.ColorSpace = "ImageMask"
-			img.BitsPerComponent = 1
-		}
+		img := sc.r.describeImage(stm, entry)
+		img.Name, img.Page = name, sc.page
 		// An image is drawn into the unit square, so the transform is the
 		// placement. All four corners are taken, not two: under a
 		// rotation the diagonal alone describes a box the picture does
@@ -197,6 +186,37 @@ func (sc *imageScanner) visit(name Name, entry any, resources any, ctm matrix, d
 		sc.out = append(sc.out, img)
 	}
 }
+
+// describeImage reads what an image XObject says about its own
+// samples: their size, how many bits each takes, the colour space,
+// and whether the image is a stencil mask. Everything that decodes an
+// image goes through here — the page scanner and the renderer alike —
+// because a decoder that is handed only a width and a height falls
+// back to eight bits a sample, and a one-bit scan read that way is
+// noise.
+func (r *Reader) describeImage(stm *rawStream, entry any) ImageRef {
+	img := ImageRef{r: r, stream: stm}
+	if ref, ok := entry.(Ref); ok {
+		img.ref = ref
+	}
+	img.Width, _ = toInt(r.resolve(stm.dict["Width"]))
+	img.Height, _ = toInt(r.resolve(stm.dict["Height"]))
+	img.BitsPerComponent, _ = toInt(r.resolve(stm.dict["BitsPerComponent"]))
+	img.ColorSpace = colorSpaceName(r, stm.dict["ColorSpace"])
+	img.Filter = lastFilterName(r, stm.dict)
+	if b, ok := r.resolve(stm.dict["ImageMask"]).(bool); ok && b {
+		img.ColorSpace = "ImageMask"
+		img.BitsPerComponent = 1
+	}
+	return img
+}
+
+// IsStencilMask reports whether the image is a stencil (/ImageMask):
+// one bit a sample, no colour of its own. Decode returns such an
+// image with its painted samples black and the rest white; what it is
+// painted with on the page is the fill colour in force where it is
+// drawn.
+func (im ImageRef) IsStencilMask() bool { return im.ColorSpace == "ImageMask" }
 
 // colorSpaceName describes a colour space for reporting.
 func colorSpaceName(r *Reader, v any) string {
@@ -365,6 +385,19 @@ func (im ImageRef) fromSamples(samples []byte) (image.Image, error) {
 	out := image.NewNRGBA(image.Rect(0, 0, w, h))
 	px := make([]uint32, comps)
 
+	// /Decode maps the sample range onto the colour range, a pair of
+	// numbers for each component; [1 0] turns a component around. An
+	// indexed image's pair maps to palette indices instead, where
+	// anything but the identity is vanishingly rare, so it is left be.
+	// unit returns component c's sample as a colour value in 0..1.
+	unit := func(c int) float64 { return float64(px[c]) / maxVal }
+	if dec := floatArray(r, im.stream.dict["Decode"]); space != "Indexed" && len(dec) >= 2*comps {
+		unit = func(c int) float64 {
+			lo, hi := dec[2*c], dec[2*c+1]
+			return clamp01(lo + float64(px[c])/maxVal*(hi-lo))
+		}
+	}
+
 	for y := 0; y < h; y++ {
 		rd.startRow(y)
 		for x := 0; x < w; x++ {
@@ -381,22 +414,21 @@ func (im ImageRef) fromSamples(samples []byte) (image.Image, error) {
 					col = color.NRGBA{0, 0, 0, 255}
 				}
 			case "DeviceGray", "CalGray", "G":
-				v := uint8(float64(px[0]) / maxVal * 255)
+				v := uint8(unit(0) * 255)
 				col = color.NRGBA{v, v, v, 255}
 			case "DeviceCMYK", "CMYK":
-				f := func(i int) float64 { return float64(px[i]) / maxVal }
-				k := f(3)
+				k := unit(3)
 				col = color.NRGBA{
-					uint8((1 - f(0)) * (1 - k) * 255),
-					uint8((1 - f(1)) * (1 - k) * 255),
-					uint8((1 - f(2)) * (1 - k) * 255),
+					uint8((1 - unit(0)) * (1 - k) * 255),
+					uint8((1 - unit(1)) * (1 - k) * 255),
+					uint8((1 - unit(2)) * (1 - k) * 255),
 					255,
 				}
 			default: // DeviceRGB and anything three-component
 				col = color.NRGBA{
-					uint8(float64(px[0]) / maxVal * 255),
-					uint8(float64(px[1]) / maxVal * 255),
-					uint8(float64(px[2]) / maxVal * 255),
+					uint8(unit(0) * 255),
+					uint8(unit(1) * 255),
+					uint8(unit(2) * 255),
 					255,
 				}
 			}
@@ -509,10 +541,7 @@ func (im ImageRef) softMask() (*image.Gray, error) {
 	if !ok {
 		return nil, nil
 	}
-	sub := ImageRef{r: im.r, stream: stm}
-	sub.Width, _ = toInt(im.r.resolve(stm.dict["Width"]))
-	sub.Height, _ = toInt(im.r.resolve(stm.dict["Height"]))
-	sub.BitsPerComponent, _ = toInt(im.r.resolve(stm.dict["BitsPerComponent"]))
+	sub := im.r.describeImage(stm, nil)
 	sub.ColorSpace = "DeviceGray"
 	m, err := sub.decodeBase()
 	if err != nil {

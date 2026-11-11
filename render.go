@@ -847,16 +847,21 @@ func (rn *renderer) doXObject(res Dict, name Name, gs renderState, depth int) {
 
 // drawImage paints a raster image into the unit square of the transform.
 func (rn *renderer) drawImage(stm *rawStream, entry any, gs renderState) {
-	img := ImageRef{r: rn.r, stream: stm}
-	if ref, ok := entry.(Ref); ok {
-		img.ref = ref
-	}
-	img.Width, _ = toInt(rn.r.resolve(stm.dict["Width"]))
-	img.Height, _ = toInt(rn.r.resolve(stm.dict["Height"]))
+	// The image's own description — bit depth, colour space, whether
+	// it is a stencil — is read the way the page scanner reads it. With
+	// only the size filled in, the decoder assumed eight bits a sample
+	// and drew every one-bit or indexed scan as noise.
+	img := rn.r.describeImage(stm, entry)
 	src, err := img.Decode()
 	if err != nil || img.Width <= 0 || img.Height <= 0 {
 		return
 	}
+	// A stencil mask is poured in the fill colour through its painted
+	// samples (decoded black); the rest of it is not there, and what
+	// lies under it — the photograph of a scan split into picture and
+	// text — keeps showing.
+	stencil := img.IsStencilMask()
+	ink := [3]uint8{uint8(clamp01(gs.fill[0]) * 255), uint8(clamp01(gs.fill[1]) * 255), uint8(clamp01(gs.fill[2]) * 255)}
 	inv, ok := invert(gs.ctm)
 	if !ok {
 		return
@@ -895,6 +900,13 @@ func (rn *renderer) drawImage(stm *rawStream, entry any, gs renderState) {
 			}
 			cr, cg, cb, ca := src.At(sx, sy).RGBA()
 			if ca == 0 {
+				continue
+			}
+			if stencil {
+				if cr >= 0x8000 {
+					continue // an unpainted sample
+				}
+				rn.blended(x, y, ink[0], ink[1], ink[2], a, gs.mode)
 				continue
 			}
 			rn.blended(x, y, uint8(cr>>8), uint8(cg>>8), uint8(cb>>8),

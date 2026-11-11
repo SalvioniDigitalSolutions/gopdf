@@ -62,13 +62,10 @@ func allImageRefs(r *Reader) []ImageRef {
 		if r.resolve(stm.dict["Subtype"]) != Name("Image") {
 			continue
 		}
-		img := ImageRef{ref: Ref{Num: num}, stream: stm, r: r}
-		if w, ok := toInt(r.resolve(stm.dict["Width"])); ok {
-			img.Width = w
-		}
-		if h, ok := toInt(r.resolve(stm.dict["Height"])); ok {
-			img.Height = h
-		}
+		// Described in full: the check that reads these images for a
+		// name that should be gone has to see the picture a viewer
+		// shows, and at the wrong bit depth it sees noise and passes.
+		img := r.describeImage(stm, Ref{Num: num})
 		if img.Width > 0 && img.Height > 0 {
 			out = append(out, img)
 		}
