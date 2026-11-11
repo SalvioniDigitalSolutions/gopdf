@@ -29,6 +29,10 @@ import (
 type fitHit struct {
 	at  [2]int
 	new string
+	// alt is the substitution's shorter fallback token: when new
+	// cannot be held even at the floor, alt takes its place rather
+	// than the page losing its exact edit.
+	alt string
 	// wantPts, when set, is the width the token must claim, in points,
 	// because the occurrence ran past this run's own text into the next.
 	wantPts float64
@@ -112,7 +116,7 @@ func (p *UpdatablePage) planPageFitted(subs []Pseudonym, mode matchMode) (
 					}
 					h := fitHit{at: pt.at, floor: sub.floor()}
 					if i == 0 {
-						h.new, h.wantPts = sub.To, want
+						h.new, h.alt, h.wantPts = sub.To, sub.FitFallback, want
 					}
 					byRun[pt.run] = append(byRun[pt.run], h)
 					seen[pt.run] = true
@@ -135,6 +139,7 @@ func (p *UpdatablePage) planPageFitted(subs []Pseudonym, mode matchMode) (
 			continue
 		}
 		sortHits(hits)
+		resolveFitTokens(run, hits, fallback)
 		edit, ok := fittedEdit(run, hits, fallback)
 		if !ok {
 			return nil, nil, false
@@ -271,7 +276,7 @@ func fittedEdit(run *TextRun, hits []fitHit,
 	if st.font == nil || st.fontSizeRaw == 0 || len(run.pieces) == 0 {
 		return splice{}, false
 	}
-	if run.op != "Tj" && run.op != "TJ" {
+	if run.op != "Tj" && run.op != "TJ" && run.op != "'" {
 		return splice{}, false
 	}
 	body, ok := rebuildRun(run, st, hits, fallback)
@@ -301,8 +306,13 @@ func rebuildRun(run *TextRun, st flowStyle, hits []fitHit,
 	// A lone Tj shows one string and takes no other operand, so its
 	// replacement cannot be a sequence: the operation becomes an array
 	// and a TJ, which can hold the token, the kern after it and the
-	// words either side.
-	if run.op == "Tj" {
+	// words either side. The ' operator is a Tj that first moves to
+	// the next line: T* is exactly that move (it uses the same TL),
+	// so the rewrite is the move made explicit, then the array.
+	if run.op == "Tj" || run.op == "'" {
+		if run.op == "'" {
+			b.WriteString("T* ")
+		}
 		b.WriteString("[")
 		cursor = run.pieces[0].start
 	}
@@ -323,7 +333,7 @@ func rebuildRun(run *TextRun, st flowStyle, hits []fitHit,
 	for pi, pc := range run.pieces {
 		idx := hitsIn(pc.from, pc.to)
 		if len(idx) == 0 {
-			if run.op == "Tj" {
+			if run.op != "TJ" {
 				if err := writeCodes(&b, st, run.Text[pc.from:pc.to]); err != nil {
 					return "", false
 				}
@@ -336,7 +346,7 @@ func rebuildRun(run *TextRun, st flowStyle, hits []fitHit,
 		// A string that begins outside every occurrence keeps what
 		// precedes it; one that begins inside a continuing occurrence
 		// drops those bytes, kerns and all, along with the text.
-		if run.op != "Tj" && hits[idx[0]].at[0] >= pc.from {
+		if run.op == "TJ" && hits[idx[0]].at[0] >= pc.from {
 			b.Write(data[cursor:pc.start])
 		}
 		pos := pc.from
@@ -370,10 +380,10 @@ func rebuildRun(run *TextRun, st flowStyle, hits []fitHit,
 		}
 		cursor = pc.end
 	}
-	if run.op == "Tj" {
-		b.WriteString(" ] TJ")
-	} else {
+	if run.op == "TJ" {
 		b.Write(data[cursor:run.end])
+	} else {
+		b.WriteString(" ] TJ")
 	}
 	return b.String(), true
 }
@@ -524,4 +534,47 @@ func replaceSplice(t *editTarget, sp splice) {
 		}
 	}
 	t.splices = append(t.splices, sp)
+}
+
+// resolveFitTokens settles, before the rewrite is planned, which text
+// each hit will carry: the token itself when the floor can hold it in
+// the occurrence's room, its FitFallback when not. Decided here, not
+// in writeFitted, because the planned run text (fittedHitText) and
+// the bytes the rewrite emits must name the same token.
+func resolveFitTokens(run *TextRun, hits []fitHit,
+	fallback func(flowStyle) (flowStyle, bool)) {
+	st := styleOf(run)
+	for i, h := range hits {
+		if h.new == "" || h.alt == "" {
+			continue
+		}
+		pi := pieceIndexOf(run, h.at)
+		if pi < 0 {
+			continue
+		}
+		want, ok := hitWidth(run, st, h.at, pi)
+		if !ok {
+			continue
+		}
+		if h.wantPts > 0 {
+			want = pointsToTS(run, h.wantPts)
+		}
+		if tok, _, ok := tokenStyle(st, h.new, fallback); ok {
+			if _, _, ok := fitTokenSize(tok, h.new, want, h.floor); ok {
+				continue // the full token holds
+			}
+		}
+		hits[i].new = h.alt
+	}
+}
+
+// pieceIndexOf is the first string of the operation an occurrence
+// touches — the one whose share of the hit takes the token.
+func pieceIndexOf(run *TextRun, at [2]int) int {
+	for i, pc := range run.pieces {
+		if at[0] < pc.to && at[1] > pc.from {
+			return i
+		}
+	}
+	return -1
 }

@@ -53,6 +53,16 @@ type Pseudonym struct {
 	// say so here. The marker is still text: searchable, extractable,
 	// and exactly what the key file holds.
 	MinScale float64
+	// FitFallback, with FitWidth, is a shorter stand-in for To, used
+	// by the exact in-place editor when even the floor cannot hold To
+	// in the room the occurrence occupies — "[RED]" where "[REDACTED]"
+	// was asked. Without one, a token the floor cannot hold sends the
+	// whole page to the paragraph engine, whose re-wrap moves text; on
+	// a form-shaped page it merges the form's lines. A caller who
+	// would rather keep the page exactly as it was can name the
+	// shorter marker to fall back to. Empty means no fallback, and
+	// the paragraph engine takes over as before.
+	FitFallback string
 }
 
 // floor is how far this substitution's token may be shrunk, as a
@@ -113,6 +123,10 @@ func Pseudonymize(r *Reader, w io.Writer, subs []Pseudonym) (PseudonymizeResult,
 		if strings.Contains(s.To, s.From) {
 			return out, fmt.Errorf("gopdf: replacing %q with %q would leave the "+
 				"original inside the token", s.From, s.To)
+		}
+		if s.FitFallback != "" && strings.Contains(s.FitFallback, s.From) {
+			return out, fmt.Errorf("gopdf: the fallback %q would leave the "+
+				"original inside the token", s.FitFallback)
 		}
 		clean = append(clean, s)
 	}
@@ -276,11 +290,17 @@ func checkTokensArrived(r *Reader, subs []Pseudonym, res PseudonymizeResult) err
 		if res.Replaced[s.From] == 0 || s.To == "" {
 			continue // nothing was replaced, so nothing should have arrived
 		}
-		if !strings.Contains(got, flattenSpace(s.To)) {
-			return fmt.Errorf("gopdf: %q was removed but %q was not written in its "+
-				"place; the document's font encodes it as something else, and the "+
-				"output has been withheld", s.From, s.To)
+		if strings.Contains(got, flattenSpace(s.To)) {
+			continue
 		}
+		// The exact editor may have written the substitution's shorter
+		// fallback instead; either token proves the words arrived.
+		if s.FitFallback != "" && strings.Contains(got, flattenSpace(s.FitFallback)) {
+			continue
+		}
+		return fmt.Errorf("gopdf: %q was removed but %q was not written in its "+
+			"place; the document's font encodes it as something else, and the "+
+			"output has been withheld", s.From, s.To)
 	}
 	return nil
 }
