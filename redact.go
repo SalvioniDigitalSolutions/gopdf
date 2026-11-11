@@ -918,10 +918,70 @@ func (rd *Redactor) planImages(byImage map[Ref][]rect) error {
 			rd.rw.replace[ref.Num] = blankImage(stm, rd.r)
 			continue
 		}
+		if img.IsStencilMask() {
+			// A stencil stays a stencil: see encodeStencilStream.
+			rd.rw.replace[ref.Num] = encodeStencilStream(m, regions)
+			continue
+		}
 		scrubbed := scrubRegions(m, regions, rd.fill)
 		rd.rw.replace[ref.Num] = encodeRGBStream(scrubbed, stm, rd.r)
 	}
 	return nil
+}
+
+// encodeStencilStream writes a scrubbed stencil mask back as a
+// stencil mask, the marked regions painted solid.
+//
+// A stencil has no colour of its own and is not there where it does
+// not paint; a scan split into a photograph and a layer of crisp text
+// stores the text this way, over the photograph. Written back as an
+// ordinary picture, as every other scrubbed image is, the layer would
+// turn opaque and hide everything under it. Kept as a stencil, the
+// scrubbed regions are poured in the same colour as the text they
+// held — a solid bar where the words were — and the rest of the page
+// keeps showing through.
+//
+// m is the mask as Decode returns it: painted samples black. The
+// result is one bit a sample with the default polarity (a zero bit
+// paints), so the original's /Decode is not carried over.
+func encodeStencilStream(m image.Image, regions []rect) *rawStream {
+	b := m.Bounds()
+	w, h := b.Dx(), b.Dy()
+	rowBytes := (w + 7) / 8
+	bits := make([]byte, rowBytes*h)
+	for i := range bits {
+		bits[i] = 0xFF // nothing painted
+	}
+	paint := func(x, y int) { bits[y*rowBytes+x/8] &^= 0x80 >> uint(x%8) }
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			if r, _, _, _ := m.At(b.Min.X+x, b.Min.Y+y).RGBA(); r < 0x8000 {
+				paint(x, y)
+			}
+		}
+	}
+	fw, fh := float64(w), float64(h)
+	for _, r := range regions {
+		x0, x1 := int(r.x0*fw), int(r.x1*fw+0.999)
+		y0, y1 := int(r.y0*fh), int(r.y1*fh+0.999)
+		for y := maxI(y0, 0); y < minI(y1, h); y++ {
+			for x := maxI(x0, 0); x < minI(x1, w); x++ {
+				paint(x, y)
+			}
+		}
+	}
+	return &rawStream{
+		dict: Dict{
+			"Type":             Name("XObject"),
+			"Subtype":          Name("Image"),
+			"Width":            int64(w),
+			"Height":           int64(h),
+			"ImageMask":        true,
+			"BitsPerComponent": int64(1),
+			"Filter":           Name("FlateDecode"),
+		},
+		data: mustFlate(bits),
+	}
 }
 
 // stripDocumentMetadata discards the XMP metadata stream, which holds a

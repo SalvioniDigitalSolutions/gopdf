@@ -356,3 +356,55 @@ func TestRedactAreaOverLowDepthImageKeepsThePicture(t *testing.T) {
 		wantRGB(t, c.name+": page, white sample", page, sampleX(4, 8), 255, 255, 255)
 	}
 }
+
+// A scrubbed stencil stays a stencil: the area is poured solid in the
+// colour the mask is painted with, and where the mask does not paint,
+// the page under it still shows. Written back as an ordinary picture
+// it would turn opaque and hide the photograph of a scan split into
+// picture and text.
+func TestRedactAreaOverStencilMaskKeepsItAStencil(t *testing.T) {
+	for _, c := range []struct{ name, decode string }{{"default", ""}, {"decode 1 0", "/Decode [1 0]"}} {
+		samples := []byte{0x0F, 0x0F} // the left half paints
+		if c.decode != "" {
+			samples = []byte{0xF0, 0xF0}
+		}
+		const page = "1 1 0 rg 0 0 612 792 re f 0 0 1 rg " + plainDo // yellow page, blue ink
+		r, err := NewReader(rawImagePage(t, samples,
+			"/Width 8 /Height 2 /BitsPerComponent 1 /ImageMask true "+c.decode, page))
+		if err != nil {
+			t.Fatal(err)
+		}
+		rd := Redact(r)
+		// The last two samples of the eight, where nothing is painted.
+		rd.Area(0, 100+153*6.0/8, 792-655, 153*2.0/8, 55)
+		out := redactTo(t, rd)
+
+		r2, err := NewReader(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		imgs, err := r2.PageImages(0)
+		if err != nil || len(imgs) != 1 {
+			t.Fatalf("%s: the picture is gone: %v", c.name, err)
+		}
+		if !imgs[0].IsStencilMask() {
+			t.Fatalf("%s: the scrubbed stencil came back as a %s picture", c.name, imgs[0].ColorSpace)
+		}
+		if _, has := imgs[0].stream.dict["Decode"]; has {
+			t.Errorf("%s: the rewritten stencil kept its /Decode", c.name)
+		}
+		img := renderFixture(t, out)
+		for i := 0; i < 4; i++ {
+			wantRGB(t, c.name+": painted before, painted still", img, sampleX(i, 8), 0, 0, 255)
+		}
+		for i := 4; i < 6; i++ {
+			wantRGB(t, c.name+": outside the area the page shows through", img, sampleX(i, 8), 255, 255, 0)
+		}
+		for i := 6; i < 8; i++ {
+			gr, gg, gb, _ := at(t, img, depthDPI, sampleX(i, 8), depthMidY)
+			if gr > 200 && gg > 200 && gb < 60 {
+				t.Errorf("%s: the area still shows the page through sample %d", c.name, i)
+			}
+		}
+	}
+}
