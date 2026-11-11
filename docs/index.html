@@ -548,8 +548,9 @@ reached through a form XObject, with the place each occupies on the page.
 u.<span class="f">ReplaceImage</span>(imgs[<span class="n">0</span>], newLogo)   <span class="c">// scaled into the same box</span></code></pre>
 <p>Decoding covers JPEG through the standard library, and raw samples in
 grey, RGB, CMYK and indexed colour at 1, 2, 4, 8 and 16 bits per
-component, with image masks and soft masks applied as alpha. Fax, JBIG2
-and JPEG 2000 report a clear error rather than guessing.</p>
+component, with image masks and soft masks applied as alpha. Fax images
+(Group 4, and one-dimensional Group 3) and JBIG2 are decoded too;
+JPEG 2000 reports a clear error rather than guessing.</p>
 <div class="note">
 <p>Replacing an image rewrites the shared image object, so every page that
 draws it shows the replacement. The placement is untouched: an image of a
@@ -708,7 +709,7 @@ rd.<span class="f">Save</span>(<span class="s">"redacted.pdf"</span>)</code></pr
 <thead><tr><th>Content</th><th>What happens</th></tr></thead>
 <tbody>
 <tr><td>Text</td><td>The glyphs are cut out of the content stream, and the characters kept are written back as the very codes that drew them. A gap of the same width is left in their place, so nothing else on the line moves.</td></tr>
-<tr><td>Images</td><td>The pixels inside the area are overwritten and the image re-encoded, so the original samples do not survive. One whose pixels cannot be decoded — fax, JBIG2, JPEG 2000 — is dropped whole rather than left in.</td></tr>
+<tr><td>Images</td><td>The pixels inside the area are overwritten and the image re-encoded, so the original samples do not survive. One whose pixels cannot be decoded — JPEG 2000 — is dropped whole rather than left in.</td></tr>
 <tr><td>Vector artwork</td><td>A path lying entirely inside the area is deleted. One that straddles the edge is reported by <code>PartialArtwork</code> rather than silently kept. A path that establishes a clip is never removed.</td></tr>
 <tr><td>Annotations</td><td>Removed along with whatever text they hold, unless <code>KeepAnnotations(true)</code>.</td></tr>
 <tr><td>Metadata</td><td>The information dictionary and the XMP stream are discarded by default: they carry author names and earlier titles the visible content no longer does.</td></tr>

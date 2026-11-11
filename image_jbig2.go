@@ -1,12 +1,15 @@
 package gopdf
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"image"
+
+	"github.com/SalvioniDigitalSolutions/gopdf/internal/ccitt"
 )
 
-// JBIG2 generic regions.
+// JBIG2 generic regions, and the framing every kind of region shares.
 //
 // JBIG2 is what a scanner reaches for when a page is black and white: it
 // beats fax coding by a wide margin and is what most scanned PDFs of the
@@ -14,14 +17,17 @@ import (
 // text can be read out of it, no pixel can be scrubbed, and redaction
 // has to remove the whole scan rather than a rectangle of it.
 //
-// The format has two halves. A generic region is the image coded
-// directly, pixel by pixel, through an arithmetic coder driven by a
-// template of neighbours already decoded — that is what is here, and it
-// is what a scanner in its ordinary mode produces. The other half is the
-// symbol dictionary, which finds the repeated shapes on a page and codes
-// each once; a file using one is reported rather than guessed at.
+// A stream is a run of segments. Some carry material for later ones — a
+// dictionary of symbols, a dictionary of halftone patterns, a code table
+// — and the rest are regions: rectangles of pixels, each coded one of
+// four ways and combined onto the page. A generic region is the image
+// coded directly, pixel by pixel, which is what is in this file; a text
+// region places symbols (image_jbig2_text.go); a halftone region tiles
+// patterns (image_jbig2_halftone.go); a refinement region corrects what
+// is already there (image_jbig2_refine.go).
 //
-// The arithmetic coder is the MQ coder, shared with JPEG 2000.
+// Pixels are coded either through the MQ arithmetic coder, which JBIG2
+// shares with JPEG 2000, or as MMR — the two-dimensional fax coding.
 
 // decodeJBIG2 decodes an embedded JBIG2 image to one byte per pixel,
 // where 1 is black — which is what the format means by a set bit.
@@ -32,62 +38,278 @@ func decodeJBIG2(data, globals []byte, width, height int) ([]byte, error) {
 	if width > 1<<16 || height > 1<<16 || width*height > 1<<28 {
 		return nil, errors.New("gopdf: JBIG2 image is implausibly large")
 	}
-	page := newBitmap(width, height)
-	found := false
+	d := newJBIG2Decoder(newBitmap(width, height))
+	d.work += jbig2WorkPerByte * int64(len(data)+len(globals))
 
 	// The globals stream carries the segments shared between images,
 	// which for a scanned document is where the symbol dictionary lives:
 	// one set of shapes for every page. It is read first for that reason.
-	// Dictionaries are kept by segment number, since a region names the
-	// ones it uses and the numbering of its symbols depends on getting
-	// exactly those.
-	dicts := map[int][]*bitmap{}
-	var everything []*bitmap
 	for _, part := range [][]byte{globals, data} {
 		segs, err := parseJBIG2Segments(part)
 		if err != nil {
 			return nil, err
 		}
 		for _, s := range segs {
-			switch s.kind {
-			case 0: // symbol dictionary
-				got, err := decodeSymbolDictionary(s.data,
-					inputSymbols(dicts, s.refers), page)
-				if err != nil {
-					return nil, err
-				}
-				dicts[s.num] = got
-				everything = append(everything, got...)
-			case 4, 6, 7: // text region, and its immediate variants
-				symbols := inputSymbols(dicts, s.refers)
-				if len(symbols) == 0 {
-					// A region that names nothing is not conforming, and
-					// is common enough that refusing would be worse than
-					// offering every dictionary in the file.
-					symbols = everything
-				}
-				if err := decodeTextRegion(s.data, symbols, page); err != nil {
-					return nil, err
-				}
-				found = true
-			case 36, 38, 39: // generic region, and its variants
-				if err := decodeGenericSegment(s.data, page); err != nil {
-					return nil, err
-				}
-				found = true
-			case 40, 42, 43: // refinement regions
-				return nil, errors.New("gopdf: JBIG2 image uses refinement " +
-					"coding, which is not decoded")
-			case 20, 22, 23: // halftone regions
-				return nil, errors.New("gopdf: JBIG2 image uses a halftone " +
-					"region, which is not decoded")
+			if err := d.segment(s); err != nil {
+				return nil, err
 			}
 		}
 	}
-	if !found {
+	if !d.found {
 		return nil, errors.New("gopdf: JBIG2 image has no region to decode")
 	}
-	return page.pix, nil
+	return d.page.pix, nil
+}
+
+// jbig2Decoder is what the segments of one image share.
+type jbig2Decoder struct {
+	page *bitmap
+	// work is what is left of the budget every loop draws on. The sizes
+	// and counts that decide how long decoding takes all come out of the
+	// stream, and bounding each against the page is not enough: a
+	// thousand page-sized regions are a thousand pages of work. So the
+	// image as a whole gets an allowance proportional to its own size —
+	// many times what a real scan spends — and a stream that runs
+	// through it is refused rather than obeyed.
+	work int64
+
+	// Dictionaries are kept by segment number, since a region names the
+	// ones it uses and the numbering of its symbols depends on getting
+	// exactly those.
+	dicts      map[int][]*bitmap
+	dictCx     map[int]*symbolContexts
+	everything []*bitmap
+	tables     map[int]*huffTable
+	patterns   map[int][]*bitmap
+	// held are the intermediate regions: decoded, not drawn, waiting for
+	// the refinement region that names them.
+	held  map[int]*bitmap
+	found bool
+}
+
+func newJBIG2Decoder(page *bitmap) *jbig2Decoder {
+	d := &jbig2Decoder{
+		page:     page,
+		work:     1 << 27,
+		dicts:    map[int][]*bitmap{},
+		dictCx:   map[int]*symbolContexts{},
+		tables:   map[int]*huffTable{},
+		patterns: map[int][]*bitmap{},
+		held:     map[int]*bitmap{},
+	}
+	if page != nil {
+		d.work = 16*int64(page.w)*int64(page.h) + 1<<20
+	}
+	return d
+}
+
+// jbig2WorkPerByte is the extra work a stream earns per byte of its own
+// length. The page-sized allowance is right for what is drawn on the
+// page and wrong for a dictionary, which a document scanned in strips
+// shares between images much smaller than it. A real dictionary spends
+// a hundred or so pixels per byte; this allows several times that, and
+// still leaves a stream of forty bytes with nothing to run away on.
+const jbig2WorkPerByte = 1024
+
+var errJBIG2Work = errors.New("gopdf: JBIG2 stream asks for far more work " +
+	"than an image of its size needs")
+
+// spend draws on the work budget.
+func (d *jbig2Decoder) spend(n int64) error {
+	if n < 0 {
+		return errJBIG2
+	}
+	d.work -= n
+	if d.work < 0 {
+		return errJBIG2Work
+	}
+	return nil
+}
+
+// spendArea is spend for a bitmap about to be decoded or drawn.
+func (d *jbig2Decoder) spendArea(w, h int) error {
+	if w < 0 || h < 0 {
+		return errJBIG2
+	}
+	return d.spend(int64(w) * int64(h))
+}
+
+// sideFits reports whether a bitmap that is not a region — a strip of
+// symbols, a row of patterns, a halftone grid — is of a size worth
+// allocating. Such a thing may be wider than the page, which a region
+// may not, so it is bounded by area: several pages' worth and no more.
+func (d *jbig2Decoder) sideFits(w, h int) bool {
+	if w <= 0 || h <= 0 {
+		return false
+	}
+	limit := int64(1 << 26)
+	if d.page != nil {
+		limit = 4*int64(d.page.w)*int64(d.page.h) + 1<<20
+	}
+	return int64(w)*int64(h) <= limit
+}
+
+// segment decodes one segment.
+func (d *jbig2Decoder) segment(s jbig2Segment) error {
+	switch s.kind {
+	case 0: // symbol dictionary
+		return d.symbolSegment(s)
+	case 4, 6, 7: // text region: intermediate, immediate, immediate lossless
+		symbols, err := d.symbolsFor(s.refers)
+		if err != nil {
+			return err
+		}
+		if len(symbols) == 0 {
+			// A region that names nothing is not conforming, and is
+			// common enough that refusing would be worse than offering
+			// every dictionary in the file.
+			symbols = d.everything
+		}
+		info, region, err := d.textRegion(s.data, symbols, d.customTables(s.refers))
+		if err != nil {
+			return err
+		}
+		return d.place(s, info, region)
+	case 16: // pattern dictionary
+		return d.patternSegment(s)
+	case 20, 22, 23: // halftone region
+		return d.halftoneSegment(s)
+	case 36, 38, 39: // generic region
+		return d.genericSegment(s)
+	case 40, 42, 43: // generic refinement region
+		return d.refinementSegment(s)
+	case 48: // page information
+		d.pageInfo(s.data)
+	case 53: // code table
+		// A table that does not parse is only an error for the segment
+		// that goes on to use it.
+		t, _ := parseHuffTable(s.data)
+		d.tables[s.num] = t
+	}
+	// End of page, end of stripe, end of file, profiles, extensions and
+	// anything not yet invented carry no pixels.
+	return nil
+}
+
+// jbig2MaxSymbols is the most symbols one segment may draw on. A dense
+// page has a few thousand; a whole book's dictionary, tens of thousands.
+const jbig2MaxSymbols = 1 << 20
+
+// symbolsFor gathers the symbols of the dictionaries a segment names.
+// The list is counted before it is built: a segment may name a
+// dictionary any number of times, and a list of a million dictionaries
+// of a million symbols is not one to start on.
+func (d *jbig2Decoder) symbolsFor(refers []int) ([]*bitmap, error) {
+	n := 0
+	for _, num := range refers {
+		if n += len(d.dicts[num]); n > jbig2MaxSymbols {
+			return nil, errJBIG2
+		}
+	}
+	if err := d.spend(int64(n)); err != nil {
+		return nil, err
+	}
+	return inputSymbols(d.dicts, refers), nil
+}
+
+// customTables gathers the code tables a segment names, in the order it
+// names them, which is the order its fields claim them in.
+func (d *jbig2Decoder) customTables(refers []int) []*huffTable {
+	var out []*huffTable
+	for _, num := range refers {
+		if t, ok := d.tables[num]; ok {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// pageInfo reads the one thing the page information segment says that
+// the image dictionary does not: the colour of a page nothing has been
+// drawn on yet.
+func (d *jbig2Decoder) pageInfo(data []byte) {
+	if len(data) < 17 || d.found {
+		return
+	}
+	if data[16]&4 != 0 {
+		for i := range d.page.pix {
+			d.page.pix[i] = 1
+		}
+	}
+}
+
+// jbig2Region is the field every region segment opens with: where the
+// region goes and how it combines with what is there.
+type jbig2Region struct {
+	w, h, x, y int
+	op         int
+}
+
+func parseRegionInfo(data []byte) (jbig2Region, bool) {
+	if len(data) < 17 {
+		return jbig2Region{}, false
+	}
+	return jbig2Region{
+		w: int(be32(data, 0)), h: int(be32(data, 4)),
+		x: int(int32(be32(data, 8))), y: int(int32(be32(data, 12))),
+		op: int(data[16] & 7),
+	}, true
+}
+
+// place finishes a region segment: an immediate region goes onto the
+// page, an intermediate one is held for the refinement that names it.
+func (d *jbig2Decoder) place(s jbig2Segment, info jbig2Region, region *bitmap) error {
+	switch s.kind {
+	case 4, 20, 36, 40:
+		d.held[s.num] = region
+		return nil
+	}
+	if err := d.spendArea(region.w, region.h); err != nil {
+		return err
+	}
+	composeBitmap(d.page, region, info.x, info.y, info.op)
+	d.found = true
+	return nil
+}
+
+// The combination operators.
+const (
+	jbig2OR = iota
+	jbig2AND
+	jbig2XOR
+	jbig2XNOR
+	jbig2REPLACE
+)
+
+// composeBitmap combines src onto dst with its top left corner at
+// (x0, y0), clipping what falls outside.
+func composeBitmap(dst, src *bitmap, x0, y0, op int) {
+	for sy := 0; sy < src.h; sy++ {
+		y := y0 + sy
+		if y < 0 || y >= dst.h {
+			continue
+		}
+		row := src.pix[sy*src.w : (sy+1)*src.w]
+		out := dst.pix[y*dst.w : (y+1)*dst.w]
+		for sx, v := range row {
+			x := x0 + sx
+			if x < 0 || x >= dst.w {
+				continue
+			}
+			switch op {
+			case jbig2AND:
+				out[x] &= v
+			case jbig2XOR:
+				out[x] ^= v
+			case jbig2XNOR:
+				out[x] = 1 ^ out[x] ^ v
+			case jbig2REPLACE:
+				out[x] = v
+			default:
+				out[x] |= v
+			}
+		}
+	}
 }
 
 // inputSymbols gathers the symbols of the dictionaries a segment names,
@@ -138,6 +360,9 @@ type jbig2Segment struct {
 	refers []int
 	kind   int
 	data   []byte
+	// unknownLength marks a generic region whose header gave no length:
+	// its data ends with a row count the header's height stands in for.
+	unknownLength bool
 }
 
 // parseJBIG2Segments reads the segment headers of an embedded stream.
@@ -207,17 +432,44 @@ func parseJBIG2Segments(data []byte) ([]jbig2Segment, error) {
 		}
 		length := int(be32(data, q))
 		q += 4
-		if length == -1 || uint32(length) == 0xFFFFFFFF {
-			// An unknown-length segment is only allowed for one kind of
-			// generic region and needs a scan for its terminator; the
-			// rest of the stream is not readable without it.
-			return nil, errors.New("gopdf: JBIG2 segment of unknown length")
+		unknown := false
+		if uint32(length) == 0xFFFFFFFF {
+			// A length nobody wrote down is allowed for one kind of
+			// segment, the immediate generic region, which an encoder
+			// may start before it knows how many rows are coming. Its
+			// end is found by looking for the bytes its coding finishes
+			// with; four bytes of row count follow them.
+			if kind != 38 {
+				return nil, errors.New("gopdf: JBIG2 segment of unknown length")
+			}
+			if q+18 > len(data) {
+				return nil, errJBIG2
+			}
+			// The search starts where the coded data does: past the
+			// template pixels an arithmetic region lists first.
+			end, from := []byte{0xFF, 0xAC}, 18+2
+			switch gflags := data[q+17]; {
+			case gflags&1 != 0:
+				end, from = []byte{0x00, 0x00}, 18 // MMR
+			case gflags&6 == 0:
+				from = 18 + 8 // template 0 has four pixels
+			}
+			if q+from > len(data) {
+				return nil, errJBIG2
+			}
+			at := bytes.Index(data[q+from:], end)
+			if at < 0 || q+from+at+6 > len(data) {
+				return nil, errJBIG2
+			}
+			length = from + at + 6
+			unknown = true
 		}
 		if length < 0 || q+length > len(data) {
 			return nil, errJBIG2
 		}
 		out = append(out, jbig2Segment{
 			num: int(segNum), refers: refers, kind: kind, data: data[q : q+length],
+			unknownLength: unknown,
 		})
 		p = q + length
 		if len(out) > 1<<16 {
@@ -254,64 +506,131 @@ func regionFits(w, h int, page *bitmap) bool {
 	return w <= page.w && h <= page.h
 }
 
-// decodeGenericSegment decodes one immediate generic region onto a page.
-func decodeGenericSegment(data []byte, page *bitmap) error {
-	// The region segment information field: position, size and the
-	// operator combining it with the page.
-	if len(data) < 18 {
+// genericSegment decodes a generic region segment.
+func (d *jbig2Decoder) genericSegment(s jbig2Segment) error {
+	data := s.data
+	info, ok := parseRegionInfo(data)
+	if !ok || len(data) < 18 {
 		return errJBIG2
 	}
-	w, h := int(be32(data, 0)), int(be32(data, 4))
-	x, y := int(be32(data, 8)), int(be32(data, 12))
-	p := 17
-
-	if len(data) <= p {
-		return errJBIG2
-	}
-	flags := data[p]
-	p++
+	flags := data[17]
+	p := 18
 	mmr := flags&1 != 0
 	template := int(flags>>1) & 3
 	tpgdon := flags&8 != 0
 
-	if mmr {
-		return errors.New("gopdf: JBIG2 generic region uses MMR coding, " +
-			"which is not decoded")
+	if s.unknownLength {
+		// The rows actually coded, which the header could only guess.
+		if len(data) < p+4 {
+			return errJBIG2
+		}
+		if rows := int(be32(data, len(data)-4)); rows < info.h {
+			info.h = rows
+		}
+		data = data[:len(data)-4]
 	}
-	if !regionFits(w, h, page) {
+	if !regionFits(info.w, info.h, d.page) {
+		return errJBIG2
+	}
+	if err := d.spendArea(info.w, info.h); err != nil {
+		return err
+	}
+
+	var region *bitmap
+	if mmr {
+		pix, _, err := ccitt.DecodeMMR(data[p:], info.w, info.h)
+		if err != nil {
+			return jbig2MMRError(err)
+		}
+		region = &bitmap{w: info.w, h: info.h, pix: pix}
+	} else {
+		if flags&0x10 != 0 {
+			return errors.New("gopdf: JBIG2 generic region uses the extended " +
+				"template, which is not decoded")
+		}
+		at, ok := genericAT(data, &p, template)
+		if !ok {
+			return errJBIG2
+		}
+		region = newBitmap(info.w, info.h)
+		dec := newMQDecoder(data[p:])
+		cx := make([]mqContext, 1<<16)
+		if err := decodeGenericRegion(region, dec, cx, template, at, tpgdon); err != nil {
+			return err
+		}
+	}
+	return d.place(s, info, region)
+}
+
+// jbig2MMRError reports MMR data that does not decode.
+func jbig2MMRError(err error) error {
+	return fmt.Errorf("%w (%v)", errJBIG2, err)
+}
+
+// genericAT reads the adaptive template pixels of a generic region:
+// four for template 0, one otherwise.
+func genericAT(data []byte, p *int, template int) ([][2]int, bool) {
+	n := 1
+	if template == 0 {
+		n = 4
+	}
+	if *p+2*n > len(data) {
+		return nil, false
+	}
+	at := make([][2]int, n)
+	for i := range at {
+		at[i] = [2]int{int(int8(data[*p])), int(int8(data[*p+1]))}
+		*p += 2
+	}
+	return at, true
+}
+
+// refinementSegment decodes a generic refinement region segment: a
+// correction to a region decoded earlier, or to the page as it stands.
+func (d *jbig2Decoder) refinementSegment(s jbig2Segment) error {
+	data := s.data
+	info, ok := parseRegionInfo(data)
+	if !ok || len(data) < 18 {
+		return errJBIG2
+	}
+	flags := data[17]
+	p := 18
+	template := int(flags & 1)
+	tpgron := flags&2 != 0
+	at, ok := refinementAT(data, &p, template)
+	if !ok || !regionFits(info.w, info.h, d.page) {
+		return errJBIG2
+	}
+	if err := d.spend(2 * int64(info.w) * int64(info.h)); err != nil {
+		return err
+	}
+
+	// What is refined is the region the segment names, if it names one.
+	var ref *bitmap
+	for _, num := range s.refers {
+		if held, ok := d.held[num]; ok {
+			ref = held
+			delete(d.held, num)
+			break
+		}
+	}
+	if ref == nil {
+		// Otherwise it is the page itself, under this region.
+		ref = newBitmap(info.w, info.h)
+		for y := 0; y < info.h; y++ {
+			for x := 0; x < info.w; x++ {
+				ref.pix[y*info.w+x] = d.page.at(info.x+x, info.y+y)
+			}
+		}
+	} else if ref.w != info.w || ref.h != info.h {
 		return errJBIG2
 	}
 
-	// The adaptive template pixels: four for template 0, one otherwise.
-	nAT := 1
-	if template == 0 {
-		nAT = 4
-	}
-	at := make([][2]int, nAT)
-	for i := 0; i < nAT; i++ {
-		if p+2 > len(data) {
-			return errJBIG2
-		}
-		at[i] = [2]int{int(int8(data[p])), int(int8(data[p+1]))}
-		p += 2
-	}
-
-	region := newBitmap(w, h)
+	region := newBitmap(info.w, info.h)
 	dec := newMQDecoder(data[p:])
-	cx := make([]mqContext, 1<<16)
-	if err := decodeGenericRegion(region, dec, cx, template, at, tpgdon); err != nil {
-		return err
-	}
-	// Combined onto the page by OR, which is what a scanner's single
-	// region uses and the only operator that matters for one.
-	for ry := 0; ry < h; ry++ {
-		for rx := 0; rx < w; rx++ {
-			if region.at(rx, ry) != 0 {
-				page.set(x+rx, y+ry, 1)
-			}
-		}
-	}
-	return nil
+	cx := make([]mqContext, refinementContexts(template))
+	decodeRefinement(region, dec, cx, template, ref, 0, 0, tpgron, at)
+	return d.place(s, info, region)
 }
 
 // decodeGenericRegion is the arithmetic decoding procedure: each pixel's
@@ -319,6 +638,14 @@ func decodeGenericSegment(data []byte, page *bitmap) error {
 // comes next.
 func decodeGenericRegion(b *bitmap, dec *mqDecoder, cx []mqContext,
 	template int, at [][2]int, tpgdon bool) error {
+	return decodeGenericRegionSkip(b, dec, cx, template, at, tpgdon, nil)
+}
+
+// decodeGenericRegionSkip is decodeGenericRegion with a mask of pixels
+// that are not coded at all and stay white, which a halftone region
+// uses for the parts of its grid that fall outside it.
+func decodeGenericRegionSkip(b *bitmap, dec *mqDecoder, cx []mqContext,
+	template int, at [][2]int, tpgdon bool, skip *bitmap) error {
 
 	ltp := false
 	for y := 0; y < b.h; y++ {
@@ -338,6 +665,9 @@ func decodeGenericRegion(b *bitmap, dec *mqDecoder, cx []mqContext,
 			}
 		}
 		for x := 0; x < b.w; x++ {
+			if skip != nil && skip.at(x, y) != 0 {
+				continue
+			}
 			ctx := genericContext(b, x, y, template, at)
 			b.set(x, y, byte(dec.decode(&cx[ctx])))
 		}

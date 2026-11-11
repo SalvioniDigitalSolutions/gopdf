@@ -280,6 +280,11 @@ func FuzzFilters(f *testing.F) {
 func FuzzJBIG2(f *testing.F) {
 	f.Add([]byte{}, []byte{})
 	f.Add([]byte{0, 0, 0, 1, 0x30, 0, 1, 0}, []byte{})
+	// A valid stream of every kind the decoder reads, so mutation starts
+	// from inside each decoding path instead of having to find it.
+	for _, c := range jbig2Cases() {
+		f.Add(c.data, c.globals)
+	}
 	f.Fuzz(func(t *testing.T, data, globals []byte) {
 		// The size is bounded so a fuzz case cannot ask for a gigabyte
 		// of bitmap; what is under test is the parsing, not the limit.

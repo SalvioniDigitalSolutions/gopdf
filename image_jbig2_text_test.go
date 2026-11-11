@@ -130,8 +130,12 @@ func TestArithIDRoundTrip(t *testing.T) {
 }
 
 func TestSymbolCodeLen(t *testing.T) {
+	// One symbol takes no bits: there is nothing to tell it apart from.
+	// This table used to say one bit, and the decoder with it, so a page
+	// placing a single shape came out as noise; Poppler reads none (see
+	// the one-symbol case of TestJBIG2AgainstPopplerEverything).
 	for _, c := range []struct{ n, want int }{
-		{1, 1}, {2, 1}, {3, 2}, {4, 2}, {5, 3}, {8, 3}, {9, 4}, {256, 8}, {257, 9},
+		{1, 0}, {2, 1}, {3, 2}, {4, 2}, {5, 3}, {8, 3}, {9, 4}, {256, 8}, {257, 9},
 	} {
 		if got := symbolCodeLen(c.n); got != c.want {
 			t.Errorf("symbolCodeLen(%d) = %d, want %d", c.n, got, c.want)

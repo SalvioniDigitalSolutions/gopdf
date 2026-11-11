@@ -669,10 +669,15 @@ of the page; `Mm`, `Cm` and `Inch` convert other units.
   read, edited and rewritten by gopdf with their text preserved.
   The JBIG2 decoder is checked against Poppler's own, which is an
   independent implementation of the same specification: a stream goes
-  through both and every pixel has to match, for each generic-region
-  template, for the typical-prediction shortcut, and for a symbol
-  dictionary and text region — the comparison found two conformance
-  mistakes in the test encoder that a round trip could not see.
+  through both and every pixel has to match — 113 streams, covering
+  every generic-region template, MMR, arithmetic and Huffman symbol
+  dictionaries and text regions in every layout, refinement, symbols
+  built from other symbols, halftones and the combination operators.
+  The comparison found two conformance mistakes in the test encoder and
+  one in the decoder that a round trip could not see. It also found
+  where Poppler itself departs from the specification; the seventeen
+  streams that land there are named, with the reason, and left to the
+  round trip.
   Attachments extracted by gopdf are byte-identical to `pdfdetach`, and
   every font a stream selects is checked to be declared where that
   stream resolves names — a thing gopdf's own forgiving reader could not
@@ -716,10 +721,12 @@ Stated plainly, because they matter when choosing a library:
   practice — a font that is not embedded, an encrypted file, a script,
   a missing intent. It is not a certificate: a full validator also checks
   colour management and the internals of embedded font programs.
-- A JBIG2 image is decoded whether it is coded pixel by pixel as a
-  generic region or shape by shape through a symbol dictionary and a text
-  region, which is what a scanner produces for a page of prose. The
-  Huffman-coded variants, refinement coding and halftone regions are
+- A JBIG2 image is decoded in every coding the format's first edition
+  defines: generic regions, arithmetic or MMR; symbol dictionaries and
+  text regions, arithmetic or Huffman, with the standard tables or the
+  file's own; refinement of a symbol, of a region and of the page;
+  halftone regions; and a region that does not say how long it is. The
+  extended generic-region template of the format's later amendment is
   reported rather than guessed at, and JPEG 2000 is not decoded at all;
   those are dropped whole by redaction rather than part-scrubbed.
 - Rendering draws a glyph from the outlines the document carries. A font
@@ -742,8 +749,8 @@ Stated plainly, because they matter when choosing a library:
 
 Nothing outstanding from the original plan. Candidates, in no order:
 PAdES timestamps, public-key (certificate) security handlers, JPEG 2000
-decoding, Huffman-coded JBIG2, linearization, and reflow that carries a
-paragraph onto the next page.
+decoding, linearization, and reflow that carries a paragraph onto the
+next page.
 
 ## License
 
