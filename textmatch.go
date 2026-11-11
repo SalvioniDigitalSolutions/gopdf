@@ -47,13 +47,18 @@ func literalRanges(text, lit string, mode matchMode) [][2]int {
 		hi := lo + len(lit)
 		if mode == matchAnywhere || wordBounded(text, lo, hi) {
 			out = append(out, [2]int{lo, hi})
-		}
-		// Overlapping occurrences are not sought: advancing past this one
-		// keeps "aa" in "aaa" to a single hit, which is what a reader
-		// would count.
-		at = hi
-		if hi == lo {
-			at++
+			// Overlapping occurrences are not sought: advancing past
+			// this one keeps "aa" in "aaa" to a single hit, which is
+			// what a reader would count.
+			at = hi
+		} else {
+			// An occurrence that does not stand on its own says nothing
+			// about one that begins inside it. "22 22" is not a word at
+			// the start of "122 22 22" and is one three characters on,
+			// so the search resumes just past where this one began, not
+			// past where it ended.
+			_, size := utf8.DecodeRuneInString(text[lo:])
+			at = lo + size
 		}
 		if at > len(text) {
 			return out

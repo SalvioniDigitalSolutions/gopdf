@@ -622,11 +622,12 @@ func (rd *Redactor) planPage(page int, byImage map[Ref][]rect) error {
 		imgs, err := rd.r.PageImages(page)
 		if err == nil {
 			for _, img := range imgs {
-				// What an Area takes out of this image goes first: the
+				// What the Areas take out of this image goes first: the
 				// words beside it are read as they will then stand.
 				var cleared []rect
-				if a, drawn, ok := areaOver(img, areas); ok {
-					cleared = []rect{imageRegion(a, drawn)}
+				drawn, over := areasOver(img, areas)
+				for _, a := range over {
+					cleared = append(cleared, imageRegion(a, drawn))
 				}
 				hits, err := rd.ocrRegions(img, cleared)
 				if err != nil {
@@ -656,21 +657,23 @@ func (rd *Redactor) planPage(page int, byImage map[Ref][]rect) error {
 		imgs, err := rd.r.PageImages(page)
 		if err == nil {
 			for _, img := range imgs {
-				a, drawn, ok := areaOver(img, areas)
-				if !ok {
-					continue
+				// Every area that reaches the image, not the first: an
+				// area whose pixels stay in the image is only covered,
+				// and what is covered can be uncovered.
+				drawn, over := areasOver(img, areas)
+				for _, a := range over {
+					if _, whole := byImage[img.ref]; whole && byImage[img.ref] == nil {
+						break // already marked entirely
+					}
+					byImage[img.ref] = append(byImage[img.ref], imageRegion(a, drawn))
+					rd.mark(RedactionMark{
+						Kind: RedactImage, Page: page,
+						X: maxF(a.x0, drawn.x0), Y: maxF(a.y0, drawn.y0),
+						W:       minF(a.x1, drawn.x1) - maxF(a.x0, drawn.x0),
+						H:       minF(a.y1, drawn.y1) - maxF(a.y0, drawn.y0),
+						Partial: !a.contains(drawn),
+					})
 				}
-				if _, whole := byImage[img.ref]; whole && byImage[img.ref] == nil {
-					continue // already marked entirely
-				}
-				byImage[img.ref] = append(byImage[img.ref], imageRegion(a, drawn))
-				rd.mark(RedactionMark{
-					Kind: RedactImage, Page: page,
-					X: maxF(a.x0, drawn.x0), Y: maxF(a.y0, drawn.y0),
-					W:       minF(a.x1, drawn.x1) - maxF(a.x0, drawn.x0),
-					H:       minF(a.y1, drawn.y1) - maxF(a.y0, drawn.y0),
-					Partial: !a.contains(drawn),
-				})
 			}
 		}
 	}
@@ -1156,20 +1159,19 @@ func (run *TextRun) codeSlice(lo, hi int) []byte {
 
 // --- image scrubbing ---
 
-// areaOver returns the area that reaches a drawn image, with the
-// rectangle the image is drawn in. An image is scrubbed for the first
-// area that touches it.
-func areaOver(img ImageRef, areas []rect) (area, drawn rect, ok bool) {
+// areasOver returns the areas that reach a drawn image, with the
+// rectangle the image is drawn in.
+func areasOver(img ImageRef, areas []rect) (drawn rect, over []rect) {
 	if img.W == 0 || img.H == 0 {
-		return rect{}, rect{}, false
+		return rect{}, nil
 	}
 	drawn = rect{img.X, img.Y, img.X + img.W, img.Y + img.H}
 	for _, a := range areas {
 		if a.intersects(drawn) {
-			return a, drawn, true
+			over = append(over, a)
 		}
 	}
-	return rect{}, rect{}, false
+	return drawn, over
 }
 
 // imageRegion converts a page-space area into the image's own pixel-space

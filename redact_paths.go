@@ -91,6 +91,10 @@ func (pr *pathRedactor) scan(data []byte, base matrix) {
 		if box.y1 == box.y0 {
 			box.y1 = box.y0 + 0.01
 		}
+		// Every area is asked whether it holds the whole piece before
+		// the piece is written off as straddling an edge: one area may
+		// clip its corner while another holds all of it.
+		straddles := false
 		for _, a := range pr.areas {
 			if a.contains(box) {
 				pr.splices = append(pr.splices, splice{pathStart, end, nil})
@@ -102,9 +106,11 @@ func (pr *pathRedactor) scan(data []byte, base matrix) {
 				return
 			}
 			if a.intersects(box) {
-				pr.partial++
-				return
+				straddles = true
 			}
+		}
+		if straddles {
+			pr.partial++
 		}
 	}
 

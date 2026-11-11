@@ -37,6 +37,61 @@ func TestLiteralRangesWordBoundaries(t *testing.T) {
 	}
 }
 
+// TestLiteralRangesResumeInsideARejectedHit: an occurrence that is not a
+// word of its own may overlap one that is. Skipping the whole of the
+// first skipped the start of the second, and since the read-back asks
+// the same function, nothing noticed.
+func TestLiteralRangesResumeInsideARejectedHit(t *testing.T) {
+	cases := []struct {
+		text, lit string
+		mode      matchMode
+		want      [][2]int
+	}{
+		{"122 22 22", "22 22", matchWords, [][2]int{{4, 9}}},
+		{"xAB AB AB", "AB AB", matchWords, [][2]int{{4, 9}}},
+		{"dede de de", "de de", matchWords, [][2]int{{5, 10}}},
+		{"ééa éa éa", "éa éa", matchWords, [][2]int{{6, 13}}}, // resumes on a character, not a byte
+		{"122 22 22 22 22", "22 22", matchWords, [][2]int{{4, 9}, {10, 15}}},
+		// Hits that do stand on their own still do not overlap.
+		{"22 22 22", "22 22", matchWords, [][2]int{{0, 5}}},
+		{"aaa", "aa", matchAnywhere, [][2]int{{0, 2}}},
+		{"aaa", "aa", matchWords, nil},
+	}
+	for _, c := range cases {
+		got := literalRanges(c.text, c.lit, c.mode)
+		if len(got) != len(c.want) {
+			t.Errorf("literalRanges(%q, %q) = %v, want %v", c.text, c.lit, got, c.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("literalRanges(%q, %q) = %v, want %v", c.text, c.lit, got, c.want)
+				break
+			}
+		}
+	}
+}
+
+// TestRedactLiteralOverlappingItself is the same thing from outside: the
+// number is removed, and before it was not and the check said it was.
+func TestRedactLiteralOverlappingItself(t *testing.T) {
+	doc := New()
+	page := doc.AddPage()
+	page.SetFont(Helvetica, 12)
+	page.Text(60, 80, "Konto 122 22 22 Ende")
+	r, _ := NewReader(docBytes(t, doc))
+	rd := Redact(r)
+	rd.Text("22 22")
+	out := redactTo(t, rd)
+	got := strings.Join(strings.Fields(extractAll(t, out)), " ")
+	if strings.Contains(got, "22 22") {
+		t.Errorf("the literal is still in the text: %q", got)
+	}
+	if !strings.Contains(got, "Konto") || !strings.Contains(got, "Ende") {
+		t.Errorf("the text around it was damaged: %q", got)
+	}
+}
+
 func TestWordBoundedEdges(t *testing.T) {
 	if !wordBounded("Rossi", 0, 5) {
 		t.Error("the whole text is bounded")
