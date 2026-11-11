@@ -2,9 +2,11 @@ package gopdf
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	"math"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -510,6 +512,110 @@ func TestRenderSubstituteFont(t *testing.T) {
 	if rep2.Glyphs != 0 || inkFraction(img2) != 0 {
 		t.Error("a substitute that declined still drew something")
 	}
+}
+
+// TestSubstituteDrawsWhatTheEncodingNames: a font the document names
+// but does not carry, with a /ToUnicode that says its letters are
+// other letters. A viewer shows the text as typed — it draws by the
+// encoding — and a search finds something else. The rendering must be
+// the viewer's: it is what a page is checked against when its text
+// layer is in doubt.
+func TestSubstituteDrawsWhatTheEncodingNames(t *testing.T) {
+	data, err := os.ReadFile(testFontPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	author := func(text string) []byte {
+		doc := New()
+		doc.Compress = false
+		p := doc.AddPage()
+		p.SetFont(Helvetica, 36)
+		p.Text(60, 700, text)
+		return docBytes(t, doc)
+	}
+	render := func(pdf []byte) image.Image {
+		r := NewReaderOrFail(t, pdf)
+		img, rep, err := r.RenderPageDetail(0, RenderOpts{
+			DPI: 100, IncludeText: true,
+			SubstituteFont: func(FontRequest) []byte { return data },
+		})
+		if err != nil || rep.Missing != 0 {
+			t.Fatalf("render: %v, %d glyphs missing", err, rep.Missing)
+		}
+		return img
+	}
+	honest := author("Peter Meier")
+
+	// The same file with a character table moving every letter one on.
+	r := NewReaderOrFail(t, honest)
+	u := Update(r)
+	var cmap strings.Builder
+	cmap.WriteString("/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n" +
+		"1 begincodespacerange <00> <FF> endcodespacerange\n52 beginbfchar\n")
+	for c := 'A'; c <= 'Z'; c++ {
+		fmt.Fprintf(&cmap, "<%02X> <%04X>\n", c, 'A'+(c-'A'+1)%26)
+		fmt.Fprintf(&cmap, "<%02X> <%04X>\n", c+32, 'a'+(c-'A'+1)%26)
+	}
+	cmap.WriteString("endbfchar\nendcmap end end\n")
+	table := u.AddObject(NewStream(Dict{}, []byte(cmap.String())))
+	patched := 0
+	r.Walk(func(ref Ref, obj any) bool {
+		d, ok := obj.(Dict)
+		if !ok || r.Resolve(d["Type"]) != Name("Font") {
+			return true
+		}
+		if r.Resolve(d["Encoding"]) != Name("WinAnsiEncoding") {
+			t.Fatalf("fixture: the font states %v as its encoding", r.Resolve(d["Encoding"]))
+		}
+		lied := Dict{}
+		for k, v := range d {
+			lied[k] = v
+		}
+		lied["ToUnicode"] = table
+		if err := u.SetObject(ref, lied); err != nil {
+			t.Fatal(err)
+		}
+		patched++
+		return true
+	})
+	if patched != 1 {
+		t.Fatalf("fixture: %d fonts patched, want 1", patched)
+	}
+	var lying bytes.Buffer
+	if _, err := u.WriteTo(&lying); err != nil {
+		t.Fatal(err)
+	}
+
+	// The premise: the text handed out is not the text typed.
+	lr := NewReaderOrFail(t, lying.Bytes())
+	if text, _ := lr.PageText(0); !strings.Contains(text, "Qfufs Nfjfs") {
+		t.Fatalf("fixture: the patched file extracts as %q", text)
+	}
+
+	want := render(honest)
+	got := render(lying.Bytes())
+	if !sameImage(want, got) {
+		t.Error("the page was drawn from /ToUnicode: it shows the text handed out, not the text on the page")
+	}
+	// And it is not the picture of the other text.
+	if sameImage(render(author("Qfufs Nfjfs")), got) {
+		t.Error("the page shows the letters /ToUnicode names")
+	}
+}
+
+func sameImage(a, b image.Image) bool {
+	if a.Bounds() != b.Bounds() {
+		return false
+	}
+	bd := a.Bounds()
+	for y := bd.Min.Y; y < bd.Max.Y; y++ {
+		for x := bd.Min.X; x < bd.Max.X; x++ {
+			if a.At(x, y) != b.At(x, y) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // TestSubstituteUsesDocumentWidths: the stand-in supplies shapes, not

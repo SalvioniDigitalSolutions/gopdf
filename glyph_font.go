@@ -50,6 +50,11 @@ type glyphFont struct {
 	// characters instead of through glyph indices.
 	substituted bool
 	toUnicode   map[uint32]string
+	// encodingFirst marks a stand-in for a simple, non-symbolic font
+	// whose dictionary states its /Encoding: there the encoding says
+	// which glyph a code draws, and /ToUnicode only what a reader is
+	// handed when copying it.
+	encodingFirst bool
 }
 
 // loadGlyphFont reads the font program a font dictionary carries.
@@ -92,7 +97,8 @@ func loadGlyphFont(r *Reader, dict Dict, substitute func(FontRequest) []byte) *g
 	// way the way through is a substitute, which is addressed by
 	// character — and the character is something the document's own
 	// /Encoding gives, with no built-in table involved.
-	*g = glyphFont{cid: composite, encoding: g.encoding}
+	*g = glyphFont{cid: composite, encoding: g.encoding, names: g.names,
+		encodingFirst: !composite && !g.symbolic && r.resolve(dict["Encoding"]) != nil}
 	if substitute == nil || !g.loadSubstitute(r, dict, fd, substitute) {
 		return nil
 	}
@@ -270,10 +276,12 @@ func (g *glyphFont) loadSubstitute(r *Reader, dict, fd Dict,
 	g.symbolic = false // the substitute's map is a Unicode one
 
 	// A stand-in is addressed by character, so the codes have to mean
-	// characters. /ToUnicode says so outright, and a simple font's
-	// /Encoding says so for the codes it names — a custom encoding of
-	// glyph names leaves the rest to /ToUnicode, which is why both are
-	// read and the encoding is only the fallback.
+	// characters. A simple font's /Encoding says which glyph a code
+	// draws, and that is what a viewer puts on the page; /ToUnicode
+	// says what the text is for copying and searching, and is the only
+	// source for a composite font, for a symbol font, and for a code
+	// whose glyph name means nothing here. Both are read; gid decides
+	// between them.
 	if tu, ok := r.resolve(dict["ToUnicode"]).(*rawStream); ok {
 		if b, err := r.decodeStream(tu.dict, tu.data); err == nil {
 			g.toUnicode = parseToUnicodeCMap(b)
@@ -308,15 +316,43 @@ func (g *glyphFont) gid(code uint32) (uint16, bool) {
 	if g.substituted {
 		// A stand-in knows nothing of the original's glyph numbering, so
 		// the code has to be turned into a character first.
-		var ru rune
+		if g.ttf == nil || g.ttf.cmap == nil {
+			return 0, false
+		}
+		var byEncoding, byToUnicode rune
+		if g.encoding != nil && code < 256 {
+			byEncoding = g.encoding[code]
+		}
 		if s := g.toUnicode[code]; s != "" {
-			ru = []rune(s)[0]
-		} else if g.encoding != nil && code < 256 && g.encoding[code] != 0 {
-			ru = g.encoding[code]
-		} else if !g.cid {
+			byToUnicode = []rune(s)[0]
+		}
+		// What the page shows is the glyph the encoding names. A file
+		// whose /ToUnicode says something else — by a broken export or
+		// on purpose — shows one text and hands out another, and a
+		// rendering that followed /ToUnicode would show the text that
+		// is not on the page. The encoding leads where it is the
+		// document's own statement about a font that has one: not for
+		// a symbol font, whose codes mean its own glyphs, and not for a
+		// code given a glyph name that means nothing here, where the
+		// table still holds the base encoding's guess.
+		if g.encodingFirst && byEncoding != 0 {
+			if name := g.names[code]; name == "" || glyphNameToRune(name) != 0 {
+				if gid, ok := g.ttf.cmap[byEncoding]; ok && gid != 0 {
+					return gid, true
+				}
+				// The stand-in lacks the glyph the encoding names — a
+				// ligature, say. What /ToUnicode spells out is the
+				// next best thing, below.
+			}
+		}
+		ru := byToUnicode
+		if ru == 0 {
+			ru = byEncoding
+		}
+		if ru == 0 && !g.cid {
 			ru = rune(code)
 		}
-		if ru == 0 || g.ttf == nil || g.ttf.cmap == nil {
+		if ru == 0 {
 			return 0, false
 		}
 		gid, ok := g.ttf.cmap[ru]

@@ -261,6 +261,66 @@ func TestGIDForASubstitutedFont(t *testing.T) {
 	}
 }
 
+// TestGIDFollowsTheEncodingNotTheCopyText: a viewer draws a simple
+// font's text by its /Encoding. A file whose /ToUnicode says something
+// else shows one text and hands out another, and a rendering made
+// through /ToUnicode would show the text that is not on the page — to a
+// reader checking what a page really says, the wrong one.
+func TestGIDFollowsTheEncodingNotTheCopyText(t *testing.T) {
+	cmap := map[rune]uint16{'A': 3, 'B': 4, 'f': 6, 'α': 7}
+	enc := &[256]rune{}
+	enc[65], enc[66], enc[97] = 'A', 'B', 'ﬁ'
+	lying := map[uint32]string{65: "B", 66: "A", 97: "fi"}
+	font := func() *glyphFont {
+		return &glyphFont{
+			substituted: true, encodingFirst: true,
+			ttf:      &ttfFont{numGlyphs: 50, cmap: cmap},
+			encoding: enc, toUnicode: lying,
+		}
+	}
+
+	// The code for A draws A, whatever the copy text claims.
+	if got, ok := font().gid(65); !ok || got != 3 {
+		t.Errorf("code 65 gave glyph %d (%v), want 3: the glyph the encoding names", got, ok)
+	}
+	if got, ok := font().gid(66); !ok || got != 4 {
+		t.Errorf("code 66 gave glyph %d (%v), want 4", got, ok)
+	}
+	// A glyph the stand-in lacks — the fi ligature — is drawn by what
+	// /ToUnicode spells rather than left out.
+	if got, ok := font().gid(97); !ok || got != 6 {
+		t.Errorf("code 97 gave glyph %d (%v), want 6 through /ToUnicode", got, ok)
+	}
+
+	// A glyph name that means nothing here leaves the base encoding's
+	// guess in the table; /ToUnicode knows better.
+	named := font()
+	named.names = map[uint32]string{65: "g17"}
+	if got, ok := named.gid(65); !ok || got != 4 {
+		t.Errorf("code 65 named /g17 gave glyph %d (%v), want 4 through /ToUnicode", got, ok)
+	}
+	// A name that does mean something is the encoding speaking.
+	named.names = map[uint32]string{65: "A"}
+	if got, ok := named.gid(65); !ok || got != 3 {
+		t.Errorf("code 65 named /A gave glyph %d (%v), want 3", got, ok)
+	}
+
+	// A symbol font's codes mean its own glyphs, and a font that states
+	// no encoding has said nothing to follow: /ToUnicode leads, as it
+	// always did.
+	symbol := font()
+	symbol.encodingFirst = false
+	symbol.toUnicode = map[uint32]string{65: "α"}
+	if got, ok := symbol.gid(65); !ok || got != 7 {
+		t.Errorf("a font /ToUnicode speaks for gave glyph %d (%v), want 7", got, ok)
+	}
+	// And there a character the stand-in lacks stays a missing glyph.
+	symbol.toUnicode = map[uint32]string{65: "Ω"}
+	if _, ok := symbol.gid(65); ok {
+		t.Error("a character the stand-in lacks was drawn as another")
+	}
+}
+
 // TestLoadCIDToGIDFromAStream covers the map given as data rather than as
 // the name Identity.
 func TestLoadCIDToGIDFromAStream(t *testing.T) {
