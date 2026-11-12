@@ -901,6 +901,8 @@ func annotRect(r *Reader, ad Dict, height float64, box [4]float64) (rect, bool) 
 
 // planImages rewrites the image objects that redaction touches.
 func (rd *Redactor) planImages(byImage map[Ref][]rect) error {
+	// The soft masks written so far, by the object they replace.
+	masks := map[int]*image.Gray{}
 	for ref, regions := range byImage {
 		stm, ok := rd.r.resolve(ref).(*rawStream)
 		if !ok {
@@ -923,10 +925,121 @@ func (rd *Redactor) planImages(byImage map[Ref][]rect) error {
 			rd.rw.replace[ref.Num] = encodeStencilStream(m, regions)
 			continue
 		}
+		// A picture with a soft mask keeps one: see scrubMasked.
+		if maskRef, isRef := stm.dict["SMask"].(Ref); isRef {
+			if masked, isNRGBA := m.(*image.NRGBA); isNRGBA {
+				if _, isStream := rd.r.resolve(maskRef).(*rawStream); isStream {
+					pic, alpha := scrubMasked(masked, regions, rd.fill)
+					if prev, shared := masks[maskRef.Num]; shared {
+						// One mask under two pictures. What is opaque
+						// for either stays opaque for both; a mask of
+						// another size cannot be joined, and this
+						// picture goes on white without one.
+						if prev.Rect != alpha.Rect {
+							rd.rw.replace[ref.Num] = encodeRGBStream(flattenOnWhite(pic, alpha), stm, rd.r)
+							continue
+						}
+						for i, v := range prev.Pix {
+							if v > alpha.Pix[i] {
+								alpha.Pix[i] = v
+							}
+						}
+					}
+					masks[maskRef.Num] = alpha
+					out := encodeRGBStream(pic, stm, rd.r)
+					out.dict["SMask"] = maskRef
+					rd.rw.replace[ref.Num] = out
+					rd.rw.replace[maskRef.Num] = encodeGrayStream(alpha)
+					continue
+				}
+			}
+		}
 		scrubbed := scrubRegions(m, regions, rd.fill)
 		rd.rw.replace[ref.Num] = encodeRGBStream(scrubbed, stm, rd.r)
 	}
 	return nil
+}
+
+// scrubMasked paints over the marked fractions of a picture that has a
+// soft mask, and returns its colour and its new mask apart.
+//
+// Such a picture used to come back as every other scrubbed one does:
+// plain colour, no mask. Its colour had been multiplied by its
+// transparency on the way, so a logo on a clear ground came back on a
+// black one, whatever the region covered — and a picture whose ink IS
+// its mask, a few pixels of colour under the letters' shapes, came
+// back a dark slab.
+//
+// It keeps a mask now, a new one: under the regions the fill, fully
+// opaque, and everywhere else the colour and the transparency it had.
+// The old mask is not carried over. Its samples under a region are as
+// much the picture as the colour's are — the letters, where the mask
+// draws them — and would have let the page show through the bar.
+func scrubMasked(m *image.NRGBA, regions []rect, fill Color) (*image.RGBA, *image.Gray) {
+	b := m.Bounds()
+	pic := image.NewRGBA(b)
+	alpha := image.NewGray(b)
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			c := m.NRGBAAt(x, y)
+			// The colour as stored, not as shown: the mask says how
+			// much of it shows.
+			pic.SetRGBA(x, y, color.RGBA{R: c.R, G: c.G, B: c.B, A: 255})
+			alpha.SetGray(x, y, color.Gray{Y: c.A})
+		}
+	}
+	c := color.RGBA{R: fill.R, G: fill.G, B: fill.B, A: 255}
+	w, h := float64(b.Dx()), float64(b.Dy())
+	for _, r := range regions {
+		x0 := b.Min.X + int(r.x0*w)
+		x1 := b.Min.X + int(r.x1*w+0.999)
+		y0 := b.Min.Y + int(r.y0*h)
+		y1 := b.Min.Y + int(r.y1*h+0.999)
+		for y := maxI(y0, b.Min.Y); y < minI(y1, b.Max.Y); y++ {
+			for x := maxI(x0, b.Min.X); x < minI(x1, b.Max.X); x++ {
+				pic.SetRGBA(x, y, c)
+				alpha.SetGray(x, y, color.Gray{Y: 255})
+			}
+		}
+	}
+	return pic, alpha
+}
+
+// flattenOnWhite returns a picture as its mask shows it on white paper.
+func flattenOnWhite(pic *image.RGBA, alpha *image.Gray) *image.RGBA {
+	b := pic.Bounds()
+	out := image.NewRGBA(b)
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			c, a := pic.RGBAAt(x, y), uint32(alpha.GrayAt(x, y).Y)
+			over := func(v uint8) uint8 { return uint8((uint32(v)*a + 255*(255-a) + 127) / 255) }
+			out.SetRGBA(x, y, color.RGBA{R: over(c.R), G: over(c.G), B: over(c.B), A: 255})
+		}
+	}
+	return out
+}
+
+// encodeGrayStream writes a soft mask: one byte a sample, Flate.
+func encodeGrayStream(m *image.Gray) *rawStream {
+	b := m.Bounds()
+	raw := make([]byte, 0, b.Dx()*b.Dy())
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			raw = append(raw, m.GrayAt(x, y).Y)
+		}
+	}
+	return &rawStream{
+		dict: Dict{
+			"Type":             Name("XObject"),
+			"Subtype":          Name("Image"),
+			"Width":            int64(b.Dx()),
+			"Height":           int64(b.Dy()),
+			"ColorSpace":       Name("DeviceGray"),
+			"BitsPerComponent": int64(8),
+			"Filter":           Name("FlateDecode"),
+		},
+		data: mustFlate(raw),
+	}
 }
 
 // encodeStencilStream writes a scrubbed stencil mask back as a
@@ -1293,9 +1406,11 @@ func encodeRGBStream(m *image.RGBA, old *rawStream, r *Reader) *rawStream {
 		"BitsPerComponent": int64(8),
 		"Filter":           Name("FlateDecode"),
 	}
-	// Only the plainest entries carry over. A mask would let the
-	// original show through the scrubbed area, and /Alternates offers a
-	// second, unscrubbed version of the very same picture.
+	// Only the plainest entries carry over. The picture's own mask is
+	// not one of them — its samples under a scrubbed area are part of
+	// what had to go; planImages gives a masked picture a new one — and
+	// /Alternates offers a second, unscrubbed version of the very same
+	// picture.
 	for _, keep := range []Name{"Intent"} {
 		if v, ok := old.dict[keep]; ok {
 			dict[keep] = v
