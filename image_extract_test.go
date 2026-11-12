@@ -303,3 +303,47 @@ func TestImageColorSpaceReporting(t *testing.T) {
 		t.Errorf("colour spaces = %v", spaces)
 	}
 }
+
+// A soft mask finer than its image keeps its own grid: a scanner's
+// "compact" page stores the ink as a few coarse pixels and the letters
+// as the mask, and sampled down to the image's size nothing of them
+// is left.
+func TestApplySoftMaskKeepsTheFinerGrid(t *testing.T) {
+	ink := image.NewGray(image.Rect(0, 0, 1, 1))
+	ink.SetGray(0, 0, color.Gray{Y: 20})
+	mask := image.NewGray(image.Rect(0, 0, 40, 20))
+	for y := 0; y < 20; y++ {
+		for x := 0; x < 20; x++ {
+			mask.SetGray(x, y, color.Gray{Y: 255}) // the left half is ink
+		}
+	}
+	out := applySoftMask(ink, mask)
+	if b := out.Bounds(); b.Dx() != 40 || b.Dy() != 20 {
+		t.Fatalf("result is %dx%d, want the mask's 40x20", b.Dx(), b.Dy())
+	}
+	for _, p := range []struct {
+		x, y  int
+		alpha uint8
+	}{{2, 2, 255}, {19, 19, 255}, {20, 0, 0}, {39, 19, 0}} {
+		c := color.NRGBAModel.Convert(out.At(p.x, p.y)).(color.NRGBA)
+		if c.A != p.alpha || c.R != 20 {
+			t.Errorf("at %d,%d: colour %d alpha %d, want colour 20 alpha %d", p.x, p.y, c.R, c.A, p.alpha)
+		}
+	}
+
+	// A mask coarser than its image is spread over the image's grid,
+	// as it always was.
+	big := image.NewGray(image.Rect(0, 0, 4, 4))
+	small := image.NewGray(image.Rect(0, 0, 2, 2))
+	small.SetGray(0, 0, color.Gray{Y: 255})
+	out = applySoftMask(big, small)
+	if b := out.Bounds(); b.Dx() != 4 || b.Dy() != 4 {
+		t.Fatalf("result is %dx%d, want the image's 4x4", b.Dx(), b.Dy())
+	}
+	if a := color.NRGBAModel.Convert(out.At(1, 1)).(color.NRGBA).A; a != 255 {
+		t.Errorf("alpha at 1,1 is %d, want 255", a)
+	}
+	if a := color.NRGBAModel.Convert(out.At(2, 1)).(color.NRGBA).A; a != 0 {
+		t.Errorf("alpha at 2,1 is %d, want 0", a)
+	}
+}

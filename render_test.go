@@ -2688,3 +2688,50 @@ func TestAnnotationAppearanceMatrix(t *testing.T) {
 }
 
 func nearF(a, b, tol float64) bool { return a-b < tol && b-a < tol }
+
+// TestRenderImageWithFinerSoftMask draws the page a scanner's compact
+// mode writes: one pixel of ink stretched over the sheet, shown only
+// where its soft mask — the letters, at full resolution — lets it.
+func TestRenderImageWithFinerSoftMask(t *testing.T) {
+	doc := New()
+	doc.Compress = false
+	page := doc.AddPage()
+	page.op("q 595 0 0 842 0 0 cm /Fg Do Q")
+	src := withResources(t, docBytes(t, doc), func(u *Updater) Dict {
+		// 100 by 100 samples; a block of ink in the upper left quarter.
+		samples := make([]byte, 100*100)
+		for y := 10; y < 40; y++ {
+			for x := 10; x < 40; x++ {
+				samples[y*100+x] = 255
+			}
+		}
+		mask := u.add(&rawStream{
+			dict: Dict{"Type": Name("XObject"), "Subtype": Name("Image"), "Width": int64(100), "Height": int64(100),
+				"ColorSpace": Name("DeviceGray"), "BitsPerComponent": int64(8)},
+			data: samples,
+		})
+		fg := u.add(&rawStream{
+			dict: Dict{"Type": Name("XObject"), "Subtype": Name("Image"), "Width": int64(1), "Height": int64(1),
+				"ColorSpace": Name("DeviceGray"), "BitsPerComponent": int64(8), "SMask": Ref{Num: mask}},
+			data: []byte{20},
+		})
+		return Dict{"XObject": Dict{"Fg": Ref{Num: fg}}}
+	})
+
+	r := NewReaderOrFail(t, src)
+	img, err := r.RenderPage(0, RenderOpts{DPI: 100, IncludeVector: true, IncludeRasterImages: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Inside the block (a quarter of the way in from the top left)
+	// the ink shows; outside it the sheet is bare.
+	if v, _, _, _ := at(t, img, 100, 595*0.25, 842*0.25); v > 60 {
+		t.Errorf("inside the mask's block the page is %d, want the ink", v)
+	}
+	if v, _, _, _ := at(t, img, 100, 595*0.75, 842*0.75); v != 255 {
+		t.Errorf("outside the mask's block the page is %d, want bare paper", v)
+	}
+	if v, _, _, _ := at(t, img, 100, 595*0.05, 842*0.05); v != 255 {
+		t.Errorf("in the margin the page is %d, want bare paper", v)
+	}
+}

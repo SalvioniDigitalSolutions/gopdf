@@ -558,20 +558,34 @@ func (im ImageRef) softMask() (*image.Gray, error) {
 	return out, nil
 }
 
-// applySoftMask combines an image with a separately sized alpha channel.
+// applySoftMask combines an image with a separately sized alpha
+// channel. The result has the finer of the two grids on each axis.
+//
+// A mask finer than its image is the usual form of a scanner's
+// "compact" page: the ink is a few coarse pixels of colour — one, at
+// the limit — and the letters are the mask. Sampled down to the
+// image's own size the mask leaves nothing of them, and the page
+// rendered blank.
 func applySoftMask(base image.Image, mask *image.Gray) image.Image {
 	b := base.Bounds()
 	mb := mask.Bounds()
-	if mb.Dx() == 0 || mb.Dy() == 0 {
+	if mb.Dx() == 0 || mb.Dy() == 0 || b.Dx() == 0 || b.Dy() == 0 {
 		return base
 	}
-	out := image.NewNRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
-	for y := 0; y < b.Dy(); y++ {
-		my := y * mb.Dy() / b.Dy()
-		for x := 0; x < b.Dx(); x++ {
-			mx := x * mb.Dx() / b.Dx()
-			c := color.NRGBAModel.Convert(base.At(b.Min.X+x, b.Min.Y+y)).(color.NRGBA)
-			c.A = mask.GrayAt(mb.Min.X+mx, mb.Min.Y+my).Y
+	w, h := b.Dx(), b.Dy()
+	if mb.Dx() > w {
+		w = mb.Dx()
+	}
+	if mb.Dy() > h {
+		h = mb.Dy()
+	}
+	out := image.NewNRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		by := y * b.Dy() / h
+		my := y * mb.Dy() / h
+		for x := 0; x < w; x++ {
+			c := color.NRGBAModel.Convert(base.At(b.Min.X+x*b.Dx()/w, b.Min.Y+by)).(color.NRGBA)
+			c.A = mask.GrayAt(mb.Min.X+x*mb.Dx()/w, mb.Min.Y+my).Y
 			out.SetNRGBA(x, y, c)
 		}
 	}
