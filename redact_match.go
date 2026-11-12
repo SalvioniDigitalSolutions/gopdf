@@ -213,7 +213,8 @@ func (rd *Redactor) matchesInChains(runs []*TextRun) map[*TextRun][][2]int {
 			found[run] = append(found[run], rs...)
 		}
 	}
-	for _, chain := range buildChains(runs) {
+	chains := buildChains(runs)
+	for _, chain := range chains {
 		for _, lit := range rd.literals {
 			for _, rg := range literalRanges(chain.text, lit, rd.mode()) {
 				add(chain.chainRanges(rg[0], rg[1]))
@@ -225,7 +226,79 @@ func (rd *Redactor) matchesInChains(runs []*TextRun) map[*TextRun][][2]int {
 			}
 		}
 	}
+	// And the occurrences a line break runs through: each line gives
+	// up the part of the name it holds.
+	for _, lit := range rd.literals {
+		for _, occ := range acrossChains(chains, lit, rd.mode()) {
+			for _, part := range occ {
+				add(chains[part.chain].chainRanges(part.start, part.end))
+			}
+		}
+	}
 	return found
+}
+
+// chainPart is the stretch of one chain that an occurrence running over
+// several chains covers.
+type chainPart struct {
+	chain      int
+	start, end int
+}
+
+// acrossChains finds the occurrences of a literal that begin in one
+// chain and end in another.
+//
+// A chain is a line, and a name of two words is as often as not broken
+// between them: "Marialuisa" ends a line and "Vanetti" begins the next.
+// Matching line by line found neither half — neither IS the name — and
+// the name stayed on the page, in two pieces any reader joins. So the
+// chains are also read one after the other, a space apart, the way the
+// page's text is read back, and what is found only in that reading is
+// returned with the part each chain holds of it.
+//
+// Greedy on purpose. Two lines that follow each other in the page's
+// instructions and are not one paragraph — the foot of one column, the
+// head of the next — can spell a name between them, and then both
+// halves go. That is the right way round: anything reading the page
+// back joins them just the same.
+func acrossChains(chains []runChain, lit string, mode matchMode) [][]chainPart {
+	if len(chains) < 2 || !strings.ContainsAny(lit, " \t\u00a0") {
+		return nil
+	}
+	var b strings.Builder
+	base := make([]int, len(chains))
+	for i, c := range chains {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		base[i] = b.Len()
+		b.WriteString(c.text)
+	}
+	joined := b.String()
+	var out [][]chainPart
+	for _, rg := range literalRanges(joined, lit, mode) {
+		var parts []chainPart
+		for i, c := range chains {
+			lo, hi := base[i], base[i]+len(c.text)
+			if rg[1] <= lo || rg[0] >= hi {
+				continue
+			}
+			s, e := rg[0], rg[1]
+			if s < lo {
+				s = lo
+			}
+			if e > hi {
+				e = hi
+			}
+			if e > s {
+				parts = append(parts, chainPart{chain: i, start: s - lo, end: e - lo})
+			}
+		}
+		if len(parts) > 1 {
+			out = append(out, parts)
+		}
+	}
+	return out
 }
 
 // continuesHyphenated reports whether the chain so far ends in a hyphen

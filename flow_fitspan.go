@@ -131,6 +131,18 @@ func (p *UpdatablePage) planPageFitted(subs []Pseudonym, mode matchMode) (
 	if len(byRun) == 0 {
 		return nil, nil, false
 	}
+	// An occurrence a line break runs through cannot be fitted where it
+	// stands: its two halves are on two lines, and a token is one word.
+	// It used to be passed over — the plan looks at a line at a time —
+	// so the page came out with the name replaced where it stood whole
+	// and readable where it wrapped. Such a page is left to the flow
+	// engine, which re-wraps the paragraph around the token.
+	chains := buildChains(p.runs)
+	for _, sub := range subs {
+		if sub.From != "" && len(acrossChains(chains, sub.From, mode)) > 0 {
+			return nil, nil, false
+		}
+	}
 	fallback := fallbackFor(p)
 	var plan []fittedRun
 	for _, run := range p.runs {

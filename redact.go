@@ -338,9 +338,15 @@ func (rd *Redactor) checkRemoved(out []byte) error {
 	//
 	// Joining loses nothing. Away from a hyphenated break the reading is
 	// the raw text, so a survivor standing on its own is still found.
+	//
+	// And a name the document wrapped between two words is one name:
+	// read line by line it is on neither, and the check passed a page
+	// that still said it. It is read once more with every line break a
+	// space.
 	got := dehyphenate(text.String())
+	flat := flattenSpace(got)
 	for _, lit := range rd.literals {
-		if containsBounded(got, lit, rd.mode()) {
+		if containsBounded(got, lit, rd.mode()) || containsBounded(flat, flattenSpace(lit), rd.mode()) {
 			return fmt.Errorf("gopdf: %q is still readable after redaction; "+
 				"the document draws it in a way this could not reach, and the "+
 				"output has been withheld", lit)

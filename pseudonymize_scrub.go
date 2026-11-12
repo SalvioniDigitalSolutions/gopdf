@@ -206,9 +206,11 @@ func findResidue(r *Reader, subs []Pseudonym) (string, error) {
 		// as holding them in a string. Scrubbing the string leaves the
 		// drawing, which nothing else here reads.
 		text += "\n" + r.annotationText(i)
-		for _, reading := range []string{text, dehyphenate(text)} {
+		// And once more with every line break a space: a name wrapped
+		// between two of its words is on no single line.
+		for _, reading := range []string{text, dehyphenate(text), flattenSpace(dehyphenate(text))} {
 			for _, s := range subs {
-				if containsBounded(reading, s.From, matchWords) {
+				if containsBounded(reading, s.From, matchWords) || containsBounded(reading, flattenSpace(s.From), matchWords) {
 					return fmt.Sprintf("%q is still readable on page %d", s.From, i+1), nil
 				}
 			}
