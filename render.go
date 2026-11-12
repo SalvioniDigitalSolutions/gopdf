@@ -317,12 +317,35 @@ func (rn *renderer) run(content []byte, resources any, base matrix, gs renderSta
 		return point{px, py}
 	}
 
+	// skipTo is where lexing resumes after an inline image: its data is
+	// not instructions, though the lexer made tokens of it.
+	skipTo := 0
 	for _, tok := range tokens {
+		if tok.start < skipTo {
+			continue
+		}
 		op, isOp := tok.val.(opKeyword)
 		if !isOp {
 			if len(operands) < 64 {
 				operands = append(operands, tok)
 			}
+			continue
+		}
+		if op == "ID" {
+			// A picture written into the instructions themselves: what
+			// stands between BI and here describes it, and its data
+			// runs from here to EI (render_inline.go).
+			dict := inlineImageDict(rn.r, operands, res)
+			from := tok.end
+			if from < len(content) && isWS(content[from]) {
+				from++
+			}
+			to, after := inlineImageData(rn.r, content, from, dict)
+			skipTo = after
+			if hideFrom == 0 && rn.opts.IncludeRasterImages && to > from {
+				rn.drawImage(&rawStream{dict: dict, data: content[from:to]}, nil, gs)
+			}
+			operands = operands[:0]
 			continue
 		}
 		// A layer switched off is not drawn, but its state still has to
