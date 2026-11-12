@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 )
 
 // packedFixture builds a document with many small dictionaries, which is
@@ -12,6 +13,9 @@ func packedFixture(t *testing.T, compressObjects bool) []byte {
 	t.Helper()
 	doc := New()
 	doc.CompressObjects = compressObjects
+	// One date for every build of the fixture: New stamps the clock,
+	// and two builds a second apart are not the same bytes.
+	doc.CreationDate = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	doc.SetInfo(Info{Title: "Packed", Author: "gopdf"})
 	var first *Page
 	for i := 0; i < 12; i++ {
