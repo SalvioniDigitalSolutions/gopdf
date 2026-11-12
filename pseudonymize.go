@@ -165,7 +165,16 @@ func Pseudonymize(r *Reader, w io.Writer, subs []Pseudonym) (PseudonymizeResult,
 			}
 			continue
 		}
-		for _, s := range clean {
+		// The paragraph engine takes one value after the other, longest
+		// first. Two that cross — "Keller Treuhand Bern" and "Anna
+		// Keller" in "Anna Keller Treuhand Bern" — left the shorter
+		// one's own words standing once the longer had gone: "Anna
+		// [[ORG_1]]". What they cover together is replaced as one.
+		flow := clean
+		if joined := crossingUnions(page, clean, matchWords); len(joined) > 0 {
+			flow = append(joined, clean...)
+		}
+		for _, s := range flow {
 			n, err := page.replaceTextFlowFit(s.From, s.To, s.FitWidth, s.floor())
 			if err != nil {
 				return PseudonymizeResult{}, fmt.Errorf(
@@ -347,3 +356,55 @@ func (k Key) Reverse() []Pseudonym { return Reverse(k.Mappings) }
 // Reversible reports whether everything this key describes can be undone.
 // It is false once any pixels were overwritten.
 func (k Key) Reversible() bool { return k.PixelsDestroyed == 0 }
+
+// crossingUnions returns, for the values that cross on a page, a
+// substitution for the whole stretch they cover together, carrying the
+// longer value's token. subs is in the order it is applied in, longest
+// first.
+func crossingUnions(p *UpdatablePage, subs []Pseudonym, mode matchMode) []Pseudonym {
+	var out []Pseudonym
+	seen := map[string]bool{}
+	for _, chain := range buildChains(p.runs) {
+		type taken struct {
+			at  [2]int
+			sub Pseudonym
+		}
+		var held []taken
+		for _, sub := range subs {
+			for _, rg := range literalRanges(chain.text, sub.From, mode) {
+				lo, hi, crossed, inside := rg[0], rg[1], -1, false
+				for i, h := range held {
+					if rg[0] >= h.at[1] || rg[1] <= h.at[0] {
+						continue
+					}
+					if rg[0] >= h.at[0] && rg[1] <= h.at[1] {
+						inside = true
+						break
+					}
+					crossed = i
+					if h.at[0] < lo {
+						lo = h.at[0]
+					}
+					if h.at[1] > hi {
+						hi = h.at[1]
+					}
+				}
+				switch {
+				case inside:
+				case crossed < 0:
+					held = append(held, taken{at: rg, sub: sub})
+				default:
+					held[crossed].at = [2]int{lo, hi}
+					union := held[crossed].sub
+					union.From = chain.text[lo:hi]
+					if !seen[union.From] && !strings.Contains(union.To, union.From) {
+						seen[union.From] = true
+						out = append(out, union)
+					}
+				}
+			}
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return len(out[i].From) > len(out[j].From) })
+	return out
+}

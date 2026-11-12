@@ -110,8 +110,31 @@ func (p *UpdatablePage) planPageFitted(subs []Pseudonym, mode matchMode) (
 						return nil, nil, false
 					}
 				}
-				for i, pt := range parts {
+				// A longer value may hold this place already — "Marco
+				// Bianchi" inside "Marco Bianchi und der Beispiel
+				// Treuhand AG", each with a token of its own — or cross
+				// it. The token is written only where the occurrence is
+				// wholly free. Counting an occurrence that was passed
+				// over as replaced made the read-back look for a token
+				// nobody wrote, and a plain letter with two such values
+				// was refused, its font blamed.
+				free := true
+				for _, pt := range parts {
 					if overlapsAny(byRun[pt.run], pt.at) {
+						free = false
+						break
+					}
+				}
+				for i, pt := range parts {
+					if !free {
+						// What the longer value did not take of this
+						// one goes all the same, with no token: of
+						// "Anna Keller" beside "Keller: anna.keller@…"
+						// the first name would have stayed.
+						for _, rest := range freeRanges(byRun[pt.run], pt.at) {
+							byRun[pt.run] = append(byRun[pt.run], fitHit{at: rest, floor: sub.floor()})
+							seen[pt.run] = true
+						}
 						continue
 					}
 					h := fitHit{at: pt.at, floor: sub.floor()}
@@ -121,7 +144,9 @@ func (p *UpdatablePage) planPageFitted(subs []Pseudonym, mode matchMode) (
 					byRun[pt.run] = append(byRun[pt.run], h)
 					seen[pt.run] = true
 				}
-				found = true
+				if free {
+					found = true
+				}
 			}
 		}
 		if found {
@@ -229,6 +254,28 @@ func overlapsAny(hits []fitHit, at [2]int) bool {
 		}
 	}
 	return false
+}
+
+// freeRanges returns the stretches of at that no hit covers.
+func freeRanges(hits []fitHit, at [2]int) [][2]int {
+	out := [][2]int{at}
+	for _, h := range hits {
+		var next [][2]int
+		for _, r := range out {
+			if h.at[1] <= r[0] || h.at[0] >= r[1] {
+				next = append(next, r)
+				continue
+			}
+			if h.at[0] > r[0] {
+				next = append(next, [2]int{r[0], h.at[0]})
+			}
+			if h.at[1] < r[1] {
+				next = append(next, [2]int{h.at[1], r[1]})
+			}
+		}
+		out = next
+	}
+	return out
 }
 
 func sortHits(hs []fitHit) {
