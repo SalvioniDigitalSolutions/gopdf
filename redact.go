@@ -704,7 +704,7 @@ func (rd *Redactor) planPage(page int, byImage map[Ref][]rect) error {
 		}
 	}
 	if rd.overlay && len(bars) > 0 {
-		newContent = append(newContent, rd.labelOps(bars, pi.mediaBox, needFont)...)
+		newContent = append(closedOff(newContent), rd.labelOps(bars, pi.mediaBox, needFont)...)
 	}
 	pageDict := cloneDict(pi.dict)
 	pageDict["Contents"] = rd.newObject(compressedStream(newContent))
@@ -739,6 +739,44 @@ func (rd *Redactor) planPage(page int, byImage map[Ref][]rect) error {
 	}
 	rd.rw.replace[num] = pageDict
 	return nil
+}
+
+// closedOff returns a page's content with its graphics state ended, so
+// that what is drawn after it is drawn in the page's own coordinates.
+//
+// The bars are placed in page space and appended to the page's content.
+// That is only where they land if the content left the page as it found
+// it, and much of it does not: a producer that scales the whole page —
+// every PDF a browser prints starts with ".24 0 0 -.24 0 842 cm" — sets
+// the transform once at the top and never restores it, and others leave
+// a "q" open at the end. Appended to that, a bar meant for the middle
+// of the page was drawn a quarter of the way in from a corner, upside
+// down: the text was gone and the bar covered something else.
+//
+// The content is wrapped in a save and a restore of its own, and
+// whatever it left open is closed first.
+func closedOff(content []byte) []byte {
+	open := 1 // the save this adds
+	for _, t := range tokenizeContent(content) {
+		if op, ok := t.val.(opKeyword); ok {
+			switch string(op) {
+			case "q":
+				open++
+			case "Q":
+				if open > 0 {
+					open--
+				}
+			}
+		}
+	}
+	out := make([]byte, 0, len(content)+3+2*open)
+	out = append(out, "q\n"...)
+	out = append(out, content...)
+	out = append(out, '\n')
+	for ; open > 0; open-- {
+		out = append(out, "Q\n"...)
+	}
+	return out
 }
 
 // redactRun removes whatever part of a run is marked.
