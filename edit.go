@@ -377,6 +377,20 @@ func tokenizeContentLimited(data []byte) ([]contentToken, bool) {
 		if len(out) >= maxContentTokens {
 			return out, true
 		}
+		// The data of a picture written into the instructions is not
+		// instructions. Lexed as if it were, a bracket among its bytes
+		// opened a string that swallowed everything after it — the rest
+		// of the page, text and all (render_inline.go).
+		if op, ok := v.(opKeyword); ok && op == "ID" {
+			first := len(out) - 1
+			for first > 0 {
+				if _, isOp := out[first-1].val.(opKeyword); isOp {
+					break
+				}
+				first--
+			}
+			p.pos = skipInlineData(data, p.pos, out[first:len(out)-1])
+		}
 	}
 }
 

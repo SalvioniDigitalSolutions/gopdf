@@ -1,5 +1,11 @@
 package gopdf
 
+import (
+	"bytes"
+	"compress/zlib"
+	"io"
+)
+
 // A picture written into a page's own instructions.
 //
 // Most pictures are objects of the file that a page names and draws. A
@@ -143,6 +149,21 @@ func inlineImageData(r *Reader, content []byte, from int, d Dict) (to, after int
 			}
 		}
 	}
+	// Deflated data says itself where it ends. Taken at its word, an
+	// "EI" among its bytes — two letters with white space around them
+	// turn up in any long run of packed data — is not mistaken for the
+	// end of the picture.
+	if name, _ := d["Filter"].(Name); name == "FlateDecode" {
+		if n := deflatedLength(content[from:]); n > 0 {
+			j := from + n
+			for j < len(content) && isWS(content[j]) {
+				j++
+			}
+			if isEI(j) {
+				return from + n, j + 2
+			}
+		}
+	}
 	for i := from; i+1 < len(content); i++ {
 		if isEI(i) && (i == from || isWS(content[i-1])) {
 			to = i
@@ -153,4 +174,57 @@ func inlineImageData(r *Reader, content []byte, from int, d Dict) (to, after int
 		}
 	}
 	return from, len(content)
+}
+
+// deflatedLength is how many bytes of data the deflated stream at its
+// start takes up; 0 when the data is not one that inflates to its end.
+func deflatedLength(data []byte) int {
+	src := bytes.NewReader(data)
+	zr, err := zlib.NewReader(src)
+	if err != nil {
+		return 0
+	}
+	defer zr.Close()
+	// A picture is not larger than this inflated; one that claims to
+	// be is left to the search for EI.
+	if _, err := io.Copy(io.Discard, io.LimitReader(zr, 1<<28)); err != nil {
+		return 0
+	}
+	var one [1]byte
+	if n, _ := zr.Read(one[:]); n != 0 {
+		return 0
+	}
+	return len(data) - src.Len()
+}
+
+// inlineValuesDict is inlineImageDict for operands read as plain
+// values, by a reader that keeps no positions and has no page at hand:
+// the names a page's resources define are left as they are, which is
+// enough to tell how long the data is.
+func inlineValuesDict(operands []any) Dict {
+	toks := make([]contentToken, len(operands))
+	for i, v := range operands {
+		toks[i] = contentToken{val: v}
+	}
+	return inlineImageDict(noPage, toks, nil)
+}
+
+// noPage stands in for a document where only values written out in
+// place are looked at.
+var noPage = &Reader{}
+
+// skipInlineData returns where lexing goes on after the ID operator
+// that ends at idEnd: at the EI that closes the picture, so that EI is
+// still read as the operator it is. operands are the tokens between BI
+// and ID.
+func skipInlineData(content []byte, idEnd int, operands []contentToken) int {
+	from := idEnd
+	if from < len(content) && isWS(content[from]) {
+		from++
+	}
+	_, after := inlineImageData(noPage, content, from, inlineImageDict(noPage, operands, nil))
+	if after >= 2 && after <= len(content) && content[after-2] == 'E' && content[after-1] == 'I' {
+		return after - 2
+	}
+	return after
 }

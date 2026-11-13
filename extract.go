@@ -183,6 +183,15 @@ func (ex *textExtractor) run(content []byte, resources any, base matrix, depth i
 					ex.runForm(n, resources, ctm, depth)
 				}
 			}
+		case "ID":
+			// The data of a picture written into the instructions is
+			// passed over: read as instructions it swallows the text
+			// that follows it (render_inline.go).
+			from := p.pos
+			if from < len(content) && isWS(content[from]) {
+				from++
+			}
+			_, p.pos = inlineImageData(noPage, content, from, inlineValuesDict(operands))
 		case "scn", "SCN":
 			// A tiling pattern chosen to paint with says what its cell
 			// says (runPattern).
