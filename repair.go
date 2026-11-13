@@ -3,6 +3,7 @@ package gopdf
 import (
 	"bytes"
 	"errors"
+	"sort"
 )
 
 // Recovering a damaged cross-reference table.
@@ -197,6 +198,14 @@ func (r *Reader) objectIsType(num int, want Name) bool {
 		end = int64(len(r.data))
 	}
 	window := r.data[e.offset:end]
+	// The window ends where the object does: what follows "endobj" is
+	// the next object, and a stream's data is no dictionary. Read on,
+	// the pages written before a catalog were each taken for it.
+	for _, stop := range [][]byte{[]byte("endobj"), []byte("stream\r"), []byte("stream\n")} {
+		if k := bytes.Index(window, stop); k >= 0 {
+			window = window[:k]
+		}
+	}
 	if !bytes.Contains(window, []byte("/Type")) {
 		return false
 	}
@@ -229,7 +238,7 @@ func (r *Reader) recoverTrailer() {
 	// A cross-reference stream carries the same entries in its own
 	// dictionary, and a repaired file may have no trailer keyword at all.
 	if r.trailer["Root"] == nil {
-		for num := range r.xref {
+		for _, num := range r.newestFirst() {
 			if !r.objectIsType(num, "XRef") {
 				continue
 			}
@@ -239,13 +248,33 @@ func (r *Reader) recoverTrailer() {
 		}
 	}
 	if r.trailer["Root"] == nil {
-		for num := range r.xref {
+		for _, num := range r.newestFirst() {
 			if r.objectIsType(num, "Catalog") {
 				r.trailer["Root"] = Ref{Num: num}
 				break
 			}
 		}
 	}
+}
+
+// newestFirst returns the numbers of the objects the scan found, the
+// one written last first: a file updated in place carries its newer
+// catalog and cross-reference further on. A choice made in the order
+// of a map was another one at every opening, and the same damaged file
+// opened or was refused by chance.
+func (r *Reader) newestFirst() []int {
+	nums := make([]int, 0, len(r.xref))
+	for num := range r.xref {
+		nums = append(nums, num)
+	}
+	sort.Slice(nums, func(i, j int) bool {
+		oi, oj := r.xref[nums[i]].offset, r.xref[nums[j]].offset
+		if oi != oj {
+			return oi > oj
+		}
+		return nums[i] > nums[j]
+	})
+	return nums
 }
 
 func (r *Reader) mergeTrailer(t Dict) {
