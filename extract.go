@@ -43,6 +43,9 @@ type textExtractor struct {
 	lastY   float64
 	started bool
 	visited map[Ref]bool // form XObjects currently being expanded
+	// patterns holds the tiling patterns already read: a pattern paints
+	// its cell many times and says what it says once.
+	patterns map[*rawStream]bool
 }
 
 const maxFormDepth = 12
@@ -180,6 +183,14 @@ func (ex *textExtractor) run(content []byte, resources any, base matrix, depth i
 					ex.runForm(n, resources, ctm, depth)
 				}
 			}
+		case "scn", "SCN":
+			// A tiling pattern chosen to paint with says what its cell
+			// says (runPattern).
+			if len(operands) >= 1 && depth < maxFormDepth {
+				if n, ok := operands[len(operands)-1].(Name); ok {
+					ex.runPattern(n, resources, base, depth)
+				}
+			}
 		case "BT":
 			tm, tlm = identityMatrix, identityMatrix
 		case "Tm":
@@ -307,6 +318,67 @@ func (ex *textExtractor) runForm(name Name, resources any, ctm matrix, depth int
 		formRes = resources // forms may inherit the invoking resources
 	}
 	ex.run(content, formRes, inner, depth+1)
+}
+
+// runPattern reads the cell of a tiling pattern chosen as the colour
+// to paint with: its text is on the page as often as the cell repeats,
+// and is read once (see runScanner.scanPattern).
+func (ex *textExtractor) runPattern(name Name, resources any, base matrix, depth int) {
+	res, ok := ex.r.resolve(resources).(Dict)
+	if !ok {
+		return
+	}
+	patterns, ok := ex.r.resolve(res["Pattern"]).(Dict)
+	if !ok {
+		return
+	}
+	entry := patterns[name]
+	stm, ok := ex.r.resolve(entry).(*rawStream)
+	if !ok {
+		return
+	}
+	if pt, _ := toInt(ex.r.resolve(stm.dict["PatternType"])); pt != 1 {
+		return
+	}
+	if ex.patterns[stm] {
+		return
+	}
+	if ref, isRef := entry.(Ref); isRef {
+		if ex.visited[ref] {
+			return
+		}
+		ex.visited[ref] = true
+		defer delete(ex.visited, ref)
+	}
+	content, err := ex.r.decodeStream(stm.dict, stm.data)
+	if err != nil {
+		return
+	}
+	if ex.patterns == nil {
+		ex.patterns = make(map[*rawStream]bool)
+	}
+	ex.patterns[stm] = true
+	inner := base
+	if mArr, ok := ex.r.resolve(stm.dict["Matrix"]).(Array); ok && len(mArr) == 6 {
+		var m matrix
+		valid := true
+		for i, e := range mArr {
+			f, ok := toFloat(ex.r.resolve(e))
+			if !ok {
+				valid = false
+				break
+			}
+			m[i] = f
+		}
+		if valid {
+			inner = m.mul(base)
+		}
+	}
+	patRes := stm.dict["Resources"]
+	if patRes == nil {
+		patRes = resources
+	}
+	ex.run(content, patRes, inner, depth+1)
 }
 
 // --- font decoding ---

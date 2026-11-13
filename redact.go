@@ -807,6 +807,12 @@ func (rd *Redactor) redactRun(page int, run *TextRun, areas []rect, matched [][2
 			Text:    run.Text[rg[0]:rg[1]],
 			Partial: removed != run.Text,
 		})
+		// What a pattern's cell wrote is gone from every tile, and no
+		// one place on the page is where it stood: a bar over the
+		// first tile's position would cover something else.
+		if run.target != nil && run.target.tiled {
+			continue
+		}
 		rd.bars[page] = append(rd.bars[page], redactBar{box: box, label: rd.label})
 	}
 	return nil

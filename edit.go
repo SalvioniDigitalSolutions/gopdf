@@ -107,6 +107,9 @@ type editTarget struct {
 	resources any
 	stream    *rawStream // nil for the page's own content
 	splices   []splice
+	// tiled marks the cell of a tiling pattern: what it draws stands
+	// wherever the pattern is painted, not at one place on the page.
+	tiled bool
 }
 
 type splice struct {
@@ -313,6 +316,10 @@ type runScanner struct {
 	// truncated records that a content stream was too large to lex
 	// whole, so what was collected is a prefix and not the page.
 	truncated bool
+	// patterns holds the tiling patterns already read on this page: a
+	// pattern paints its cell as often as the filled area takes, and
+	// says what it says once.
+	patterns map[*rawStream]bool
 }
 
 // contentToken is a lexed content-stream token with its byte span.
@@ -601,6 +608,17 @@ func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth
 			// works for any colour space.
 			if len(operands) > 0 {
 				st.fillOp = string(target.content[operands[0].start:tok.end])
+				// A tiling pattern chosen to paint with says what its
+				// cell says (scanPattern).
+				if n, ok := operands[len(operands)-1].val.(Name); ok && string(op) == "scn" {
+					sc.scanPattern(n, resources, base, depth)
+				}
+			}
+		case "SCN":
+			if len(operands) > 0 {
+				if n, ok := operands[len(operands)-1].val.(Name); ok {
+					sc.scanPattern(n, resources, base, depth)
+				}
 			}
 		case "Tc":
 			st.charSpacing = num(0)
@@ -738,6 +756,87 @@ func (sc *runScanner) scanForm(name Name, resources any, ctm matrix, depth int) 
 	target := &editTarget{content: content, resources: formRes, stream: writable}
 	sc.targets = append(sc.targets, target)
 	sc.scan(target, formRes, inner, depth+1)
+}
+
+// scanPattern descends into a tiling pattern chosen as the colour to
+// paint with, the way scanForm descends into a form.
+//
+// A tiling pattern is a small content stream of its own, painted over
+// and over to fill an area — a background of "COPY", a box filled with
+// a name. Whatever its cell writes is on the page for anyone to read,
+// as often as the cell repeats, and in the file once. A scanner that
+// stopped at the page's own instructions never saw it: extraction did
+// not show it, and a redaction that had removed the name everywhere
+// else left it in the pattern.
+//
+// The cell is read once per page, placed where its matrix puts the
+// first tile. The matrix maps the pattern into the space of the
+// content stream that uses it — not into whatever the transform was
+// when the colour was chosen — so base, the matrix that stream started
+// with, is what it is combined with.
+func (sc *runScanner) scanPattern(name Name, resources any, base matrix, depth int) {
+	r := sc.r
+	res, ok := r.resolve(resources).(Dict)
+	if !ok {
+		return
+	}
+	patterns, ok := r.resolve(res["Pattern"]).(Dict)
+	if !ok {
+		return
+	}
+	entry := patterns[name]
+	stm, ok := r.resolve(entry).(*rawStream)
+	if !ok {
+		return
+	}
+	if pt, _ := toInt(r.resolve(stm.dict["PatternType"])); pt != 1 {
+		return // a shading pattern has no content of its own
+	}
+	if sc.patterns[stm] {
+		return
+	}
+	if ref, isRef := entry.(Ref); isRef {
+		if sc.seen[ref] {
+			return
+		}
+		sc.seen[ref] = true
+		defer delete(sc.seen, ref)
+	}
+	content, err := r.decodeStream(stm.dict, stm.data)
+	if err != nil {
+		return
+	}
+	writable := sc.adoptForm(entry)
+	if writable == nil && !sc.readOnly {
+		return
+	}
+	if sc.patterns == nil {
+		sc.patterns = make(map[*rawStream]bool)
+	}
+	sc.patterns[stm] = true
+	inner := base
+	if mArr, ok := r.resolve(stm.dict["Matrix"]).(Array); ok && len(mArr) == 6 {
+		var m matrix
+		valid := true
+		for i, e := range mArr {
+			f, ok := toFloat(r.resolve(e))
+			if !ok {
+				valid = false
+				break
+			}
+			m[i] = f
+		}
+		if valid {
+			inner = m.mul(base)
+		}
+	}
+	patRes := stm.dict["Resources"]
+	if patRes == nil {
+		patRes = resources
+	}
+	target := &editTarget{content: content, resources: patRes, stream: writable, tiled: true}
+	sc.targets = append(sc.targets, target)
+	sc.scan(target, patRes, inner, depth+1)
 }
 
 // copiedStream returns a document's copy of a source stream, creating it
