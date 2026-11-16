@@ -80,6 +80,10 @@ func (k *keeper) stream(v any, rules map[Name]rule) any {
 	if !ok {
 		return nil
 	}
+	// A filter no viewer knows is a stream nothing draws: none.
+	if f, has := stm.dict["Filter"]; has && k.filterNames(f) == nil {
+		return nil
+	}
 	all := map[Name]rule{"Filter": k.filterNames, "DecodeParms": k.decodeParms}
 	for key, r := range rules {
 		all[key] = r
@@ -88,23 +92,17 @@ func (k *keeper) stream(v any, rules map[Name]rule) any {
 	return &rawStream{dict: d, data: stm.data}
 }
 
-// filterNames keeps a stream's filters. A filter not known is a stream
-// no viewer decodes; the copy is refused rather than carry it.
+// filterNames keeps a stream's filters, all of them known, or none.
 func (k *keeper) filterNames(v any) any {
 	known := k.oneOf(filterNames...)
 	switch t := k.r.resolve(v).(type) {
 	case Name:
-		if known(t) == nil {
-			k.fail("a stream with a filter not known (%s)", t)
-			return nil
-		}
-		return t
+		return known(t)
 	case Array:
 		out := Array{}
 		for _, e := range t {
 			n := known(e)
 			if n == nil {
-				k.fail("a stream with a filter not known")
 				return nil
 			}
 			out = append(out, n)
@@ -205,8 +203,8 @@ func (k *keeper) image(v any) any {
 
 func (k *keeper) form(v any) any {
 	stm, ok := v.(*rawStream)
-	if !ok {
-		return nil
+	if !ok || k.numbers(stm.dict["BBox"]) == nil {
+		return nil // a form has a box to draw in
 	}
 	data := k.drawable(stm)
 	res := k.ownResources(stm.dict)
@@ -280,7 +278,7 @@ func (k *keeper) font(v any) any {
 			"CIDSystemInfo": k.cidSystemInfo,
 			"CIDToGIDMap": func(v any) any {
 				if n, ok := k.r.resolve(v).(Name); ok {
-					return n
+					return k.oneOf("Identity")(n)
 				}
 				return k.value(v, "cidtogid", func(v any) any { return k.stream(v, nil) })
 			},
@@ -324,8 +322,36 @@ func (k *keeper) font(v any) any {
 				out["Resources"] = r
 			}
 		}
+		// A map of glyphs means something only into the TrueType program
+		// the font carries, and only with glyphs it has.
+		if m, ok := out["CIDToGIDMap"]; ok {
+			if _, isName := m.(Name); !isName && !k.cidToGIDMapFits(d) {
+				delete(out, "CIDToGIDMap")
+			}
+		}
 		return out
 	})
+}
+
+func (k *keeper) cidToGIDMapFits(d Dict) bool {
+	fd, _ := k.r.resolve(d["FontDescriptor"]).(Dict)
+	ff, _ := k.r.resolve(fd["FontFile2"]).(*rawStream)
+	m, _ := k.r.resolve(d["CIDToGIDMap"]).(*rawStream)
+	if ff == nil || m == nil {
+		return false
+	}
+	prog, err1 := k.r.decodeStream(ff.dict, ff.data)
+	data, err2 := k.r.decodeStream(m.dict, m.data)
+	n := trueTypeGlyphs(prog)
+	if err1 != nil || err2 != nil || n == 0 || len(data)%2 != 0 {
+		return false
+	}
+	for i := 0; i+1 < len(data); i += 2 {
+		if int(data[i])<<8|int(data[i+1]) >= n {
+			return false
+		}
+	}
+	return true
 }
 
 // drawable is the content of a form, a pattern's cell or a glyph, as a
@@ -356,6 +382,36 @@ var fontEncodingNames = func() []Name {
 	}
 	return out
 }()
+
+// iccProfile reports whether data is an ICC profile: its signature, and
+// a size it holds.
+func iccProfile(data []byte) bool {
+	if len(data) < 132 || string(data[36:40]) != "acsp" {
+		return false
+	}
+	size := int(data[0])<<24 | int(data[1])<<16 | int(data[2])<<8 | int(data[3])
+	return size >= 132 && size <= len(data)
+}
+
+// trueTypeGlyphs returns the number of glyphs a TrueType program holds
+// (its maxp table), or 0.
+func trueTypeGlyphs(data []byte) int {
+	if len(data) < 12 {
+		return 0
+	}
+	n := int(data[4])<<8 | int(data[5])
+	for i := 0; i < n && 12+16*i+16 <= len(data); i++ {
+		rec := data[12+16*i:]
+		if string(rec[:4]) != "maxp" {
+			continue
+		}
+		off := int(rec[8])<<24 | int(rec[9])<<16 | int(rec[10])<<8 | int(rec[11])
+		if off+6 <= len(data) {
+			return int(data[off+4])<<8 | int(data[off+5])
+		}
+	}
+	return 0
+}
 
 // booleans keeps an array of booleans.
 func (k *keeper) booleans(v any) any {
@@ -521,11 +577,32 @@ func (k *keeper) colorSpaceArray(arr Array) any {
 			return nil
 		}
 		icc := k.value(arr[1], "icc", func(v any) any {
+			stm, ok := v.(*rawStream)
+			if !ok {
+				return nil
+			}
+			if data, err := k.r.decodeStream(stm.dict, stm.data); err != nil || !iccProfile(data) {
+				return nil
+			}
 			return k.stream(v, map[Name]rule{
 				"N": k.number, "Range": k.numbers, "Alternate": k.colorSpace,
 			})
 		})
 		if icc == nil {
+			// No profile: the space it falls back to.
+			if stm, ok := k.r.resolve(arr[1]).(*rawStream); ok {
+				if alt := k.colorSpace(stm.dict["Alternate"]); alt != nil {
+					return alt
+				}
+				switch n, _ := toInt(k.r.resolve(stm.dict["N"])); n {
+				case 1:
+					return Name("DeviceGray")
+				case 3:
+					return Name("DeviceRGB")
+				case 4:
+					return Name("DeviceCMYK")
+				}
+			}
 			return nil
 		}
 		return Array{family, icc}
@@ -697,7 +774,22 @@ func (k *keeper) shading(v any) any {
 		"Decode": k.numbers, "VerticesPerRow": k.number,
 	}
 	return k.value(v, "shading", func(v any) any {
-		if _, ok := v.(*rawStream); ok {
+		var d Dict
+		_, isStream := v.(*rawStream)
+		if isStream {
+			d = v.(*rawStream).dict
+		} else if dd, ok := v.(Dict); ok {
+			d = dd
+		} else {
+			return nil
+		}
+		// One of the seven kinds, with a colour space; the last four
+		// are streams of their points, the first three are not.
+		st, _ := toInt(k.r.resolve(d["ShadingType"]))
+		if st < 1 || st > 7 || k.colorSpace(d["ColorSpace"]) == nil || (st >= 4) != isStream {
+			return nil
+		}
+		if isStream {
 			return k.stream(v, rules)
 		}
 		return k.dictOrNil(v, rules)
@@ -739,10 +831,14 @@ func (k *keeper) extGState(v any) any {
 				if n, ok := k.r.resolve(v).(Name); ok {
 					return k.oneOf("None")(n)
 				}
-				return k.dictOrNil(v, map[Name]rule{
+				m := k.dict(v, map[Name]rule{
 					"Type": k.oneOf("Mask"), "S": k.oneOf("Alpha", "Luminosity"), "BC": k.numbers, "TR": fnOrName,
 					"G": func(v any) any { return k.value(v, "form", k.form) },
 				})
+				if m == nil || m["G"] == nil || m["S"] == nil {
+					return nil // a soft mask is its group, and how to read it
+				}
+				return m
 			},
 		})
 	})

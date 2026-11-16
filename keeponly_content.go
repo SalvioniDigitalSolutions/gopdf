@@ -48,14 +48,43 @@ func (k *keeper) content(data []byte, res Dict) keptContent {
 		return sub[n]
 	}
 	inBI := false
+	// What lies between the tokens is kept only where it is space: a
+	// comment, or bytes the reader could not take for anything, is not
+	// carried over. (The samples of a picture written into the content
+	// follow its ID and stay.)
+	prevEnd, afterID := 0, false
+	gap := func(from, to int) {
+		if afterID || from >= to {
+			return
+		}
+		for _, c := range data[from:to] {
+			if !isPDFSpace(c) {
+				edits = append(edits, contentEdit{from, to, nil})
+				return
+			}
+		}
+	}
 	for _, tok := range toks {
+		gap(prevEnd, tok.start)
+		prevEnd = tok.end
 		op, isOp := tok.val.(opKeyword)
+		afterID = isOp && op == "ID"
 		if !isOp {
 			operands = append(operands, tok)
 			continue
 		}
 		args := operands
 		operands = nil
+		if !contentOperators[string(op)] {
+			// An operator the standard has not: it draws nothing, and is
+			// not carried over, nor what it was given.
+			from := tok.start
+			if len(args) > 0 {
+				from = args[0].start
+			}
+			edits = append(edits, contentEdit{from, tok.end, nil})
+			continue
+		}
 		if inBI && op != "ID" {
 			continue
 		}
@@ -177,11 +206,20 @@ func (k *keeper) content(data []byte, res Dict) keptContent {
 			}
 		}
 	}
+	gap(prevEnd, len(data))
+	if len(operands) > 0 {
+		// Operands no operator takes draw nothing.
+		edits = append(edits, contentEdit{operands[0].start, operands[len(operands)-1].end, nil})
+	}
 	if hiddenFrom >= 0 {
 		// A hidden layer left open runs to the end of the content.
 		edits = append(edits, contentEdit{hiddenFrom, len(data), nil})
 	}
 	return keptContent{data: applyContentEdits(data, edits), used: used}
+}
+
+func isPDFSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f' || c == 0
 }
 
 func deviceSpace(n Name) bool {
