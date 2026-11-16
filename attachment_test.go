@@ -329,11 +329,11 @@ func TestAttachmentsOfADocumentWithNone(t *testing.T) {
 	}
 }
 
-// TestRedactionRefusesALeakInAKeptAttachment is the reason any of this
-// is here. A report is redacted, the caller asks to keep the spreadsheet
-// it came from, and the spreadsheet still holds the same words. The page
-// looks clean and the document is not, so the output is withheld.
-func TestRedactionRefusesALeakInAKeptAttachment(t *testing.T) {
+// TestRedactionTakesAttachmentsAndTheirWordsOut: a report is redacted
+// and the spreadsheet it came from, attached, holds the same words. A
+// redaction always removes attachments — there is no option to keep
+// them — so the words leave the file entirely.
+func TestRedactionTakesAttachmentsAndTheirWordsOut(t *testing.T) {
 	doc := New()
 	doc.Compress = false
 	p := doc.AddPage()
@@ -351,23 +351,6 @@ func TestRedactionRefusesALeakInAKeptAttachment(t *testing.T) {
 	}
 	withFile := buf.Bytes()
 
-	rd := Redact(NewReaderOrFail(t, withFile))
-	rd.Text("Ada Lovelace")
-	rd.KeepAttachments(true)
-	var out bytes.Buffer
-	_, err := rd.WriteTo(&out)
-	if err == nil {
-		t.Fatal("the redaction succeeded with the name still in the attachment")
-	}
-	if !strings.Contains(err.Error(), "contacts.csv") {
-		t.Errorf("the error does not name the attachment: %v", err)
-	}
-	if out.Len() != 0 {
-		t.Error("a document that failed its own check was written anyway")
-	}
-
-	// Letting the attachment go, which is the default, makes the same
-	// redaction succeed and takes the words out of the file entirely.
 	rd2 := Redact(NewReaderOrFail(t, withFile))
 	rd2.Text("Ada Lovelace")
 	var clean bytes.Buffer
@@ -421,22 +404,6 @@ func TestRedactionRemovesAttachmentsByDefault(t *testing.T) {
 	}
 	if bytes.Contains(out.Bytes(), []byte("nothing to do with it")) {
 		t.Error("the attachment's bytes are still in the file")
-	}
-
-	// And KeepAttachments says otherwise.
-	rd2 := Redact(NewReaderOrFail(t, src))
-	rd2.KeepAttachments(true)
-	rd2.Text("A document")
-	var kept bytes.Buffer
-	if _, err := rd2.WriteTo(&kept); err != nil {
-		t.Fatal(err)
-	}
-	list := NewReaderOrFail(t, kept.Bytes()).Attachments()
-	if len(list) != 1 {
-		t.Fatalf("KeepAttachments dropped it anyway: %+v", list)
-	}
-	if data, err := list[0].Data(); err != nil || string(data) != "nothing to do with it" {
-		t.Errorf("the kept attachment reads as %q (%v)", data, err)
 	}
 }
 

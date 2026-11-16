@@ -101,9 +101,8 @@ type Redactor struct {
 	labelColor   Color
 	labelFontRef Ref
 
-	fill      Color
-	verify    bool
-	keepFiles bool
+	fill   Color
+	verify bool
 	// substrings relaxes matching so a literal is found inside a longer
 	// word, which is what this package used to do.
 	substrings   bool
@@ -242,15 +241,6 @@ func (rd *Redactor) KeepAnnotations(on bool) { rd.keepAnnots = on }
 // point of redacting having been to remove it. RemoveAttachments takes
 // them out.
 func (rd *Redactor) Attachments() []Attachment { return rd.r.Attachments() }
-
-// KeepAttachments leaves the files a document carries inside it.
-//
-// Off by default, so a redaction removes them. No rule here reaches into
-// an attachment, and a spreadsheet attached to a report holds whatever
-// the report said — which makes leaving one in place the likeliest way
-// for a redacted document to give up what it was redacted for. Keeping
-// them is a decision worth stating.
-func (rd *Redactor) KeepAttachments(on bool) { rd.keepFiles = on }
 
 // Marks lists what will be removed, without removing it. Call it to show
 // a reviewer what is about to happen.
@@ -522,9 +512,11 @@ func (rd *Redactor) buildPlan() error {
 	if rd.stripMeta {
 		rd.rw.stripInfo = true
 	}
-	if !rd.keepFiles {
-		rd.dropAttachments()
-	}
+	// A redaction always removes the files a document carries: no rule
+	// here reaches into an attachment, and a spreadsheet attached to a
+	// report holds whatever the report said. There is no option to keep
+	// them.
+	rd.dropAttachments()
 	byImage := make(map[Ref][]rect)
 	for _, img := range rd.images {
 		byImage[img.ref] = nil // nil means the whole image
@@ -1157,8 +1149,8 @@ func encodeStencilStream(m image.Image, regions []rect) *rawStream {
 // stopped working. The entries are now named one at a time: the scripts
 // go, because a script is behaviour rather than content and is a way out
 // of the document; the destinations stay, because a heading a link
-// points at is not metadata. Embedded files are their own decision, and
-// KeepAttachments is where it is made.
+// points at is not metadata. Embedded files always go, with the
+// attachments (dropAttachments).
 func (rd *Redactor) stripDocumentMetadata() {
 	rootRef, ok := rd.r.trailer["Root"].(Ref)
 	if !ok {
