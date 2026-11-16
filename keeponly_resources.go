@@ -171,11 +171,7 @@ func (k *keeper) form(v any) any {
 	if !ok {
 		return nil
 	}
-	data, err := k.r.decodeStream(stm.dict, stm.data)
-	if err != nil {
-		k.fail("a form's content cannot be read: %v", err)
-		return nil
-	}
+	data := k.drawable(stm)
 	res := k.ownResources(stm.dict)
 	kept := k.content(data, res)
 	if kept.err != nil {
@@ -260,12 +256,7 @@ func (k *keeper) font(v any) any {
 					if !ok {
 						return nil
 					}
-					data, err := k.r.decodeStream(stm.dict, stm.data)
-					if err != nil {
-						k.fail("a glyph of a Type 3 font cannot be read: %v", err)
-						return nil
-					}
-					c := k.content(data, res)
+					c := k.content(k.drawable(stm), res)
 					if c.err != nil {
 						k.fail("a glyph of a Type 3 font: %v", c.err)
 						return nil
@@ -294,6 +285,18 @@ func (k *keeper) font(v any) any {
 		}
 		return out
 	})
+}
+
+// drawable is the content of a form, a pattern's cell or a glyph, as a
+// viewer draws it. Content no decoder reads draws nothing in any
+// viewer, and is kept as nothing: nothing of it is carried over.
+func (k *keeper) drawable(stm *rawStream) []byte {
+	data, err := k.r.decodeStream(stm.dict, stm.data)
+	if err != nil {
+		k.rep.Undecodable++
+		return nil
+	}
+	return data
 }
 
 // ownResources is what d draws with: its own resources, or else those
@@ -492,11 +495,7 @@ func (k *keeper) function(v any) any {
 func (k *keeper) pattern(v any) any {
 	return k.value(v, "pattern", func(v any) any {
 		if stm, ok := v.(*rawStream); ok {
-			data, err := k.r.decodeStream(stm.dict, stm.data)
-			if err != nil {
-				k.fail("a pattern's content cannot be read: %v", err)
-				return nil
-			}
+			data := k.drawable(stm)
 			res := k.ownResources(stm.dict)
 			kept := k.content(data, res)
 			if kept.err != nil {

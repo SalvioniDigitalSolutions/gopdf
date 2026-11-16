@@ -61,6 +61,9 @@ type KeepReport struct {
 	// Links: links removed because of their target (an address that
 	// holds a value, mail, a file, another document, a script).
 	Links int
+	// Undecodable: forms, pattern cells and glyphs whose content no
+	// decoder reads, kept empty (they draw nothing in any viewer).
+	Undecodable int
 }
 
 // errKeepOnly marks every refusal of KeepOnly.

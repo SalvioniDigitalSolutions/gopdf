@@ -544,6 +544,22 @@ func TestKeepOnlyFailsClosed(t *testing.T) {
 	}
 }
 
+// A form whose content no decoder reads draws nothing; it is kept
+// empty, and the copy is written.
+func TestKeepOnlyKeepsAnUndecodableFormEmpty(t *testing.T) {
+	f := kfix{
+		res: "/XObject << /Fm1 10 0 R >>", content: "/Fm1 Do\n",
+		objs: map[int]string{10: kstream("/Type /XObject /Subtype /Form /BBox [0 0 10 10] /Filter /FlateDecode", "not deflate at all Bianchi")},
+	}
+	out, rep := keptCopy(t, f.pdf())
+	if rep.Undecodable != 1 {
+		t.Errorf("report %+v; want one undecodable form", rep)
+	}
+	if w := whereHeld(out, "Bianchi"); w != "" {
+		t.Errorf("the copy holds the undecodable bytes — %s", w)
+	}
+}
+
 // A JPEG's notes — a camera's EXIF, XMP, a comment, an agency's caption,
 // a JFIF preview — are not drawn and are left out; the picture decodes
 // to the same pixels.
