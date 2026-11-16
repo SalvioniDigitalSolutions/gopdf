@@ -47,8 +47,8 @@ func fitExact(t *testing.T, src []byte, subs []Pseudonym) []byte {
 // narrower than what it replaces used to keep its size and let the line
 // gain slack. It now claims the same width, so nothing after it moves.
 func TestFitExactNarrowTokenIsPadded(t *testing.T) {
-	src := justifiedPage(t, "Contratto", "con", "Edoardo", "Salvioni", "oggi")
-	out := fitExact(t, src, []Pseudonym{{From: "Edoardo", To: "***", FitWidth: true}})
+	src := justifiedPage(t, "Contratto", "con", "Massimo", "Bernasco", "oggi")
+	out := fitExact(t, src, []Pseudonym{{From: "Massimo", To: "***", FitWidth: true}})
 
 	before := fragsOf(t, src)
 	after := fragsOf(t, out)
@@ -73,8 +73,8 @@ func TestFitExactNarrowTokenIsPadded(t *testing.T) {
 // inside it starts means interpolating, which for a proportional face is
 // a guess. The pixels are not a guess.
 func TestFitExactKeepsWhatFollows(t *testing.T) {
-	src := justifiedPage(t, "Contratto", "con", "Edoardo", "Salvioni", "oggi")
-	out := fitExact(t, src, []Pseudonym{{From: "Edoardo", To: "***", FitWidth: true}})
+	src := justifiedPage(t, "Contratto", "con", "Massimo", "Bernasco", "oggi")
+	out := fitExact(t, src, []Pseudonym{{From: "Massimo", To: "***", FitWidth: true}})
 
 	before := inkCols(t, src)
 	after := inkCols(t, out)
@@ -146,8 +146,8 @@ func inkCols(t *testing.T, data []byte) []bool {
 // bonus assertion: the content stream outside the rewritten string is
 // unchanged, byte for byte — kerns, rule and all.
 func TestFitExactLeavesTheRestOfThePageAlone(t *testing.T) {
-	src := justifiedPage(t, "Contratto", "con", "Edoardo", "Salvioni", "oggi")
-	out := fitExact(t, src, []Pseudonym{{From: "Edoardo", To: "***", FitWidth: true}})
+	src := justifiedPage(t, "Contratto", "con", "Massimo", "Bernasco", "oggi")
+	out := fitExact(t, src, []Pseudonym{{From: "Massimo", To: "***", FitWidth: true}})
 
 	// The rule is drawn by operators of its own and must survive intact.
 	const rule = "60 694 m 400 694 l S"
@@ -164,7 +164,7 @@ func TestFitExactLeavesTheRestOfThePageAlone(t *testing.T) {
 
 // TestFitExactWideTokenStillShrinks: the other direction is unchanged.
 func TestFitExactWideTokenStillShrinks(t *testing.T) {
-	src := justifiedPage(t, "Contratto", "con", "Edo", "Salvioni", "oggi")
+	src := justifiedPage(t, "Contratto", "con", "Edo", "Bernasco", "oggi")
 	out := fitExact(t, src, []Pseudonym{
 		{From: "Edo", To: "[REDACTED]", FitWidth: true},
 	})
@@ -345,9 +345,9 @@ func TestFitExactWidthCountsInnerKerns(t *testing.T) {
 // be replaced as one.
 func splitAcrossOpsPage(t *testing.T) []byte {
 	t.Helper()
-	head := Helvetica.TextWidth("con Salvioni ", 11)
+	head := Helvetica.TextWidth("con Bernasco ", 11)
 	var b strings.Builder
-	b.WriteString("BT /F1 11 Tf 1 0 0 1 60 700 Tm (con Salvioni ) Tj ET\n")
+	b.WriteString("BT /F1 11 Tf 1 0 0 1 60 700 Tm (con Bernasco ) Tj ET\n")
 	b.WriteString("BT /F1 11 Tf 1 0 0 1 " + fl(60+head) + " 700 Tm (Digital Sagl oggi) Tj ET\n")
 	return rawPageDoc(t, b.String())
 }
@@ -359,15 +359,15 @@ func splitAcrossOpsPage(t *testing.T) []byte {
 // gives up its share and keeps its own width, so what follows stays put.
 func TestFitExactAcrossOperations(t *testing.T) {
 	src := splitAcrossOpsPage(t)
-	if got := joinFrags(fragsOf(t, src)); !strings.Contains(got, "Salvioni Digital Sagl") {
+	if got := joinFrags(fragsOf(t, src)); !strings.Contains(got, "Bernasco Digital Sagl") {
 		t.Fatalf("the fixture does not read as one name: %q", got)
 	}
 	out := fitExact(t, src, []Pseudonym{
-		{From: "Salvioni Digital Sagl", To: "***", FitWidth: true},
+		{From: "Bernasco Digital Sagl", To: "***", FitWidth: true},
 	})
 
 	text := joinFrags(fragsOf(t, out))
-	if strings.Contains(text, "Salvioni Digital Sagl") {
+	if strings.Contains(text, "Bernasco Digital Sagl") {
 		t.Errorf("the original survived: %q", text)
 	}
 	if !strings.Contains(text, "***") {

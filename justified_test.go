@@ -11,7 +11,7 @@ import (
 // a second word break puts two spaces between every pair of words on the
 // page — which nothing notices until someone searches for a name, and
 // then a two-word name is never found, because the document says
-// "Edoardo  Carlo" and the caller asked for "Edoardo Carlo".
+// "Massimo  Paolo" and the caller asked for "Massimo Paolo".
 
 // justifiedDoc draws each word followed by its own space, then advances
 // the pen a further amount, which is how a justified line is set.
@@ -31,7 +31,7 @@ func justifiedDoc(t *testing.T, extra float64, words ...string) []byte {
 }
 
 func TestJustifiedTextReadsWithSingleSpaces(t *testing.T) {
-	src := justifiedDoc(t, 3.0, "Edoardo", "Carlo", "SALVIONI,", "di", "sesso")
+	src := justifiedDoc(t, 3.0, "Massimo", "Paolo", "BERNASCO,", "di", "sesso")
 	got, err := NewReaderOrFail(t, src).PageText(0)
 	if err != nil {
 		t.Fatal(err)
@@ -39,7 +39,7 @@ func TestJustifiedTextReadsWithSingleSpaces(t *testing.T) {
 	if strings.Contains(got, "  ") {
 		t.Errorf("the justification was read as a second space: %q", got)
 	}
-	if want := "Edoardo Carlo SALVIONI, di sesso"; !strings.Contains(got, want) {
+	if want := "Massimo Paolo BERNASCO, di sesso"; !strings.Contains(got, want) {
 		t.Errorf("page text is %q, want it to contain %q", got, want)
 	}
 }
@@ -48,12 +48,12 @@ func TestJustifiedTextReadsWithSingleSpaces(t *testing.T) {
 // name spelled with single spaces, which is the only way anyone would
 // type it, against a document that draws it justified.
 func TestJustifiedTextIsMatchable(t *testing.T) {
-	src := justifiedDoc(t, 3.0, "Edoardo", "Carlo", "SALVIONI", "nato", "a", "Lugano")
+	src := justifiedDoc(t, 3.0, "Massimo", "Paolo", "BERNASCO", "nato", "a", "Lugano")
 	for _, needle := range []string{
-		"Edoardo Carlo SALVIONI",
-		"Carlo SALVIONI",
-		"Edoardo Carlo",
-		"Edoardo",
+		"Massimo Paolo BERNASCO",
+		"Paolo BERNASCO",
+		"Massimo Paolo",
+		"Massimo",
 	} {
 		var buf bytes.Buffer
 		res, err := Pseudonymize(NewReaderOrFail(t, src), &buf,
