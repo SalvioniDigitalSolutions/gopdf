@@ -2,9 +2,11 @@ package gopdf
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	"image/jpeg"
 	"math"
 )
@@ -250,6 +252,7 @@ func (im ImageRef) Decode() (image.Image, error) {
 	if err != nil {
 		return nil, err
 	}
+	base = fitDeclared(base, im.Width, im.Height)
 	mask, err := im.softMask()
 	if err != nil || mask == nil {
 		return base, err
@@ -330,7 +333,132 @@ func (im ImageRef) JPEG() ([]byte, bool) {
 	if err != nil {
 		return nil, false
 	}
+	// A JPEG that stores more than the image shows is not handed out
+	// whole: the bytes would carry the hidden part with them.
+	if cfg, err := jpeg.DecodeConfig(bytes.NewReader(data)); err != nil ||
+		(im.Width > 0 && cfg.Width != im.Width) || (im.Height > 0 && cfg.Height != im.Height) {
+		return nil, false
+	}
 	return data, true
+}
+
+// HoldsUnshownPixels reports whether the image's stored data holds
+// more pixels than the image declares — pixels no viewer shows and
+// anyone who extracts the stream gets. A scan stored in tiles is the
+// usual case: the tile at the right edge of the page is stored as a
+// whole tile and declared as the few columns that are left, and what
+// fills the rest of it is whatever the scanning software had in its
+// buffer, often the text of the tile before. Checked for JPEG, JPEG
+// 2000 and fax data, the codings whose stream carries its own size.
+func (im ImageRef) HoldsUnshownPixels() bool {
+	if im.stream == nil || im.r == nil || im.Width <= 0 || im.Height <= 0 {
+		return false
+	}
+	filters, parms, err := im.r.filterChain(im.stream.dict)
+	if err != nil || len(filters) == 0 {
+		return false
+	}
+	last := filters[len(filters)-1]
+	switch last {
+	case "DCTDecode", "DCT":
+		data, err := im.unwrapOuter(filters)
+		if err != nil {
+			return false
+		}
+		cfg, err := jpeg.DecodeConfig(bytes.NewReader(data))
+		return err == nil && (cfg.Width > im.Width || cfg.Height > im.Height)
+	case "JPXDecode":
+		data, err := im.unwrapOuter(filters)
+		if err != nil {
+			return false
+		}
+		w, h, ok := jpxSize(data)
+		return ok && (w > im.Width || h > im.Height)
+	case "CCITTFaxDecode", "CCF":
+		var parm Dict
+		if i := len(filters) - 1; i < len(parms) {
+			parm, _ = im.r.resolve(parms[i]).(Dict)
+		}
+		cols := int64(1728)
+		if v, ok := im.r.resolve(parm["Columns"]).(int64); ok && v > 0 {
+			cols = v
+		}
+		rows, _ := im.r.resolve(parm["Rows"]).(int64)
+		return cols > int64(im.Width) || rows > int64(im.Height)
+	}
+	return false
+}
+
+// FitDecoded cuts pixels decoded from this image's stream by another
+// decoder (a JPEG 2000 codec the package does not carry) to the
+// image's declared size, as Decode does with its own: what lies
+// outside is on no page and must not be read, drawn or re-encoded.
+func (im ImageRef) FitDecoded(m image.Image) image.Image {
+	if m == nil {
+		return nil
+	}
+	return fitDeclared(m, im.Width, im.Height)
+}
+
+// jpxSize reads the image size from a JPEG 2000 codestream's SIZ
+// marker segment (the one that follows the start-of-codestream marker),
+// whether or not the codestream is wrapped in JP2 boxes.
+func jpxSize(data []byte) (w, h int, ok bool) {
+	i := bytes.Index(data, []byte{0xFF, 0x4F, 0xFF, 0x51})
+	if i < 0 || len(data) < i+4+2+2+16 {
+		return 0, 0, false
+	}
+	p := data[i+4+2+2:]
+	xs, ys := binary.BigEndian.Uint32(p[0:]), binary.BigEndian.Uint32(p[4:])
+	xo, yo := binary.BigEndian.Uint32(p[8:]), binary.BigEndian.Uint32(p[12:])
+	if xs <= xo || ys <= yo || xs-xo > 1<<20 || ys-yo > 1<<20 {
+		return 0, 0, false
+	}
+	return int(xs - xo), int(ys - yo), true
+}
+
+// fitDeclared returns m cut to the declared w×h when its data is
+// larger. The part outside is on no page in any viewer, and nothing
+// that reads, draws or re-encodes the image may see it: drawn into the
+// image's box it was squeezed into view, read it was text from nowhere,
+// re-encoded it went on hiding in the output. The result is a copy, so
+// no buffer behind it still holds the rest.
+func fitDeclared(m image.Image, w, h int) image.Image {
+	b := m.Bounds()
+	if w <= 0 || h <= 0 || (b.Dx() <= w && b.Dy() <= h) {
+		return m
+	}
+	cw, ch := min(w, b.Dx()), min(h, b.Dy())
+	rows := func(dstPix []byte, dstStride int, src []byte, srcStride, srcOff, bpp int) {
+		for y := 0; y < ch; y++ {
+			copy(dstPix[y*dstStride:y*dstStride+cw*bpp], src[srcOff+y*srcStride:])
+		}
+	}
+	switch src := m.(type) {
+	case *image.Gray:
+		dst := image.NewGray(image.Rect(0, 0, cw, ch))
+		rows(dst.Pix, dst.Stride, src.Pix, src.Stride, src.PixOffset(b.Min.X, b.Min.Y), 1)
+		return dst
+	case *image.Gray16:
+		dst := image.NewGray16(image.Rect(0, 0, cw, ch))
+		rows(dst.Pix, dst.Stride, src.Pix, src.Stride, src.PixOffset(b.Min.X, b.Min.Y), 2)
+		return dst
+	case *image.CMYK:
+		dst := image.NewCMYK(image.Rect(0, 0, cw, ch))
+		rows(dst.Pix, dst.Stride, src.Pix, src.Stride, src.PixOffset(b.Min.X, b.Min.Y), 4)
+		return dst
+	case *image.NRGBA:
+		dst := image.NewNRGBA(image.Rect(0, 0, cw, ch))
+		rows(dst.Pix, dst.Stride, src.Pix, src.Stride, src.PixOffset(b.Min.X, b.Min.Y), 4)
+		return dst
+	case *image.RGBA:
+		dst := image.NewRGBA(image.Rect(0, 0, cw, ch))
+		rows(dst.Pix, dst.Stride, src.Pix, src.Stride, src.PixOffset(b.Min.X, b.Min.Y), 4)
+		return dst
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, cw, ch))
+	draw.Draw(dst, dst.Bounds(), m, b.Min, draw.Src)
+	return dst
 }
 
 // fromSamples builds an image from raw component values.
