@@ -32,6 +32,8 @@ type rewriter struct {
 	// whatever the source had, unless stripInfo is set.
 	info      *Info
 	stripInfo bool
+	// id, when set, is written as the file's ID in place of the source's.
+	id Array
 }
 
 func newRewriter(r *Reader) *rewriter {
@@ -142,7 +144,7 @@ func (rw *rewriter) writeTo(w io.Writer) (int64, error) {
 	// A comment of high bytes marks the file as binary for transfer tools.
 	ow.Write([]byte{'%', 0xE2, 0xE3, 0xCF, 0xD3, '\n'})
 
-	ctx := &writeCtx{refsAreLiteral: true}
+	ctx := &writeCtx{refsAreLiteral: true, exactReals: true}
 	offsets := make(map[int]int64, len(nums)+1)
 	for _, num := range nums {
 		obj, err := rw.object(num)
@@ -190,7 +192,10 @@ func (rw *rewriter) writeTo(w io.Writer) (int64, error) {
 	case hasInfo && !rw.stripInfo && live[infoRef.Num]:
 		ow.printf(" /Info %d 0 R", infoRef.Num)
 	}
-	if id, ok := rw.r.trailer["ID"].(Array); ok && len(id) == 2 && !rw.stripInfo {
+	if rw.id != nil {
+		ow.str(" /ID ")
+		writeValue(ow, rw.id, ctx)
+	} else if id, ok := rw.r.trailer["ID"].(Array); ok && len(id) == 2 && !rw.stripInfo {
 		ow.str(" /ID ")
 		writeValue(ow, id, ctx)
 	}

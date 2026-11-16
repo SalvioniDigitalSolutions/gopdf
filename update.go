@@ -536,7 +536,7 @@ func (u *Updater) writeAll(w io.Writer) (int64, error) {
 		u.nextID++
 	}
 
-	ctx := &writeCtx{refsAreLiteral: true}
+	ctx := &writeCtx{refsAreLiteral: true, exactReals: true}
 	if u.r.crypt != nil {
 		ctx.encrypt = func(b []byte) []byte {
 			return ow.encryptBytes(b, ow.strMethod())
@@ -644,7 +644,7 @@ func (u *Updater) writeXref(ow *offsetWriter, nums []int, offsets map[int]int64,
 		i = j + 1
 	}
 	ow.printf("trailer\n<< /Size %d", size)
-	ctx := &writeCtx{refsAreLiteral: true}
+	ctx := &writeCtx{refsAreLiteral: true, exactReals: true}
 	if rootRef != nil {
 		ow.str(" /Root ")
 		writeValue(ow, rootRef, ctx)
@@ -707,7 +707,7 @@ func (u *Updater) writeXrefStream(ow *offsetWriter, nums []int, offsets map[int]
 	ow.obj = streamNum
 	ow.printf("%d 0 obj\n<< /Type /XRef /W [1 4 2] /Index [%s] /Size %d",
 		streamNum, strings.TrimSpace(index.String()), size)
-	ctx := &writeCtx{refsAreLiteral: true}
+	ctx := &writeCtx{refsAreLiteral: true, exactReals: true}
 	if rootRef != nil {
 		ow.str(" /Root ")
 		writeValue(ow, rootRef, ctx)

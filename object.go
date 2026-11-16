@@ -3,6 +3,8 @@ package gopdf
 import (
 	"fmt"
 	"io"
+	"math"
+	"strconv"
 )
 
 // The parsed-PDF object model, shared by the Reader (parsing existing
@@ -69,6 +71,25 @@ type writeCtx struct {
 	// than null. It is set when writing into a file whose original object
 	// numbering still applies, as an incremental update does.
 	refsAreLiteral bool
+	// exactReals writes a real number with every digit it holds. A file
+	// rewritten from a parsed one needs this: its numbers are the
+	// source's, and a matrix of 0.002468 written as 0.002 draws a form at
+	// four fifths of its size. A document authored here writes its own
+	// numbers, to three decimals.
+	exactReals bool
+}
+
+// exactReal writes v with the fewest digits that read back as v, never
+// with an exponent (PDF has none).
+func exactReal(v float64, bits int) string {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return "0"
+	}
+	s := strconv.FormatFloat(v, 'f', -1, bits)
+	if s == "-0" {
+		return "0"
+	}
+	return s
 }
 
 func (c *writeCtx) str(b []byte) []byte {
@@ -125,9 +146,17 @@ func writeValue(w io.Writer, v any, ctx *writeCtx) {
 	case uint64:
 		fmt.Fprintf(w, "%d", t)
 	case float32:
-		io.WriteString(w, fl(float64(t)))
+		if ctx != nil && ctx.exactReals {
+			io.WriteString(w, exactReal(float64(t), 32))
+		} else {
+			io.WriteString(w, fl(float64(t)))
+		}
 	case float64:
-		io.WriteString(w, fl(t))
+		if ctx != nil && ctx.exactReals {
+			io.WriteString(w, exactReal(t, 64))
+		} else {
+			io.WriteString(w, fl(t))
+		}
 	case String:
 		// Hex form is binary-safe and needs no escaping.
 		fmt.Fprintf(w, "<%X>", ctx.str([]byte(t)))
