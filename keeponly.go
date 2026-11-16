@@ -395,6 +395,16 @@ func (k *keeper) dict(v any, rules map[Name]rule) Dict {
 
 func fixed(n Name) rule { return func(any) any { return n } }
 
+// dictOrNil is dict for a rule: no dictionary is no value. (A nil Dict
+// handed back as an interface is not nil, and was kept as an empty
+// dictionary — an array of things that are no functions passed as one.)
+func (k *keeper) dictOrNil(v any, rules map[Name]rule) any {
+	if d := k.dict(v, rules); d != nil {
+		return d
+	}
+	return nil
+}
+
 // --- the catalog ---
 
 func (k *keeper) plan() error {
@@ -606,7 +616,7 @@ func (k *keeper) page(index int, parent Ref, v any) any {
 
 // group keeps a transparency group's attributes.
 func (k *keeper) group(v any) any {
-	return k.dict(v, map[Name]rule{
+	return k.dictOrNil(v, map[Name]rule{
 		"Type": k.oneOf("Group"), "S": k.oneOf("Transparency"), "I": k.boolean, "K": k.boolean,
 		"CS": func(v any) any { return k.colorSpace(v) },
 	})
@@ -670,7 +680,7 @@ func (k *keeper) link(v any) any {
 		"Rect": k.numbers, "Border": k.numbers, "C": k.numbers, "QuadPoints": k.numbers,
 		"H": k.oneOf("N", "I", "O", "P"), "StructParent": k.number, "F": k.number,
 		"BS": func(v any) any {
-			return k.dict(v, map[Name]rule{"Type": k.oneOf("Border"), "W": k.number, "S": k.oneOf("S", "D", "B", "I", "U"), "D": k.numbers})
+			return k.dictOrNil(v, map[Name]rule{"Type": k.oneOf("Border"), "W": k.number, "S": k.oneOf("S", "D", "B", "I", "U"), "D": k.numbers})
 		},
 		"Dest": k.dest,
 		"A":    func(v any) any { return k.action(v, true) },
@@ -975,7 +985,7 @@ func (k *keeper) numberTree(v any, leaf func(any) any) any {
 
 func (k *keeper) pageLabel(v any) any {
 	return k.value(v, "pagelabel", func(v any) any {
-		return k.dict(v, map[Name]rule{"Type": k.oneOf("PageLabel"), "S": k.oneOf("D", "R", "r", "A", "a"), "P": k.text, "St": k.number})
+		return k.dictOrNil(v, map[Name]rule{"Type": k.oneOf("PageLabel"), "S": k.oneOf("D", "R", "r", "A", "a"), "P": k.text, "St": k.number})
 	})
 }
 

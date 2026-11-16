@@ -119,7 +119,7 @@ func (k *keeper) decodeParms(v any) any {
 		if k.r.resolve(e) == nil {
 			return nil
 		}
-		return k.dict(e, map[Name]rule{
+		return k.dictOrNil(e, map[Name]rule{
 			"Predictor": k.number, "Colors": k.number, "BitsPerComponent": k.number, "Columns": k.number,
 			"EarlyChange": k.number, "K": k.number, "EndOfLine": k.boolean, "EncodedByteAlign": k.boolean,
 			"Rows": k.number, "EndOfBlock": k.boolean, "BlackIs1": k.boolean, "DamagedRowsBeforeError": k.number,
@@ -176,12 +176,31 @@ func (k *keeper) image(v any) any {
 		"SMask": func(v any) any { return k.value(v, "image", k.image) },
 		"Matte": k.numbers,
 	})
-	if stm, ok := kept.(*rawStream); ok {
-		// What a picture file carries besides its samples — a camera's
-		// notes, a comment, a preview — is not drawn and is left out.
-		stm.data = pictureWithoutNotes(stm.dict, stm.data)
+	stm, ok := kept.(*rawStream)
+	if !ok {
+		return nil
 	}
-	return kept
+	// A picture has a size, and samples of a depth (a mask's depth is
+	// one; a JPEG 2000 file says its own). Anything else in a picture's
+	// place is none.
+	_, w := stm.dict["Width"]
+	_, h := stm.dict["Height"]
+	_, bpc := stm.dict["BitsPerComponent"]
+	mask, _ := stm.dict["ImageMask"].(bool)
+	jpx := false
+	switch f := stm.dict["Filter"].(type) {
+	case Name:
+		jpx = f == "JPXDecode"
+	case Array:
+		jpx = len(f) > 0 && f[len(f)-1] == Name("JPXDecode")
+	}
+	if !w || !h || !(bpc || mask || jpx) {
+		return nil
+	}
+	// What a picture file carries besides its samples — a camera's
+	// notes, a comment, a preview — is not drawn and is left out.
+	stm.data = pictureWithoutNotes(stm.dict, stm.data)
+	return stm
 }
 
 func (k *keeper) form(v any) any {
@@ -222,26 +241,26 @@ func (k *keeper) font(v any) any {
 			return nil
 		}
 		out := k.dict(d, map[Name]rule{
-			"Type":     k.oneOf("Font"),
-			"Subtype":  k.oneOf("Type0", "Type1", "MMType1", "Type3", "TrueType", "CIDFontType0", "CIDFontType2"),
-			"BaseFont": k.name, "Name": k.name,
+			"Type":      k.oneOf("Font"),
+			"Subtype":   k.oneOf("Type0", "Type1", "MMType1", "Type3", "TrueType", "CIDFontType0", "CIDFontType2"),
+			"BaseFont":  k.freeName,
 			"FirstChar": k.number, "LastChar": k.number, "Widths": k.numbers,
 			"DW": k.number, "W": k.numbers, "DW2": k.numbers, "W2": k.numbers,
 			"FontBBox": k.numbers, "FontMatrix": k.numbers,
 			"FontDescriptor": func(v any) any { return k.value(v, "fontdescriptor", k.fontDescriptor) },
-			"ToUnicode":      func(v any) any { return k.value(v, "cmap", k.cmap) },
+			"ToUnicode":      func(v any) any { return k.value(v, "cmap", func(v any) any { return k.cmapStream(v, true) }) },
 			"Encoding": func(v any) any {
 				switch t := k.r.resolve(v).(type) {
 				case Name:
 					return k.oneOf(fontEncodingNames...)(t)
 				case Dict:
 					return k.value(v, "encoding", func(v any) any {
-						return k.dict(v, map[Name]rule{"Type": k.oneOf("Encoding"),
+						return k.dictOrNil(v, map[Name]rule{"Type": k.oneOf("Encoding"),
 							"BaseEncoding": k.oneOf("StandardEncoding", "MacRomanEncoding", "WinAnsiEncoding", "MacExpertEncoding"),
 							"Differences":  k.plainArray})
 					})
 				case *rawStream:
-					return k.value(v, "cmap", k.cmap)
+					return k.value(v, "cmap", func(v any) any { return k.cmapStream(v, false) })
 				}
 				return nil
 			},
@@ -365,18 +384,29 @@ func (k *keeper) ownResources(d Dict) Dict {
 }
 
 func (k *keeper) cidSystemInfo(v any) any {
-	return k.dict(v, map[Name]rule{"Registry": k.technical, "Ordering": k.technical, "Supplement": k.number})
+	return k.dictOrNil(v, map[Name]rule{"Registry": k.technical, "Ordering": k.technical, "Supplement": k.number})
 }
 
 func (k *keeper) fontDescriptor(v any) any {
-	fontFile := func(v any) any {
-		return k.value(v, "fontfile", func(v any) any {
-			return k.stream(v, map[Name]rule{"Length1": k.number, "Length2": k.number, "Length3": k.number,
-				"Subtype": k.oneOf("Type1C", "CIDFontType0C", "OpenType")})
-		})
+	fontFile := func(key Name) rule {
+		return func(v any) any {
+			return k.value(v, "fontfile", func(v any) any {
+				stm, ok := v.(*rawStream)
+				if !ok {
+					return nil
+				}
+				data, err := k.r.decodeStream(stm.dict, stm.data)
+				sub, _ := k.r.resolve(stm.dict["Subtype"]).(Name)
+				if err != nil || !fontProgramKind(key, sub, data) {
+					return nil // no font program: the viewer draws with its own
+				}
+				return k.stream(v, map[Name]rule{"Length1": k.number, "Length2": k.number, "Length3": k.number,
+					"Subtype": k.oneOf("Type1C", "CIDFontType0C", "OpenType")})
+			})
+		}
 	}
-	return k.dict(v, map[Name]rule{
-		"Type": k.oneOf("FontDescriptor"), "FontName": k.name, "FontFamily": k.text,
+	return k.dictOrNil(v, map[Name]rule{
+		"Type": k.oneOf("FontDescriptor"), "FontName": k.freeName, "FontFamily": k.text,
 		"FontStretch": k.oneOf("UltraCondensed", "ExtraCondensed", "Condensed", "SemiCondensed", "Normal",
 			"SemiExpanded", "Expanded", "ExtraExpanded", "UltraExpanded"),
 		"FontWeight": k.number, "Flags": k.number, "FontBBox": k.numbers, "ItalicAngle": k.number,
@@ -389,24 +419,54 @@ func (k *keeper) fontDescriptor(v any) any {
 			}
 			return nil
 		},
-		"FontFile": fontFile, "FontFile2": fontFile, "FontFile3": fontFile,
-		"CIDSet": func(v any) any { return k.value(v, "cidset", func(v any) any { return k.stream(v, nil) }) },
-		"Style":  func(v any) any { return k.dict(v, map[Name]rule{"Panose": k.technical}) },
+		"FontFile": fontFile("FontFile"), "FontFile2": fontFile("FontFile2"), "FontFile3": fontFile("FontFile3"),
+		"Style": func(v any) any { return k.dictOrNil(v, map[Name]rule{"Panose": k.technical}) },
 	})
 }
 
-// cmap keeps a character map (a ToUnicode map, an encoding CMap).
-func (k *keeper) cmap(v any) any {
-	return k.stream(v, map[Name]rule{
-		"Type": k.oneOf("CMap"), "CMapName": k.name, "WMode": k.number,
-		"CIDSystemInfo": k.cidSystemInfo,
-		"UseCMap": func(v any) any {
-			if n, ok := k.r.resolve(v).(Name); ok {
-				return n
+// cmapStream keeps a character map (a ToUnicode map, an encoding
+// CMap), written anew from its mappings (keeponly_programs.go).
+func (k *keeper) cmapStream(v any, toUnicode bool) any {
+	stm, ok := v.(*rawStream)
+	if !ok {
+		return nil
+	}
+	data, err := k.r.decodeStream(stm.dict, stm.data)
+	if err != nil {
+		return nil
+	}
+	registry, ordering, supplement := String("Adobe"), String("UCS"), any(0)
+	if !toUnicode {
+		ordering = String("Identity")
+		if info, ok := k.cidSystemInfo(stm.dict["CIDSystemInfo"]).(Dict); ok {
+			if r, ok := info["Registry"].(String); ok {
+				registry = r
 			}
-			return k.value(v, "cmap", k.cmap)
-		},
-	})
+			if o, ok := info["Ordering"].(String); ok {
+				ordering = o
+			}
+			if sup := info["Supplement"]; sup != nil {
+				supplement = sup
+			}
+		}
+	}
+	rebuilt := rebuildCMap(data, toUnicode, registry, ordering, supplement)
+	if rebuilt == nil {
+		return nil
+	}
+	out := compressedStream(rebuilt)
+	if !toUnicode {
+		out.dict["Type"] = Name("CMap")
+		out.dict["CMapName"] = Name("Celatum-Encoding")
+		out.dict["CIDSystemInfo"] = Dict{"Registry": registry, "Ordering": ordering, "Supplement": supplement}
+		if wm := k.number(stm.dict["WMode"]); wm != nil {
+			out.dict["WMode"] = wm
+		}
+		if n, ok := k.r.resolve(stm.dict["UseCMap"]).(Name); ok && knownCMapName(n) {
+			out.dict["UseCMap"] = n
+		}
+	}
+	return out
 }
 
 // --- colour ---
@@ -518,7 +578,7 @@ func (k *keeper) colorSpaceArray(arr Array) any {
 					return m
 				},
 				"Process": func(v any) any {
-					return k.dict(v, map[Name]rule{"ColorSpace": k.colorSpace, "Components": k.plainArray})
+					return k.dictOrNil(v, map[Name]rule{"ColorSpace": k.colorSpace, "Components": k.plainArray})
 				},
 			})
 			if attrs != nil {
@@ -530,10 +590,12 @@ func (k *keeper) colorSpaceArray(arr Array) any {
 	return nil
 }
 
-// function keeps a function, or an array of them.
+// function keeps a function, or an array of them: one of the four
+// kinds the standard has, with what its kind needs; a calculator's
+// program written anew from its numbers and operators.
 func (k *keeper) function(v any) any {
 	if n, ok := k.r.resolve(v).(Name); ok {
-		return n // Identity
+		return k.oneOf("Identity")(n)
 	}
 	if arr, ok := k.r.resolve(v).(Array); ok {
 		out := Array{}
@@ -553,10 +615,46 @@ func (k *keeper) function(v any) any {
 		"Functions": k.function,
 	}
 	return k.value(v, "function", func(v any) any {
-		if _, ok := v.(*rawStream); ok {
-			return k.stream(v, rules)
+		var d Dict
+		stm, isStream := v.(*rawStream)
+		if isStream {
+			d = stm.dict
+		} else if dd, ok := v.(Dict); ok {
+			d = dd
+		} else {
+			return nil
 		}
-		return k.dict(v, rules)
+		if _, ok := d["Domain"]; !ok {
+			return nil
+		}
+		switch ft, _ := toInt(k.r.resolve(d["FunctionType"])); ft {
+		case 0:
+			if isStream {
+				return k.stream(v, rules)
+			}
+		case 2, 3:
+			if !isStream {
+				return k.dictOrNil(v, rules)
+			}
+		case 4:
+			if !isStream {
+				return nil
+			}
+			data, err := k.r.decodeStream(stm.dict, stm.data)
+			if err != nil {
+				return nil
+			}
+			prog := rebuildCalculator(data)
+			if prog == nil {
+				return nil
+			}
+			out := compressedStream(prog)
+			for key, val := range k.dict(stm.dict, rules) {
+				out.dict[key] = val
+			}
+			return out
+		}
+		return nil
 	})
 }
 
@@ -583,7 +681,7 @@ func (k *keeper) pattern(v any) any {
 			}
 			return out
 		}
-		return k.dict(v, map[Name]rule{
+		return k.dictOrNil(v, map[Name]rule{
 			"Type": k.oneOf("Pattern"), "PatternType": k.number, "Matrix": k.numbers,
 			"Shading": k.shading, "ExtGState": k.extGState,
 		})
@@ -602,7 +700,7 @@ func (k *keeper) shading(v any) any {
 		if _, ok := v.(*rawStream); ok {
 			return k.stream(v, rules)
 		}
-		return k.dict(v, rules)
+		return k.dictOrNil(v, rules)
 	})
 }
 
@@ -614,7 +712,7 @@ func (k *keeper) extGState(v any) any {
 		return k.function(v)
 	}
 	return k.value(v, "extgstate", func(v any) any {
-		return k.dict(v, map[Name]rule{
+		return k.dictOrNil(v, map[Name]rule{
 			"Type": k.oneOf("ExtGState"), "LW": k.number, "LC": k.number, "LJ": k.number, "ML": k.number,
 			"D": k.numbers, "RI": k.oneOf(riNames...), "OP": k.boolean, "op": k.boolean, "OPM": k.number,
 			"FL": k.number, "SM": k.number, "SA": k.boolean, "CA": k.number, "ca": k.number,
@@ -641,7 +739,7 @@ func (k *keeper) extGState(v any) any {
 				if n, ok := k.r.resolve(v).(Name); ok {
 					return k.oneOf("None")(n)
 				}
-				return k.dict(v, map[Name]rule{
+				return k.dictOrNil(v, map[Name]rule{
 					"Type": k.oneOf("Mask"), "S": k.oneOf("Alpha", "Luminosity"), "BC": k.numbers, "TR": fnOrName,
 					"G": func(v any) any { return k.value(v, "form", k.form) },
 				})
@@ -661,7 +759,7 @@ func (k *keeper) properties(v any) any {
 		return nil // layer markings are taken off the content
 	}
 	return k.value(v, "properties", func(v any) any {
-		return k.dict(v, map[Name]rule{
+		return k.dictOrNil(v, map[Name]rule{
 			"MCID": k.number, "ActualText": k.text, "Alt": k.text, "E": k.text, "Lang": k.lang,
 		})
 	})

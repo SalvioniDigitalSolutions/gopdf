@@ -679,3 +679,47 @@ func TestJPXWithoutNotes(t *testing.T) {
 		t.Errorf("a bare codestream kept its comment: %q", bare)
 	}
 }
+
+// The programs a PDF carries are kept as what they do: a character map
+// written anew from its mappings, a calculator from its numbers and
+// operators; a font program only when it is one; a picture only with a
+// size; a function only of a kind the standard has.
+func TestKeepOnlyKeepsProgramsAsWhatTheyDo(t *testing.T) {
+	toUnicode := "%% made for Bianchi\n/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n" +
+		"/CMapName /Bianchi def (Bianchi) pop\n1 begincodespacerange <00> <FF> endcodespacerange\n" +
+		"2 beginbfchar <48> <0048> <65> <0065> endbfchar\n1 beginbfrange <6C> <6F> <006C> endbfrange\n" +
+		"endcmap CMapName currentdict /CMap defineresource pop end end"
+	calc := "{ 2 copy % Bianchi\n add 0.5 mul }"
+	f := kfix{
+		res:     "/Font << /F1 4 0 R /F2 10 0 R >> /ExtGState << /G1 << /TR 13 0 R /BG 14 0 R /UCR [/Bianchi] >> >> /XObject << /Im1 15 0 R >>",
+		content: "BT /F2 12 Tf 20 120 Td (Hello) Tj ET /G1 gs q 10 0 0 10 50 50 cm /Im1 Do Q\n",
+		objs: map[int]string{
+			10: "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Name /Bianchi /ToUnicode 11 0 R /FontDescriptor 12 0 R >>",
+			11: kstream("", toUnicode),
+			12: "<< /Type /FontDescriptor /FontName /Helvetica /Flags 32 /FontBBox [0 0 1000 1000] /ItalicAngle 0 /Ascent 718 /Descent -207 /CapHeight 718 /StemV 80 /FontFile2 16 0 R /CIDSet 17 0 R >>",
+			13: kstream("/FunctionType 4 /Domain [0 1] /Range [0 1]", calc),
+			14: kstream("/Note (x)", "customer: Bianchi"),
+			15: "<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceGray /SMask 18 0 R /Length 1 >>\nstream\n\x80\nendstream",
+			16: kstream("", "this is no font: Bianchi"),
+			17: kstream("", "Bianchi"),
+			18: kstream("/Type /XObject /Subtype /Image", "Bianchi"),
+		},
+	}
+	out, _ := keptCopy(t, f.pdf())
+	if w := whereHeld(out, "Bianchi"); w != "" {
+		t.Errorf("the copy holds the value — %s", w)
+	}
+	cp := NewReaderOrFail(t, out)
+	if text, _ := cp.PageText(0); !strings.Contains(text, "Hello") {
+		t.Errorf("the rebuilt character map lost the text: %q", text)
+	}
+	if !bytes.Contains(out, []byte("/FunctionType 4")) {
+		t.Error("the calculator function was not kept")
+	}
+	if got := rebuildCalculator([]byte(calc)); string(got) != "{ 2 copy add 0.5 mul } " {
+		t.Errorf("calculator rebuilt as %q", got)
+	}
+	if rebuildCalculator([]byte("{ 1 (Bianchi) pop }")) != nil {
+		t.Error("a calculator holding a string was kept")
+	}
+}
