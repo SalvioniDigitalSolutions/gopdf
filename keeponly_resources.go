@@ -80,15 +80,18 @@ func (k *keeper) stream(v any, rules map[Name]rule) any {
 	if !ok {
 		return nil
 	}
-	// A filter no viewer knows is a stream nothing draws: none.
-	if f, has := stm.dict["Filter"]; has && k.filterNames(f) == nil {
-		return nil
-	}
 	all := map[Name]rule{"Filter": k.filterNames, "DecodeParms": k.decodeParms}
 	for key, r := range rules {
 		all[key] = r
 	}
 	d := k.dict(stm.dict, all)
+	// A filter no viewer knows is data no viewer reads: a viewer draws
+	// such a stream as if it held nothing, and so does the copy.
+	if f, has := stm.dict["Filter"]; has && k.filterNames(f) == nil {
+		delete(d, "Filter")
+		delete(d, "DecodeParms")
+		return &rawStream{dict: d}
+	}
 	return &rawStream{dict: d, data: stm.data}
 }
 
@@ -255,7 +258,7 @@ func (k *keeper) font(v any) any {
 					return k.value(v, "encoding", func(v any) any {
 						return k.dictOrNil(v, map[Name]rule{"Type": k.oneOf("Encoding"),
 							"BaseEncoding": k.oneOf("StandardEncoding", "MacRomanEncoding", "WinAnsiEncoding", "MacExpertEncoding"),
-							"Differences":  k.plainArray})
+							"Differences":  k.differences})
 					})
 				case *rawStream:
 					return k.value(v, "cmap", func(v any) any { return k.cmapStream(v, false) })
@@ -314,7 +317,7 @@ func (k *keeper) font(v any) any {
 					g = k.newObject("glyph", built)
 				}
 				if g != nil {
-					kept[glyph] = g
+					kept[k.destName(glyph)] = g
 				}
 			}
 			out["CharProcs"] = kept
@@ -382,6 +385,27 @@ var fontEncodingNames = func() []Name {
 	}
 	return out
 }()
+
+// differences keeps an encoding's differences: codes, and glyph names
+// renamed by the policy as the glyphs of a Type 3 font are.
+func (k *keeper) differences(v any) any {
+	arr, ok := k.r.resolve(v).(Array)
+	if !ok {
+		return nil
+	}
+	out := Array{}
+	for _, e := range arr {
+		switch t := k.r.resolve(e).(type) {
+		case Name:
+			out = append(out, k.destName(t))
+		default:
+			if isNumber(t) {
+				out = append(out, t)
+			}
+		}
+	}
+	return out
+}
 
 // iccProfile reports whether data is an ICC profile: its signature, and
 // a size it holds.
