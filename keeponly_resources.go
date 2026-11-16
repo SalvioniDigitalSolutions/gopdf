@@ -9,6 +9,8 @@ package gopdf
 // map, never the metadata on its descriptor; a form's content, never
 // its private data.
 
+import "strings"
+
 // resUse is what a content stream uses: per resource category, the
 // names it uses.
 type resUse map[Name]map[Name]bool
@@ -231,7 +233,7 @@ func (k *keeper) font(v any) any {
 			"Encoding": func(v any) any {
 				switch t := k.r.resolve(v).(type) {
 				case Name:
-					return t
+					return k.oneOf(fontEncodingNames...)(t)
 				case Dict:
 					return k.value(v, "encoding", func(v any) any {
 						return k.dict(v, map[Name]rule{"Type": k.oneOf("Encoding"),
@@ -319,6 +321,23 @@ func (k *keeper) drawable(stm *rawStream) []byte {
 	return data
 }
 
+// fontEncodingNames are the encodings a font may name: the standard ones and
+// the predefined character maps (ISO 32000-1, 9.6.6 and table 118).
+var fontEncodingNames = func() []Name {
+	var out []Name
+	for _, n := range strings.Fields(`StandardEncoding MacRomanEncoding WinAnsiEncoding MacExpertEncoding PDFDocEncoding
+		Identity-H Identity-V GB-EUC-H GB-EUC-V GBpc-EUC-H GBpc-EUC-V GBK-EUC-H GBK-EUC-V GBKp-EUC-H GBKp-EUC-V
+		GBK2K-H GBK2K-V UniGB-UCS2-H UniGB-UCS2-V UniGB-UTF16-H UniGB-UTF16-V B5pc-H B5pc-V HKscs-B5-H HKscs-B5-V
+		ETen-B5-H ETen-B5-V ETenms-B5-H ETenms-B5-V CNS-EUC-H CNS-EUC-V UniCNS-UCS2-H UniCNS-UCS2-V UniCNS-UTF16-H
+		UniCNS-UTF16-V 83pv-RKSJ-H 90ms-RKSJ-H 90ms-RKSJ-V 90msp-RKSJ-H 90msp-RKSJ-V 90pv-RKSJ-H Add-RKSJ-H
+		Add-RKSJ-V EUC-H EUC-V Ext-RKSJ-H Ext-RKSJ-V H V UniJIS-UCS2-H UniJIS-UCS2-V UniJIS-UCS2-HW-H
+		UniJIS-UCS2-HW-V UniJIS-UTF16-H UniJIS-UTF16-V KSC-EUC-H KSC-EUC-V KSCms-UHC-H KSCms-UHC-V KSCms-UHC-HW-H
+		KSCms-UHC-HW-V KSCpc-EUC-H UniKS-UCS2-H UniKS-UCS2-V UniKS-UTF16-H UniKS-UTF16-V`) {
+		out = append(out, Name(n))
+	}
+	return out
+}()
+
 // booleans keeps an array of booleans.
 func (k *keeper) booleans(v any) any {
 	arr, ok := k.r.resolve(v).(Array)
@@ -392,10 +411,13 @@ func (k *keeper) cmap(v any) any {
 
 // --- colour ---
 
+// colorSpace keeps a colour space: a device space by its name, any
+// other by its array. (A colour space is named only for a device space;
+// the names an inline picture abbreviates are read in the content.)
 func (k *keeper) colorSpace(v any) any {
 	switch t := k.r.resolve(v).(type) {
 	case Name:
-		return t
+		return k.oneOf("DeviceGray", "DeviceRGB", "DeviceCMYK", "Pattern")(t)
 	case Array:
 		return k.value(v, "colorspace", func(any) any { return k.colorSpaceArray(t) })
 	}
