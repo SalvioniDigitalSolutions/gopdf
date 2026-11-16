@@ -208,14 +208,41 @@ func (k *keeper) inlineProperties(d Dict) (Dict, bool) {
 	changed := false
 	for key, val := range d {
 		switch key {
-		case "MCID", "Type", "Subtype", "BBox", "Attached":
-			if p := k.plain(val); p != nil {
-				out[key] = p
-			} else if arr := k.plainArray(val); arr != nil {
+		case "MCID":
+			if n := k.number(val); n != nil {
+				out[key] = n
+			} else {
+				changed = true
+			}
+		case "BBox":
+			if arr := k.numbers(val); arr != nil {
 				out[key] = arr
 			} else {
 				changed = true
 			}
+		case "Type", "Subtype", "Attached":
+			// An artifact's kind and edges: names a producer chooses,
+			// renamed by the policy.
+			var kept any
+			if arr, ok := val.(Array); ok {
+				names := Array{}
+				for _, e := range arr {
+					if n := k.freeName(e); n != nil {
+						names = append(names, n)
+					}
+				}
+				kept = names
+			} else {
+				kept = k.freeName(val)
+			}
+			if kept == nil {
+				changed = true
+				continue
+			}
+			if n, ok := kept.(Name); !ok || n != val {
+				changed = true
+			}
+			out[key] = kept
 		case "ActualText", "Alt", "E":
 			t := k.text(val)
 			if t == nil {

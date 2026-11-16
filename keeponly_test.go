@@ -403,6 +403,22 @@ func TestKeepOnlyLeavesEveryHidingPlaceOut(t *testing.T) {
 		{name: "viewer preferences with a string", f: kfix{
 			cat: "/ViewerPreferences << /DisplayDocTitle true /Bianchi (x) /PrintPageRange [0 0] /Note (Bianchi) >> /PageLayout /SinglePage /Lang (Bianchi)",
 		}},
+		{name: "names where the standard lists the names", f: kfix{
+			cat: "/Version /Bianchi /PageMode /Bianchi /PageLayout /Bianchi /ViewerPreferences << /Direction /Bianchi /Duplex /Bianchi /Enforce [/Bianchi] /PrintArea /Bianchi >> " +
+				"/PageLabels << /Nums [0 << /S /Bianchi >>] >> /MarkInfo << /Marked /Bianchi >>",
+			page: "/Tabs /Bianchi /Group << /S /Bianchi /CS /DeviceRGB >> /MediaBox [0 0 /Bianchi 200] /Annots [10 0 R]",
+			res:  "/ExtGState << /G1 << /BM /Bianchi /RI /Bianchi /SMask /Bianchi /TR /Bianchi /D [[/Bianchi] 0] >> >>", content: "/G1 gs\n",
+			objs: map[int]string{10: "<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] /H /Bianchi /BS << /S /Bianchi >> /C [/Bianchi] /Dest [3 0 R /Bianchi 0 0 0] >>"},
+		}},
+		{name: "names a producer chooses, through the policy", f: kfix{
+			cat:     "/StructTreeRoot 10 0 R /MarkInfo << /Marked true >>",
+			page:    "/StructParents 0",
+			content: "/Artifact << /Type /Bianchi /Subtype /Bianchi /Attached [/Bianchi] >> BDC EMC\n",
+			objs: map[int]string{
+				10: "<< /Type /StructTreeRoot /K [11 0 R] /RoleMap << /Bianchi /P >> /ClassMap << /Bianchi << /O /Layout >> >> >>",
+				11: "<< /Type /StructElem /S /Bianchi /P 10 0 R /C /Bianchi /A << /O /Layout /Bianchi /Bianchi >> >>",
+			},
+		}},
 		{name: "a property list named in the resources", f: kfix{
 			res:     "/Properties << /P1 10 0 R >>",
 			content: "/Span /P1 BDC BT /F1 9 Tf 20 20 Td (x) Tj ET EMC\n",

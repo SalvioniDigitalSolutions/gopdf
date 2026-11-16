@@ -240,6 +240,96 @@ func (k *keeper) plainArray(v any) any {
 	return out
 }
 
+// boolean keeps a boolean.
+func (k *keeper) boolean(v any) any {
+	if b, ok := k.r.resolve(v).(bool); ok {
+		return b
+	}
+	return nil
+}
+
+// numbers keeps an array of numbers (arrays of numbers within it, and
+// null, allowed: a dash pattern, a widths list). An array that holds
+// anything else is not kept.
+func (k *keeper) numbers(v any) any {
+	arr, ok := k.r.resolve(v).(Array)
+	if !ok {
+		return nil
+	}
+	out := make(Array, 0, len(arr))
+	for _, e := range arr {
+		e = k.r.resolve(e)
+		switch t := e.(type) {
+		case nil:
+			out = append(out, nil)
+		case Array:
+			sub := k.numbers(t)
+			if sub == nil {
+				return nil
+			}
+			out = append(out, sub)
+		default:
+			if !isNumber(e) {
+				return nil
+			}
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// oneOf keeps a name the standard lists for the key, and no other.
+func (k *keeper) oneOf(names ...Name) rule {
+	set := map[Name]bool{}
+	for _, n := range names {
+		set[n] = true
+	}
+	return func(v any) any {
+		if n, ok := k.r.resolve(v).(Name); ok && set[n] {
+			return n
+		}
+		return nil
+	}
+}
+
+// namesOf keeps an array of the names one allows.
+func (k *keeper) namesOf(one rule) rule {
+	return func(v any) any {
+		arr, ok := k.r.resolve(v).(Array)
+		if !ok {
+			return nil
+		}
+		out := Array{}
+		for _, e := range arr {
+			if kept := one(e); kept != nil {
+				out = append(out, kept)
+			}
+		}
+		return out
+	}
+}
+
+// freeName keeps a name a producer chooses freely (a structure type,
+// a role, an attribute), renamed by the policy as a jump target is.
+func (k *keeper) freeName(v any) any {
+	if n, ok := k.r.resolve(v).(Name); ok {
+		return k.destName(n)
+	}
+	return nil
+}
+
+// The names the standard lists, by key.
+var (
+	riNames    = []Name{"AbsoluteColorimetric", "RelativeColorimetric", "Saturation", "Perceptual"}
+	boxNames   = []Name{"MediaBox", "CropBox", "BleedBox", "TrimBox", "ArtBox"}
+	blendNames = []Name{"Normal", "Compatible", "Multiply", "Screen", "Overlay", "Darken", "Lighten", "ColorDodge",
+		"ColorBurn", "HardLight", "SoftLight", "Difference", "Exclusion", "Hue", "Saturation", "Color", "Luminosity"}
+	viewNames   = []Name{"XYZ", "Fit", "FitH", "FitV", "FitR", "FitB", "FitBH", "FitBV"}
+	filterNames = []Name{"ASCIIHexDecode", "ASCII85Decode", "LZWDecode", "FlateDecode", "RunLengthDecode",
+		"CCITTFaxDecode", "JBIG2Decode", "DCTDecode", "JPXDecode", "AHx", "A85", "LZW", "Fl", "RL", "CCF", "DCT"}
+	versionRe = regexp.MustCompile(`^[0-9]\.[0-9]$`)
+)
+
 // text keeps a text string, cleaned by the policy.
 func (k *keeper) text(v any) any {
 	s, ok := k.r.resolve(v).(String)
@@ -335,7 +425,7 @@ func (k *keeper) plan() error {
 	if out["Pages"] == nil {
 		return fmt.Errorf("%w: the page tree could not be kept", errKeepOnly)
 	}
-	if v := k.name(cat["Version"]); v != nil {
+	if v, ok := k.name(cat["Version"]).(Name); ok && versionRe.MatchString(string(v)) {
 		out["Version"] = v
 	}
 	if v := k.value(cat["Outlines"], "outlines", k.outlines); v != nil {
@@ -353,16 +443,17 @@ func (k *keeper) plan() error {
 	if v := k.value(cat["StructTreeRoot"], "structroot", k.structTreeRoot); v != nil {
 		out["StructTreeRoot"] = v
 	}
-	if v := k.dict(cat["MarkInfo"], map[Name]rule{"Marked": k.plain, "UserProperties": k.plain, "Suspects": k.plain}); len(v) > 0 {
+	if v := k.dict(cat["MarkInfo"], map[Name]rule{"Marked": k.boolean, "UserProperties": k.boolean, "Suspects": k.boolean}); len(v) > 0 {
 		out["MarkInfo"] = v
 	}
 	if v := k.lang(cat["Lang"]); v != nil {
 		out["Lang"] = v
 	}
-	for _, key := range []Name{"PageMode", "PageLayout"} {
-		if v := k.name(cat[key]); v != nil {
-			out[key] = v
-		}
+	if v := k.oneOf("UseNone", "UseOutlines", "UseThumbs", "FullScreen", "UseOC", "UseAttachments")(cat["PageMode"]); v != nil {
+		out["PageMode"] = v
+	}
+	if v := k.oneOf("SinglePage", "OneColumn", "TwoColumnLeft", "TwoColumnRight", "TwoPageLeft", "TwoPageRight")(cat["PageLayout"]); v != nil {
+		out["PageLayout"] = v
 	}
 	if v := k.viewerPreferences(cat["ViewerPreferences"]); len(v) > 0 {
 		out["ViewerPreferences"] = v
@@ -404,12 +495,19 @@ func (k *keeper) noteDropped(cat Dict) {
 func (k *keeper) viewerPreferences(v any) Dict {
 	rules := map[Name]rule{}
 	for _, key := range []Name{"HideToolbar", "HideMenubar", "HideWindowUI", "FitWindow", "CenterWindow",
-		"DisplayDocTitle", "NonFullScreenPageMode", "Direction", "ViewArea", "ViewClip", "PrintArea",
-		"PrintClip", "PrintScaling", "Duplex", "PickTrayByPDFSize", "NumCopies"} {
-		rules[key] = k.plain
+		"DisplayDocTitle", "PickTrayByPDFSize"} {
+		rules[key] = k.boolean
 	}
-	rules["PrintPageRange"] = k.plainArray
-	rules["Enforce"] = k.plainArray
+	rules["NonFullScreenPageMode"] = k.oneOf("UseNone", "UseOutlines", "UseThumbs", "UseOC")
+	rules["Direction"] = k.oneOf("L2R", "R2L")
+	for _, key := range []Name{"ViewArea", "ViewClip", "PrintArea", "PrintClip"} {
+		rules[key] = k.oneOf(boxNames...)
+	}
+	rules["PrintScaling"] = k.oneOf("None", "AppDefault")
+	rules["Duplex"] = k.oneOf("Simplex", "DuplexFlipShortEdge", "DuplexFlipLongEdge")
+	rules["NumCopies"] = k.number
+	rules["PrintPageRange"] = k.numbers
+	rules["Enforce"] = k.namesOf(k.oneOf("PrintScaling"))
 	return k.dict(v, rules)
 }
 
@@ -461,12 +559,12 @@ func (k *keeper) page(index int, parent Ref, v any) any {
 	}
 	out := Dict{"Type": Name("Page"), "Parent": parent}
 	for _, key := range []Name{"MediaBox", "CropBox"} {
-		if box := k.plainArray(k.inherited(pg, key)); box != nil {
+		if box := k.numbers(k.inherited(pg, key)); box != nil {
 			out[key] = box
 		}
 	}
 	for _, key := range []Name{"BleedBox", "TrimBox", "ArtBox"} {
-		if box := k.plainArray(pg[key]); box != nil {
+		if box := k.numbers(pg[key]); box != nil {
 			out[key] = box
 		}
 	}
@@ -478,7 +576,7 @@ func (k *keeper) page(index int, parent Ref, v any) any {
 			out[key] = n
 		}
 	}
-	if t := k.name(pg["Tabs"]); t != nil {
+	if t := k.oneOf("R", "C", "S", "A", "W")(pg["Tabs"]); t != nil {
 		out["Tabs"] = t
 	}
 	if g := k.value(pg["Group"], "group", k.group); g != nil {
@@ -509,7 +607,7 @@ func (k *keeper) page(index int, parent Ref, v any) any {
 // group keeps a transparency group's attributes.
 func (k *keeper) group(v any) any {
 	return k.dict(v, map[Name]rule{
-		"Type": k.name, "S": k.name, "I": k.plain, "K": k.plain,
+		"Type": k.oneOf("Group"), "S": k.oneOf("Transparency"), "I": k.boolean, "K": k.boolean,
 		"CS": func(v any) any { return k.colorSpace(v) },
 	})
 }
@@ -569,10 +667,10 @@ func (k *keeper) link(v any) any {
 		return nil
 	}
 	out := k.dict(d, map[Name]rule{
-		"Rect": k.plainArray, "Border": k.plainArray, "C": k.plainArray, "QuadPoints": k.plainArray,
-		"H": k.name, "StructParent": k.number, "F": k.number,
+		"Rect": k.numbers, "Border": k.numbers, "C": k.numbers, "QuadPoints": k.numbers,
+		"H": k.oneOf("N", "I", "O", "P"), "StructParent": k.number, "F": k.number,
 		"BS": func(v any) any {
-			return k.dict(v, map[Name]rule{"Type": k.name, "W": k.number, "S": k.name, "D": k.plainArray})
+			return k.dict(v, map[Name]rule{"Type": k.oneOf("Border"), "W": k.number, "S": k.oneOf("S", "D", "B", "I", "U"), "D": k.numbers})
 		},
 		"Dest": k.dest,
 		"A":    func(v any) any { return k.action(v, true) },
@@ -638,8 +736,14 @@ func (k *keeper) dest(v any) any {
 				out = append(out, nil)
 				continue
 			}
-			if p := k.plain(e); p != nil {
-				out = append(out, p)
+			if n, isName := e.(Name); isName {
+				if v := k.oneOf(viewNames...)(n); v != nil {
+					out = append(out, v)
+				}
+				continue
+			}
+			if n := k.number(e); n != nil {
+				out = append(out, n)
 			}
 		}
 		return out
@@ -733,7 +837,7 @@ func (k *keeper) outlineItem(v any) any {
 	if n := k.number(d["F"]); n != nil {
 		out["F"] = n
 	}
-	if c := k.plainArray(d["C"]); c != nil {
+	if c := k.numbers(d["C"]); c != nil {
 		out["C"] = c
 	}
 	if dest, has := d["Dest"]; has {
@@ -863,7 +967,7 @@ func (k *keeper) numberTree(v any, leaf func(any) any) any {
 		}
 		out["Nums"] = kept
 	}
-	if lim := k.plainArray(d["Limits"]); lim != nil {
+	if lim := k.numbers(d["Limits"]); lim != nil {
 		out["Limits"] = lim
 	}
 	return out
@@ -871,7 +975,7 @@ func (k *keeper) numberTree(v any, leaf func(any) any) any {
 
 func (k *keeper) pageLabel(v any) any {
 	return k.value(v, "pagelabel", func(v any) any {
-		return k.dict(v, map[Name]rule{"Type": k.name, "S": k.name, "P": k.text, "St": k.number})
+		return k.dict(v, map[Name]rule{"Type": k.oneOf("PageLabel"), "S": k.oneOf("D", "R", "r", "A", "a"), "P": k.text, "St": k.number})
 	})
 }
 
@@ -895,8 +999,8 @@ func (k *keeper) structTreeRoot(v any) any {
 	if rm, ok := k.r.resolve(d["RoleMap"]).(Dict); ok {
 		m := Dict{}
 		for key, val := range rm {
-			if n := k.name(val); n != nil {
-				m[key] = n
+			if n := k.freeName(val); n != nil {
+				m[k.destName(key)] = n
 			}
 		}
 		if len(m) > 0 {
@@ -1000,7 +1104,7 @@ func (k *keeper) structElem(v any) any {
 		return nil
 	}
 	out := Dict{"Type": Name("StructElem")}
-	if s := k.name(d["S"]); s != nil {
+	if s := k.freeName(d["S"]); s != nil {
 		out["S"] = s
 	}
 	if p, ok := d["P"].(Ref); ok {
@@ -1034,13 +1138,7 @@ func (k *keeper) structElem(v any) any {
 	if r := k.number(d["R"]); r != nil {
 		out["R"] = r
 	}
-	if c := k.r.resolve(d["C"]); c != nil {
-		if n, ok := c.(Name); ok {
-			out["C"] = n
-		} else if arr := k.plainArray(c); arr != nil {
-			out["C"] = arr
-		}
-	}
+	// C names classes of the class map, which the copy does not keep.
 	if a := k.attributes(d["A"]); a != nil {
 		out["A"] = a
 	}
@@ -1048,8 +1146,34 @@ func (k *keeper) structElem(v any) any {
 }
 
 // attributes keeps a structure element's attribute objects: their
-// owners and their layout values, never a string.
+// owners and their layout values — numbers, booleans and names, the
+// names renamed by the policy — never a string.
 func (k *keeper) attributes(v any) any {
+	var value func(v any, depth int) any
+	value = func(v any, depth int) any {
+		v = k.r.resolve(v)
+		switch t := v.(type) {
+		case bool:
+			return t
+		case Name:
+			return k.destName(t)
+		case Array:
+			if depth > 4 {
+				return nil
+			}
+			out := Array{}
+			for _, e := range t {
+				if kept := value(e, depth+1); kept != nil {
+					out = append(out, kept)
+				}
+			}
+			return out
+		}
+		if isNumber(v) {
+			return v
+		}
+		return nil
+	}
 	one := func(e any) any {
 		d, ok := k.r.resolve(e).(Dict)
 		if !ok {
@@ -1057,11 +1181,8 @@ func (k *keeper) attributes(v any) any {
 		}
 		out := Dict{}
 		for key, val := range d {
-			val = k.r.resolve(val)
-			if p := k.plain(val); p != nil {
-				out[key] = p
-			} else if arr := k.plainArray(val); arr != nil {
-				out[key] = arr
+			if kept := value(val, 0); kept != nil {
+				out[k.destName(key)] = kept
 			}
 		}
 		return out
