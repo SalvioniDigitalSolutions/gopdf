@@ -342,7 +342,7 @@ func (im *importer) fontInfoFor(_ any) *fontInfo {
 	if im.r.resolve(dict["Subtype"]) == Name("Type0") {
 		return nil // composite form fonts are rare; fall back to metrics
 	}
-	dec.encoding = simpleEncoding(im.r, dict["Encoding"])
+	dec.encoding = fontEncoding(im.r, dict)
 	_ = fd
 	return newFontInfo(im.r, "DA", dict, dec)
 }

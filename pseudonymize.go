@@ -2,6 +2,7 @@ package gopdf
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -111,6 +112,36 @@ func (r PseudonymizeResult) Total() int {
 // represent a token — writing one that renders as blank boxes would be
 // worse than declining.
 func Pseudonymize(r *Reader, w io.Writer, subs []Pseudonym) (PseudonymizeResult, error) {
+	res, err := pseudonymize(r, w, subs, false)
+	if err == nil || !errors.Is(err, errResidue) || r == nil || r.crypt != nil {
+		return res, err
+	}
+	// The read-back found a value still on a page. Where the value runs
+	// over a line break the flow engine did not join — it joins the lines
+	// it takes for one paragraph — the fitted plan takes it on the second
+	// try, the bar engine's way (planAcrossLines). A copy that went
+	// through the first time is never made this way; a copy that does not
+	// go through the second time is refused as before, for what the first
+	// try left.
+	fresh, ferr := NewReader(r.data)
+	if ferr != nil {
+		return res, err
+	}
+	var again bytes.Buffer
+	res2, err2 := pseudonymize(fresh, &again, subs, true)
+	if err2 != nil {
+		return res, err
+	}
+	if _, werr := w.Write(again.Bytes()); werr != nil {
+		return PseudonymizeResult{}, werr
+	}
+	return res2, nil
+}
+
+// errResidue marks a refusal of the read-back: a value is still readable.
+var errResidue = errors.New("a value is still readable")
+
+func pseudonymize(r *Reader, w io.Writer, subs []Pseudonym, acrossLines bool) (PseudonymizeResult, error) {
 	var out PseudonymizeResult
 	if r == nil {
 		return out, fmt.Errorf("gopdf: no document to pseudonymize")
@@ -137,7 +168,7 @@ func Pseudonymize(r *Reader, w io.Writer, subs []Pseudonym) (PseudonymizeResult,
 	// space or a soft hyphen, which extraction reports as it finds them.
 	// Each mapping is expanded into those spellings, so a caller need not
 	// know which one the producer chose.
-	clean = expandAllVariants(clean)
+	clean = withDocumentSpellings(r, expandAllVariants(clean))
 	// Longer originals first, so replacing "Ada Lovelace" is not
 	// pre-empted by a rule for "Ada".
 	sort.SliceStable(clean, func(i, j int) bool {
@@ -158,7 +189,7 @@ func Pseudonymize(r *Reader, w io.Writer, subs []Pseudonym) (PseudonymizeResult,
 		// rewrite from the original operation and undo the first; and
 		// the paragraph engine, which rebuilds whole paragraphs, would
 		// write over any splice it followed.
-		if counts, ok := page.replacePageFitted(clean, matchWords); ok {
+		if counts, ok := page.replacePageFitted(clean, matchWords, acrossLines); ok {
 			for from, n := range counts {
 				out.Replaced[from] += n
 				touched[i] = true
@@ -265,7 +296,7 @@ func checkPseudonymized(out []byte, subs []Pseudonym, res PseudonymizeResult) er
 		return err
 	}
 	if where != "" {
-		return fmt.Errorf("gopdf: %s; the output has been withheld", where)
+		return &residueError{fmt.Sprintf("gopdf: %s; the output has been withheld", where)}
 	}
 	return checkTokensArrived(r, subs, res)
 }
@@ -408,3 +439,9 @@ func crossingUnions(p *UpdatablePage, subs []Pseudonym, mode matchMode) []Pseudo
 	sort.SliceStable(out, func(i, j int) bool { return len(out[i].From) > len(out[j].From) })
 	return out
 }
+
+// residueError is the read-back's refusal, with its own words.
+type residueError struct{ msg string }
+
+func (e *residueError) Error() string        { return e.msg }
+func (e *residueError) Is(target error) bool { return target == errResidue }

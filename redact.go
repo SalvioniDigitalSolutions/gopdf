@@ -408,9 +408,29 @@ func (rd *Redactor) plan() error {
 	rd.partialPaths = 0
 	rd.rw = newRewriter(rd.r)
 	rd.nextNum = rd.r.maxObjectNumber() + 1
+	rd.addDocumentSpellings()
 	rd.err = rd.buildPlan()
 	rd.planned = true
 	return rd.err
+}
+
+// addDocumentSpellings adds the spacings the document gives a literal
+// to the literals sought (documentSpellings). Planning again adds none
+// twice.
+func (rd *Redactor) addDocumentSpellings() {
+	found := documentSpellings(rd.r, rd.literals)
+	have := map[string]bool{}
+	for _, lit := range rd.literals {
+		have[lit] = true
+	}
+	for _, lit := range append([]string(nil), rd.literals...) {
+		for _, spelling := range found[lit] {
+			if !have[spelling] {
+				have[spelling] = true
+				rd.literals = append(rd.literals, spelling)
+			}
+		}
+	}
 }
 
 // dropAttachments takes every embedded file out of the rewritten

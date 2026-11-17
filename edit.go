@@ -407,10 +407,16 @@ type textState struct {
 	// renderMode is Tr. Mode 3 draws nothing, which is how a scanned
 	// page carries its OCR layer.
 	renderMode int
-	// fillOp is the source text of the operation that last set the fill
+	// fillOp is the source text of the operations that last set the fill
 	// colour, so a restyled run can put it back exactly — whatever colour
-	// space it used.
+	// space it used. An sc or scn is kept with the colour space it was
+	// given in: "1 scn" alone means one thing after "/CS1 cs" and is
+	// malformed after "0 0 0 1 k", and a rewritten line restates its
+	// colour where the space in force may be either.
 	fillOp string
+	// fillSpace is the operation that set the fill colour space: a cs,
+	// or what g, rg and k set by themselves.
+	fillSpace string
 }
 
 func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth int) {
@@ -617,11 +623,30 @@ func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth
 			st.leading = num(0)
 		case "T*":
 			translateLine(0, -st.leading)
+		case "cs":
+			// A colour space set alone paints in its initial colour.
+			if len(operands) > 0 {
+				st.fillSpace = string(target.content[operands[0].start:tok.end])
+				st.fillOp = st.fillSpace
+			}
 		case "g", "rg", "k", "sc", "scn":
 			// Keep the operation's own source text; restoring it verbatim
-			// works for any colour space.
+			// works for any colour space, given with its space.
 			if len(operands) > 0 {
-				st.fillOp = string(target.content[operands[0].start:tok.end])
+				set := string(target.content[operands[0].start:tok.end])
+				switch string(op) {
+				case "g":
+					st.fillSpace = "/DeviceGray cs"
+				case "rg":
+					st.fillSpace = "/DeviceRGB cs"
+				case "k":
+					st.fillSpace = "/DeviceCMYK cs"
+				default:
+					if st.fillSpace != "" {
+						set = st.fillSpace + " " + set
+					}
+				}
+				st.fillOp = set
 				// A tiling pattern chosen to paint with says what its
 				// cell says (scanPattern).
 				if n, ok := operands[len(operands)-1].val.(Name); ok && string(op) == "scn" {

@@ -84,7 +84,7 @@ func loadGlyphFont(r *Reader, dict Dict, substitute func(FontRequest) []byte) *g
 	if composite {
 		g.loadCIDToGID(r, target)
 	} else {
-		g.encoding = simpleEncoding(r, dict["Encoding"])
+		g.encoding = fontEncoding(r, dict)
 		g.names = encodingNames(r, dict["Encoding"])
 	}
 	if g.addressable() {

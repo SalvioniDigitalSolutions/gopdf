@@ -27,6 +27,51 @@ const (
 	matchAnywhere
 )
 
+// spacedText reports text holding a space other than one ordinary space
+// between two characters that are not spaces.
+func spacedText(s string) bool {
+	return strings.Contains(s, "  ") || strings.ContainsAny(s, "\t\u00a0")
+}
+
+// isRunSpace reports a character that a run of spaces is made of. Line
+// breaks are not: a value is matched along a line.
+func isRunSpace(r rune) bool {
+	return r == ' ' || r == '\t' || r == '\u00a0'
+}
+
+// collapseSpaces writes each run of spaces in s as one ordinary space,
+// and returns for each byte of the result, and for its end, where it
+// stands in s: a match in the result maps back to the bytes of s it
+// covers, the whole run of spaces included.
+func collapseSpaces(s string) (string, []int) {
+	var b strings.Builder
+	at := make([]int, 0, len(s)+1)
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if isRunSpace(r) {
+			j := i + size
+			for j < len(s) {
+				r2, size2 := utf8.DecodeRuneInString(s[j:])
+				if !isRunSpace(r2) {
+					break
+				}
+				j += size2
+			}
+			b.WriteByte(' ')
+			at = append(at, i)
+			i = j
+			continue
+		}
+		b.WriteString(s[i : i+size])
+		for k := 0; k < size; k++ {
+			at = append(at, i+k)
+		}
+		i += size
+	}
+	at = append(at, len(s))
+	return b.String(), at
+}
+
 // literalRanges finds every occurrence of a literal in text.
 //
 // Under matchWords an occurrence counts only where neither neighbour is a

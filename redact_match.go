@@ -2,6 +2,7 @@ package gopdf
 
 import (
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -268,7 +269,11 @@ func acrossChains(chains []runChain, lit string, mode matchMode) [][]chainPart {
 	var b strings.Builder
 	base := make([]int, len(chains))
 	for i, c := range chains {
-		if i > 0 {
+		// A space between two chains, where neither has one at the
+		// join: " UNITED " followed by "STATES OF AMERICA" reads
+		// "UNITED STATES OF AMERICA", as the page's text reads it, not
+		// "UNITED  STATES", which no value spells.
+		if i > 0 && !endsInSpace(b.String()) && !startsWithSpace(c.text) {
 			b.WriteByte(' ')
 		}
 		base[i] = b.Len()
@@ -345,4 +350,14 @@ func trimChainHyphen(b *strings.Builder, cur *runChain) int {
 		cur.elided[n-1] = size
 	}
 	return size
+}
+
+func endsInSpace(s string) bool {
+	r, _ := utf8.DecodeLastRuneInString(s)
+	return unicode.IsSpace(r)
+}
+
+func startsWithSpace(s string) bool {
+	r, _ := utf8.DecodeRuneInString(s)
+	return unicode.IsSpace(r)
 }

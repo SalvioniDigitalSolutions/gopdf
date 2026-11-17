@@ -280,7 +280,7 @@ func TestUnknownGlyphNameKeepsBaseEncoding(t *testing.T) {
 		int64(65), Name("g17"), // unrecognisable: keep 'A'
 		int64(67), Name("bullet"), // recognisable: becomes •
 	}}
-	table := simpleEncoding(r, enc)
+	table := simpleEncoding(r, enc, winAnsiRunes)
 	if table[65] != 'A' {
 		t.Errorf("an unknown glyph name blanked code 65: %q", table[65])
 	}

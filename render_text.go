@@ -284,7 +284,7 @@ func (rn *renderer) fontInfoFor(key any, name Name, dict Dict) *fontInfo {
 	}
 	d := &fontDecoder{cid: rn.r.resolve(dict["Subtype"]) == Name("Type0")}
 	if !d.cid {
-		d.encoding = simpleEncoding(rn.r, dict["Encoding"])
+		d.encoding = textEncoding(rn.r, dict)
 	}
 	fi := newFontInfo(rn.r, name, dict, d)
 	rn.text.info[key] = fi

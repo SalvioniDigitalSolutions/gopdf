@@ -56,8 +56,12 @@ type fittedRun struct {
 // All of them together, because each run is rewritten from the bytes the
 // document holds: doing one mapping and then another would build the
 // second rewrite from the original operation and undo the first.
-func (p *UpdatablePage) replacePageFitted(subs []Pseudonym, mode matchMode) (map[string]int, bool) {
-	plan, counts, ok := p.planPageFitted(subs, mode)
+//
+// acrossLines lets the plan take a value a line break runs through
+// (planAcrossLines) where it would otherwise leave the page to the flow
+// engine.
+func (p *UpdatablePage) replacePageFitted(subs []Pseudonym, mode matchMode, acrossLines bool) (map[string]int, bool) {
+	plan, counts, ok := p.planPageFitted(subs, mode, acrossLines)
 	if !ok {
 		return nil, false
 	}
@@ -80,7 +84,7 @@ func (p *UpdatablePage) replacePageFitted(subs []Pseudonym, mode matchMode) (map
 
 // planPageFitted works out every rewrite the page needs, or reports that
 // one of them cannot be done in place.
-func (p *UpdatablePage) planPageFitted(subs []Pseudonym, mode matchMode) (
+func (p *UpdatablePage) planPageFitted(subs []Pseudonym, mode matchMode, acrossLines bool) (
 	[]fittedRun, map[string]int, bool) {
 	byRun := map[*TextRun][]fitHit{}
 	counts := map[string]int{}
@@ -164,8 +168,21 @@ func (p *UpdatablePage) planPageFitted(subs []Pseudonym, mode matchMode) (
 	// engine, which re-wraps the paragraph around the token.
 	chains := buildChains(p.runs)
 	for _, sub := range subs {
-		if sub.From != "" && len(acrossChains(chains, sub.From, mode)) > 0 {
+		if sub.From == "" {
+			continue
+		}
+		occs := acrossChains(chains, sub.From, mode)
+		if len(occs) == 0 {
+			continue
+		}
+		if !acrossLines || !sub.FitWidth || sub.To == "" {
 			return nil, nil, false
+		}
+		for _, occ := range occs {
+			if !planAcrossLines(chains, occ, sub, byRun) {
+				return nil, nil, false
+			}
+			counts[sub.From]++
 		}
 	}
 	fallback := fallbackFor(p)
@@ -651,4 +668,42 @@ func pieceIndexOf(run *TextRun, at [2]int) int {
 		}
 	}
 	return -1
+}
+
+// planAcrossLines plans a value a line break runs through the way the
+// bar engine removes one: the token where the value begins, at the
+// width of what the value holds of that line, and the rest of the value
+// on the next line taken out with no token. It is the answer for a page
+// the flow engine leaves with the value readable across the break — it
+// joins only the lines it takes for one paragraph — and whose copy the
+// read-back then withheld (Pseudonymize, the second try). The words
+// around keep their places.
+func planAcrossLines(chains []runChain, occ []chainPart, sub Pseudonym, byRun map[*TextRun][]fitHit) bool {
+	for n, cp := range occ {
+		chain := chains[cp.chain]
+		parts := orderedParts(chain, chain.chainRanges(cp.start, cp.end))
+		if len(parts) == 0 {
+			return false
+		}
+		want := 0.0
+		if n == 0 && len(parts) > 1 {
+			if want = spanPoints(parts); want <= 0 {
+				return false
+			}
+		}
+		for i, pt := range parts {
+			if overlapsAny(byRun[pt.run], pt.at) {
+				for _, rest := range freeRanges(byRun[pt.run], pt.at) {
+					byRun[pt.run] = append(byRun[pt.run], fitHit{at: rest, floor: sub.floor()})
+				}
+				continue
+			}
+			h := fitHit{at: pt.at, floor: sub.floor()}
+			if n == 0 && i == 0 {
+				h.new, h.alt, h.wantPts = sub.To, sub.FitFallback, want
+			}
+			byRun[pt.run] = append(byRun[pt.run], h)
+		}
+	}
+	return true
 }

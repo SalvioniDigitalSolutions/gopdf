@@ -428,7 +428,7 @@ func (fd *fontDecoders) get(name Name) *fontDecoder {
 			}
 		}
 		if !d.cid {
-			d.encoding = simpleEncoding(fd.r, f["Encoding"])
+			d.encoding = textEncoding(fd.r, f)
 		}
 		d.info = newFontInfo(fd.r, name, f, d)
 	}
@@ -607,9 +607,35 @@ func utf16BEString(s String) string {
 	return string(utf16.Decode(utf16BEUnits(s)))
 }
 
-// simpleEncoding builds a byte-to-rune table for a simple (1-byte) font
-// from its base encoding, with any /Differences applied on top.
-func simpleEncoding(r *Reader, encoding any) *[256]rune {
+// fontEncoding builds the byte-to-rune table of a simple (1-byte) font:
+// its base encoding, with any /Differences applied on top. A font that
+// names no base encoding has its built-in one (builtInEncoding).
+func fontEncoding(r *Reader, font Dict) *[256]rune {
+	return simpleEncoding(r, font["Encoding"], func() *[256]rune { return builtInEncoding(r, font) })
+}
+
+// textEncoding is fontEncoding as text is read. A pictograph font —
+// Wingdings, ZapfDingbats and their like — draws pictures at its codes,
+// not the letters an encoding table names there: Wingdings' 0xD8 is an
+// arrowhead that WinAnsi calls "Ø", and ZapfDingbats' "l" a black
+// circle. Read as letters, a bullet and the word after it made one word
+// ("ØDOE approved method"), and the word was found neither by the
+// redactor nor by the check after it. A pictograph font's codes read as
+// the private-use characters Windows gives such fonts (U+F000 plus the
+// code), which are no letters; a glyph its /Differences names stays
+// what the name says.
+func textEncoding(r *Reader, font Dict) *[256]rune {
+	if !pictographFont(r, font) {
+		return fontEncoding(r, font)
+	}
+	return simpleEncoding(r, font["Encoding"], nil)
+}
+
+// simpleEncoding builds the table from an /Encoding entry. builtIn gives
+// the table of a font that names no base encoding; nil means the font is
+// a pictograph font, whose codes stand for themselves whatever base it
+// names.
+func simpleEncoding(r *Reader, encoding any, builtIn func() *[256]rune) *[256]rune {
 	enc := r.resolve(encoding)
 	encDict, isDict := enc.(Dict)
 
@@ -617,9 +643,19 @@ func simpleEncoding(r *Reader, encoding any) *[256]rune {
 	if isDict {
 		baseName, _ = r.resolve(encDict["BaseEncoding"]).(Name)
 	}
-	table := winAnsiRunes()
-	if baseName == "MacRomanEncoding" {
+	var table *[256]rune
+	switch {
+	case builtIn == nil:
+		table = pictographRunes()
+	case baseName == "MacRomanEncoding":
 		table = macRomanRunes()
+	case baseName == "StandardEncoding":
+		table = standardRunes()
+	case baseName == "":
+		table = builtIn()
+	default:
+		// WinAnsiEncoding, and MacExpertEncoding, which is not carried.
+		table = winAnsiRunes()
 	}
 	if isDict {
 		if diffs, ok := r.resolve(encDict["Differences"]).(Array); ok {
@@ -647,6 +683,111 @@ func simpleEncoding(r *Reader, encoding any) *[256]rune {
 		}
 	}
 	return table
+}
+
+// builtInEncoding is the encoding of a simple font whose dictionary
+// names none: the font program's own (ISO 32000-1, 9.6.6.1). For a
+// nonsymbolic Type 1 font — the standard fonts, and the fonts set in
+// their image — that is StandardEncoding, as viewers read it: 0xD0 is an
+// em dash, 0xB1 an en dash, 0x27 and 0x60 the curly quotes. Read as
+// WinAnsi, the dash was "Ð", a letter, and the words either side of it
+// one word: "Background—Alien Property" read as "BackgroundÐAlien
+// Property", and a value after the dash was neither removed nor found by
+// the check after it. A symbolic font, and a TrueType font, keep the
+// WinAnsi reading this package has always given them: the tables they
+// would need are not carried here.
+func builtInEncoding(r *Reader, font Dict) *[256]rune {
+	switch r.resolve(font["Subtype"]) {
+	case Name("Type1"), Name("MMType1"):
+	default:
+		return winAnsiRunes()
+	}
+	if symbolicFont(r, font) {
+		return winAnsiRunes()
+	}
+	return standardRunes()
+}
+
+// symbolicFont reports a font that sets symbols rather than a Latin
+// alphabet: so flagged by its descriptor (Symbolic and not Nonsymbolic),
+// or one of the symbol fonts by name.
+func symbolicFont(r *Reader, font Dict) bool {
+	if pictographFont(r, font) || fontFamily(r, font) == "symbol" {
+		return true
+	}
+	fd, _ := r.resolve(font["FontDescriptor"]).(Dict)
+	flags, ok := toInt(r.resolve(fd["Flags"]))
+	return ok && flags&4 != 0 && flags&32 == 0
+}
+
+// pictographFont reports a font of pictures — bullets, arrows, check
+// marks — by its name.
+func pictographFont(r *Reader, font Dict) bool {
+	family := fontFamily(r, font)
+	for _, p := range []string{"wingdings", "webdings", "zapfdingbats", "itczapfdingbats", "dingbats", "monotypesorts", "marlett"} {
+		if strings.HasPrefix(family, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// fontFamily returns a font's base name in lower case, without its subset
+// prefix ("CFAPJI+"), its style ("Arial,Bold") and its spaces and hyphens.
+func fontFamily(r *Reader, font Dict) string {
+	name := baseFontName(r, font)
+	if i := strings.IndexByte(name, '+'); i == 6 {
+		name = name[i+1:]
+	}
+	if i := strings.IndexByte(name, ','); i >= 0 {
+		name = name[:i]
+	}
+	name = strings.NewReplacer(" ", "", "-", "", "_", "").Replace(name)
+	return strings.ToLower(name)
+}
+
+// pictographRunes reads each code as the private-use character U+F000
+// plus the code.
+func pictographRunes() *[256]rune {
+	var t [256]rune
+	for c := 32; c < 256; c++ {
+		t[c] = rune(0xF000 + c)
+	}
+	return &t
+}
+
+// standardEncodingUpper names the glyphs of Adobe's StandardEncoding from
+// 0xA1 on; below, it is ASCII but for its quotes.
+var standardEncodingUpper = map[byte]string{
+	0xA1: "exclamdown", 0xA2: "cent", 0xA3: "sterling", 0xA4: "fraction",
+	0xA5: "yen", 0xA6: "florin", 0xA7: "section", 0xA8: "currency",
+	0xA9: "quotesingle", 0xAA: "quotedblleft", 0xAB: "guillemotleft",
+	0xAC: "guilsinglleft", 0xAD: "guilsinglright", 0xAE: "fi", 0xAF: "fl",
+	0xB1: "endash", 0xB2: "dagger", 0xB3: "daggerdbl", 0xB4: "periodcentered",
+	0xB6: "paragraph", 0xB7: "bullet", 0xB8: "quotesinglbase",
+	0xB9: "quotedblbase", 0xBA: "quotedblright", 0xBB: "guillemotright",
+	0xBC: "ellipsis", 0xBD: "perthousand", 0xBF: "questiondown",
+	0xC1: "grave", 0xC2: "acute", 0xC3: "circumflex", 0xC4: "tilde",
+	0xC5: "macron", 0xC6: "breve", 0xC7: "dotaccent", 0xC8: "dieresis",
+	0xCA: "ring", 0xCB: "cedilla", 0xCD: "hungarumlaut", 0xCE: "ogonek",
+	0xCF: "caron", 0xD0: "emdash", 0xE1: "AE", 0xE3: "ordfeminine",
+	0xE8: "Lslash", 0xE9: "Oslash", 0xEA: "OE", 0xEB: "ordmasculine",
+	0xF1: "ae", 0xF5: "dotlessi", 0xF8: "lslash", 0xF9: "oslash",
+	0xFA: "oe", 0xFB: "germandbls",
+}
+
+// standardRunes returns the StandardEncoding byte-to-rune table.
+func standardRunes() *[256]rune {
+	var t [256]rune
+	for i := 32; i < 127; i++ {
+		t[i] = rune(i)
+	}
+	t['\''] = '’'
+	t['`'] = '‘'
+	for code, name := range standardEncodingUpper {
+		t[code] = glyphNameToRune(name)
+	}
+	return &t
 }
 
 // winAnsiRunes returns the WinAnsi (CP-1252) byte-to-rune table.
@@ -760,6 +901,9 @@ var glyphNames = map[string]rune{
 	"trademark": '™', "scaron": 'š', "guilsinglright": '›', "oe": 'œ',
 	"zcaron": 'ž', "Ydieresis": 'Ÿ', "fi": 'ﬁ', "fl": 'ﬂ',
 	"dotlessi": 'ı', "lslash": 'ł', "Lslash": 'Ł',
+
+	"fraction": '⁄', "breve": '˘', "dotaccent": '˙', "ring": '˚',
+	"hungarumlaut": '˝', "ogonek": '˛', "caron": 'ˇ',
 }
 
 // scaleOf returns how far a unit of text space carries on the page.
