@@ -776,18 +776,20 @@ var standardEncodingUpper = map[byte]string{
 	0xFA: "oe", 0xFB: "germandbls",
 }
 
-// standardRunes returns the StandardEncoding byte-to-rune table.
+// standardRunes returns the StandardEncoding byte-to-rune table. A
+// code StandardEncoding leaves empty keeps its WinAnsi reading: a
+// producer that wrote one meant WinAnsi — 0xA0 for a non-breaking
+// space between two words — and read as nothing, the code joined the
+// words either side of it into one, which a value of two words is not
+// found in.
 func standardRunes() *[256]rune {
-	var t [256]rune
-	for i := 32; i < 127; i++ {
-		t[i] = rune(i)
-	}
+	t := winAnsiRunes()
 	t['\''] = '’'
 	t['`'] = '‘'
 	for code, name := range standardEncodingUpper {
 		t[code] = glyphNameToRune(name)
 	}
-	return &t
+	return t
 }
 
 // winAnsiRunes returns the WinAnsi (CP-1252) byte-to-rune table.

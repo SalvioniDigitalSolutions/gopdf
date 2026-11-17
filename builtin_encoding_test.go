@@ -25,6 +25,7 @@ func encodingFixture() []byte {
 		`BT /F3 12 Tf 1 0 0 1 72 560 Tm (caf\351 au lait) Tj ET`,
 		`BT /F5 12 Tf 1 0 0 1 72 540 Tm (sym\351) Tj ET`,
 		`BT /F6 12 Tf 1 0 0 1 72 520 Tm (Part I\320Giulia Ferrari) Tj ET`,
+		`BT /F1 12 Tf 1 0 0 1 72 500 Tm (Meeting with Marco\240Bianchi today.) Tj ET`,
 	}, "\n") + "\n"
 	objs := map[int]string{
 		1: `<< /Type /Catalog /Pages 2 0 R >>`,
@@ -55,6 +56,7 @@ func TestFontsWithoutEncodingReadAsViewersShowThem(t *testing.T) {
 		"café au lait", // TrueType: WinAnsi, as before
 		"symé",         // a symbolic Type 1 font: WinAnsi, as before
 		"Part I—Giulia Ferrari",
+		"Marco\u00a0Bianchi", // a code StandardEncoding leaves empty: WinAnsi's reading
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("want %q in %q", want, got)
