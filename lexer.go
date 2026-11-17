@@ -271,11 +271,30 @@ func (p *parser) literalString() (any, error) {
 
 func (p *parser) number() (any, error) {
 	start := p.pos
-	for p.pos < len(p.data) && (p.data[p.pos] == '+' || p.data[p.pos] == '-' ||
-		p.data[p.pos] == '.' || (p.data[p.pos] >= '0' && p.data[p.pos] <= '9')) {
+	// Signs, then digits with at most one point — read as viewers read
+	// a number: a sign or a point after that starts the next one. A
+	// writer that set two numbers side by side without a space
+	// ("-12645.6-2.8" in a TJ array) wrote two numbers; read as one
+	// broken token, the array around it failed and lost its brackets.
+	for p.pos < len(p.data) && (p.data[p.pos] == '+' || p.data[p.pos] == '-') {
+		p.pos++
+	}
+	signs := p.pos - start
+	dot := false
+	for p.pos < len(p.data) {
+		c := p.data[p.pos]
+		if c == '.' && !dot {
+			dot = true
+		} else if c < '0' || c > '9' {
+			break
+		}
 		p.pos++
 	}
 	tok := string(p.data[start:p.pos])
+	if signs > 1 {
+		// "--5": the last sign counts, as viewers take it.
+		tok = tok[signs-1:]
+	}
 	if i, err := strconv.ParseInt(tok, 10, 64); err == nil {
 		// Look ahead for "gen R", which makes this an indirect reference.
 		save := p.pos

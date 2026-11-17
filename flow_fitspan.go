@@ -397,7 +397,7 @@ func rebuildRun(run *TextRun, st flowStyle, hits []fitHit,
 					return "", false
 				}
 			} else {
-				b.Write(data[cursor:pc.end]) // whatever precedes it, and it
+				writeRaw(&b, data[cursor:pc.end]) // whatever precedes it, and it
 			}
 			cursor = pc.end
 			continue
@@ -406,7 +406,7 @@ func rebuildRun(run *TextRun, st flowStyle, hits []fitHit,
 		// precedes it; one that begins inside a continuing occurrence
 		// drops those bytes, kerns and all, along with the text.
 		if run.op == "TJ" && hits[idx[0]].at[0] >= pc.from {
-			b.Write(data[cursor:pc.start])
+			writeRaw(&b, data[cursor:pc.start])
 		}
 		pos := pc.from
 		for _, hi := range idx {
@@ -440,7 +440,7 @@ func rebuildRun(run *TextRun, st flowStyle, hits []fitHit,
 		cursor = pc.end
 	}
 	if run.op == "TJ" {
-		b.Write(data[cursor:run.end])
+		writeRaw(&b, data[cursor:run.end])
 	} else {
 		b.WriteString(" ] TJ")
 	}
@@ -564,6 +564,21 @@ func tokenStyle(st flowStyle, new string,
 		return st, false, false
 	}
 	return alt, true, true
+}
+
+// writeRaw copies bytes of the content stream after what the builder
+// holds, with a space between them where the two would run together
+// into one token: a token's kern written as "-12645.6" and the stream's
+// own "-2.8" that followed the replaced string read "-12645.6-2.8",
+// which no strict reader takes for two numbers.
+func writeRaw(b *strings.Builder, raw []byte) {
+	if len(raw) == 0 {
+		return
+	}
+	if s := b.String(); len(s) > 0 && isRegular(s[len(s)-1]) && isRegular(raw[0]) {
+		b.WriteByte(' ')
+	}
+	b.Write(raw)
 }
 
 // writeCodes appends a string as an array element, or nothing when there
