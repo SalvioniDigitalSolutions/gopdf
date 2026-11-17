@@ -32,6 +32,10 @@ type OCRWord struct {
 	// Confidence runs from 0 to 1. An engine that does not report one
 	// should leave it at 1.
 	Confidence float64
+	// Reading tells apart the readings of one picture a caller puts
+	// side by side — 0 the first, another number a second engine's.
+	// Words of two readings are never one line.
+	Reading int
 }
 
 // OCREngine reads the text in an image.
