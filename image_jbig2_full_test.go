@@ -425,6 +425,11 @@ func TestJBIG2WhatIsStillRefused(t *testing.T) {
 // property the damaged-input and bounded-work tests are about.
 func within(t *testing.T, what string, limit time.Duration, f func()) {
 	t.Helper()
+	// The decoder's work counter is the limit (errJBIG2Work); this clock
+	// only catches work that never ends, so the race detector's slowness
+	// is allowed for (CI's macOS job under -race took 3.00 s for a case
+	// that takes a fraction of it without).
+	limit *= raceSlowdown
 	done := make(chan any, 1)
 	go func() {
 		defer func() { done <- recover() }()
