@@ -41,6 +41,32 @@ type runChain struct {
 
 // buildChains groups a page's runs into chains of continuous text.
 func buildChains(runs []*TextRun) []runChain {
+	return buildChainsWith(runs, true)
+}
+
+// hyphenSplitChains are the lines a hyphenated line break runs between,
+// read as they stand: "NIST-" at the end of one, "calibrated" at the
+// start of the next. buildChains joins such a word ("NISTcalibrated")
+// as a reader does; the check after a replacement reads the page both
+// ways, and "NIST" standing before its hyphen was found there and
+// nowhere by the replacer. Matching these as well, a value is replaced
+// in either reading.
+func hyphenSplitChains(runs []*TextRun) []runChain {
+	var out []runChain
+	raw := buildChainsWith(runs, false)
+	for i, c := range raw {
+		ends := strings.HasSuffix(strings.TrimRightFunc(c.text, unicode.IsSpace), "-")
+		follows := i > 0 && strings.HasSuffix(strings.TrimRightFunc(raw[i-1].text, unicode.IsSpace), "-")
+		if ends || follows {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// buildChainsWith is buildChains; joinHyphens false leaves a hyphenated
+// line break a break.
+func buildChainsWith(runs []*TextRun, joinHyphens bool) []runChain {
 	var out []runChain
 	var cur runChain
 	var b strings.Builder
@@ -66,7 +92,7 @@ func buildChains(runs []*TextRun) []runChain {
 			// word split in two, not two words. The hyphen comes out of
 			// the reading and the chain carries on, so "Bian-" and "chi"
 			// are matched as "Bianchi".
-			if kind == joinBreak && continuesHyphenated(b.String(), prev, run) {
+			if joinHyphens && kind == joinBreak && continuesHyphenated(b.String(), prev, run) {
 				dropped = trimChainHyphen(&b, &cur)
 				kind = joinTight
 			}
@@ -215,7 +241,7 @@ func (rd *Redactor) matchesInChains(runs []*TextRun) map[*TextRun][][2]int {
 		}
 	}
 	chains := buildChains(runs)
-	for _, chain := range chains {
+	for _, chain := range append(append([]runChain(nil), chains...), hyphenSplitChains(runs)...) {
 		for _, lit := range rd.literals {
 			for _, rg := range literalRanges(chain.text, lit, rd.mode()) {
 				add(chain.chainRanges(rg[0], rg[1]))
@@ -269,11 +295,13 @@ func acrossChains(chains []runChain, lit string, mode matchMode) [][]chainPart {
 	var b strings.Builder
 	base := make([]int, len(chains))
 	for i, c := range chains {
-		// A space between two chains, where neither has one at the
-		// join: " UNITED " followed by "STATES OF AMERICA" reads
-		// "UNITED STATES OF AMERICA", as the page's text reads it, not
-		// "UNITED  STATES", which no value spells.
-		if i > 0 && !endsInSpace(b.String()) && !startsWithSpace(c.text) {
+		// Between two chains what the page's text reads there: on one
+		// baseline, a space only where the gap is one — a heading set in
+		// pieces whose pen seems to go back ("DEPARTM", "ENT OF CO")
+		// reads "DEPARTMENT OF COMMERCE", not "DEPARTM ENT OF CO";
+		// between lines, a space; and never a second one beside a space
+		// a chain has (" UNITED " and "STATES": "UNITED STATES").
+		if i > 0 && !endsInSpace(b.String()) && !startsWithSpace(c.text) && chainsSpaced(chains[i-1], c) {
 			b.WriteByte(' ')
 		}
 		base[i] = b.Len()
@@ -360,4 +388,23 @@ func endsInSpace(s string) bool {
 func startsWithSpace(s string) bool {
 	r, _ := utf8.DecodeRuneInString(s)
 	return unicode.IsSpace(r)
+}
+
+// chainsSpaced reports whether the page's text reads a space between
+// the end of chain a and the start of chain b: always across lines, and
+// on one baseline where the gap is wide enough to be one (needsSpace,
+// the extractor's own rule).
+func chainsSpaced(a, b runChain) bool {
+	if len(a.runs) == 0 || len(b.runs) == 0 {
+		return true
+	}
+	prev, next := a.runs[len(a.runs)-1], b.runs[0]
+	size := prev.FontSize
+	if size <= 0 {
+		size = next.FontSize
+	}
+	if size <= 0 || next.Y-prev.Y > size*0.3 || prev.Y-next.Y > size*0.3 {
+		return true
+	}
+	return needsSpace(a.text, b.text, next.X-(prev.X+prev.Width), prev.spaceWidthPts())
 }

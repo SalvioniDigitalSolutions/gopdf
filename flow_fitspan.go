@@ -89,12 +89,15 @@ func (p *UpdatablePage) planPageFitted(subs []Pseudonym, mode matchMode, acrossL
 	byRun := map[*TextRun][]fitHit{}
 	counts := map[string]int{}
 	seen := map[*TextRun]bool{}
+	// The lines as a reader joins them, and those a hyphenated break
+	// runs between as they stand (hyphenSplitChains).
+	matchChains := append(buildChains(p.runs), hyphenSplitChains(p.runs)...)
 	for _, sub := range subs {
 		if sub.From == "" || sub.To == "" || !sub.FitWidth {
 			continue
 		}
 		found := false
-		for _, chain := range buildChains(p.runs) {
+		for _, chain := range matchChains {
 			for _, rg := range literalRanges(chain.text, sub.From, mode) {
 				spread := chain.chainRanges(rg[0], rg[1])
 				parts := orderedParts(chain, spread)

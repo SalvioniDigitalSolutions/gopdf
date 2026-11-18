@@ -1131,10 +1131,12 @@ func TestRedactStillRespectsWordBoundariesWithinAWord(t *testing.T) {
 // case, and the other way the matcher and the verifier could disagree.
 //
 // A document breaks "conversione" across a line as "con-" and
-// "versione". The matcher joins the halves and correctly declines to
-// remove "versione", which is not a word of its own here. Reading the
-// halves separately, the verifier found a "versione" still on the page
-// and withheld the file — refusing the document for being right.
+// "versione". Joined, "versione" is no word of its own; read as the page
+// stands — as pdftotext and any reader outside this package read it —
+// it is one, at the start of a line. The matcher declined it and the
+// verifier withheld the file. It is now removed as well: a few letters
+// of another word gone is the lesser mistake, a marked value an outside
+// reader still finds is none. "con-" and the rest of the page stay.
 func TestRedactHyphenatedBreakIsNotAWordBoundary(t *testing.T) {
 	doc := New()
 	doc.Compress = false
@@ -1159,9 +1161,13 @@ func TestRedactHyphenatedBreakIsNotAWordBoundary(t *testing.T) {
 	if strings.Contains(got, "una versione") {
 		t.Errorf("the standalone word survived: %q", got)
 	}
-	// The half of the hyphenated word stays, because it is not a word.
-	if !strings.Contains(got, "con-") || !strings.Contains(got, "versione della") {
-		t.Errorf("the hyphenated word was broken up: %q", got)
+	// Read as the page stands, the second half spells the value: it
+	// goes too. The first half and the words around stay.
+	if strings.Contains(got, "versione") {
+		t.Errorf("the half that spells the value survived: %q", got)
+	}
+	if !strings.Contains(got, "con-") || !strings.Contains(got, "della misura") || !strings.Contains(got, "modificata") {
+		t.Errorf("more than the value went: %q", got)
 	}
 }
 
