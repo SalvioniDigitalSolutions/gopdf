@@ -91,14 +91,22 @@ func (p *UpdatablePage) planPageFitted(subs []Pseudonym, mode matchMode, acrossL
 	seen := map[*TextRun]bool{}
 	// The lines as a reader joins them, and those a hyphenated break
 	// runs between as they stand (hyphenSplitChains).
+	// And those a value's own hyphen joins across a line end, kept
+	// (hyphenKeptChains): only an occurrence through such a hyphen is
+	// taken from them.
 	matchChains := append(buildChains(p.runs), hyphenSplitChains(p.runs)...)
+	keptFrom := len(matchChains)
+	matchChains = append(matchChains, hyphenKeptChains(p.runs)...)
 	for _, sub := range subs {
 		if sub.From == "" || sub.To == "" || !sub.FitWidth {
 			continue
 		}
 		found := false
-		for _, chain := range matchChains {
-			for _, rg := range literalRanges(chain.text, sub.From, mode) {
+		for ci, chain := range matchChains {
+			for _, rg := range chain.matchRanges(sub.From, mode) {
+				if ci >= keptFrom && !chain.throughKeptHyphen(rg[0], rg[1]) {
+					continue
+				}
 				spread := chain.chainRanges(rg[0], rg[1])
 				parts := orderedParts(chain, spread)
 				if len(parts) == 0 {
@@ -110,8 +118,13 @@ func (p *UpdatablePage) planPageFitted(subs []Pseudonym, mode matchMode, acrossL
 				// whole occurrence covered on the page; the others give
 				// up their share of it and keep their own width, so the
 				// words after them do not move either.
+				// An occurrence through a hyphen kept across a line end
+				// has a part on each line: the token goes where it
+				// begins, in that part's width, and what stands on the
+				// next line is taken out (planAcrossLines does the same).
+				broken := ci >= keptFrom && len(parts) > 1
 				want := 0.0
-				if len(parts) > 1 {
+				if len(parts) > 1 && !broken {
 					want = spanPoints(parts)
 					if want <= 0 {
 						return nil, nil, false

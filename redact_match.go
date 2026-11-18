@@ -1,6 +1,8 @@
 package gopdf
 
 import (
+	"math"
+	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -37,6 +39,99 @@ type runChain struct {
 	// operation left between two words. They come out again when a match
 	// is mapped back onto the run, since the run never had them.
 	inserted [][]int
+	// kept holds, in a chain built with hyphensKept, the offset of each
+	// hyphen a line break was joined across.
+	kept []int
+	// soft holds the offsets where two runs were joined with no space
+	// across a gap wider than a kern (softGap): a word space by some
+	// readers' rule and none by this one's (matchRanges).
+	soft []int
+}
+
+// softGap is the share of the font size a gap between two runs has to
+// span to be read as a word space by some reader: pdftotext breaks
+// words at about a tenth of the size, this package's rule at seven
+// tenths of the font's space.
+const softGap = 0.1
+
+// matchRanges finds a literal in a chain as the readers after a
+// replacement find it: as a word of the chain's text, and as a word of
+// the text of one of its runs. A run is one string the page draws, and
+// the check that reads each drawn string apart, and the one that reads
+// the file's bytes, take a value standing whole in one as a word, even
+// where a reader joins that string to the next with no space between:
+// "on Egypt" drawn against "ian Qurans", "KUHN" set against "AND" with
+// a gap narrower than the space rule. The writers did not find the
+// value there, the checks did, and the copy was refused. A value spread
+// over several strings — a word drawn a letter at a time — is found
+// only as a word of the chain, as before: "Ann" stays in "Annual".
+func (c runChain) matchRanges(lit string, mode matchMode) [][2]int {
+	out := literalRanges(c.text, lit, mode)
+	if mode != matchWords || len(c.runs) < 2 {
+		return out
+	}
+	added := false
+	// And the chain read with a space at each soft join: two words
+	// drawn apart by a gap a reader takes for a space ("Corporal" and
+	// "Brunson", 0.4 of the size apart in Courier, whose space this
+	// package's rule wants 0.42 of it) are read as two. A value with a
+	// space there is found; one spelled tight is found in the chain as
+	// it is, above.
+	if len(c.soft) > 0 && strings.Contains(lit, " ") {
+		var b strings.Builder
+		back := make([]int, 0, len(c.text)+len(c.soft)+1)
+		k := 0
+		for i := 0; i <= len(c.text); i++ {
+			for k < len(c.soft) && c.soft[k] == i {
+				b.WriteByte(' ')
+				back = append(back, i)
+				k++
+			}
+			if i < len(c.text) {
+				b.WriteByte(c.text[i])
+				back = append(back, i)
+			}
+		}
+		back = append(back, len(c.text))
+		for _, rg := range literalRanges(b.String(), lit, mode) {
+			lo, hi := back[rg[0]], back[rg[1]]
+			taken := lo >= hi
+			for _, o := range out {
+				if lo < o[1] && hi > o[0] {
+					taken = true
+					break
+				}
+			}
+			if !taken {
+				out = append(out, [2]int{lo, hi})
+				added = true
+			}
+		}
+	}
+	for i := range c.runs {
+		s, e := c.start[i], c.end[i]
+		if s < 0 || e > len(c.text) || s >= e {
+			continue
+		}
+		for _, rg := range literalRanges(c.text[s:e], lit, mode) {
+			lo, hi := rg[0]+s, rg[1]+s
+			taken := false
+			for _, o := range out {
+				if lo < o[1] && hi > o[0] {
+					taken = true
+					break
+				}
+			}
+			if !taken {
+				out = append(out, [2]int{lo, hi})
+				added = true
+			}
+		}
+	}
+	if added {
+		sort.Slice(out, func(i, j int) bool { return out[i][0] < out[j][0] })
+	}
+	return out
 }
 
 // buildChains groups a page's runs into chains of continuous text.
@@ -64,9 +159,55 @@ func hyphenSplitChains(runs []*TextRun) []runChain {
 	return out
 }
 
+// hyphenKeptChains are the lines a hyphenated line break runs between,
+// joined with the hyphen kept: "ITC-" at the end of one, "18" at the
+// start of the next, read "ITC-18". buildChains reads them "ITC18", as
+// a reader joins a word divided at a line end; but where the hyphen is
+// the value's own — a model number, "In-House", a reference — the value
+// was found there by nobody but the check that reads the file's
+// strings, and the copy was refused. Only the occurrences that run
+// through such a join are taken from these: every other one is found
+// in the chains already.
+func hyphenKeptChains(runs []*TextRun) []runChain {
+	var out []runChain
+	for _, c := range buildChainsMode(runs, hyphensKept) {
+		if len(c.kept) > 0 {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// throughKeptHyphen reports whether [lo,hi) of a hyphen-kept chain runs
+// through one of its kept hyphens.
+func (c runChain) throughKeptHyphen(lo, hi int) bool {
+	for _, k := range c.kept {
+		if lo <= k && hi > k {
+			return true
+		}
+	}
+	return false
+}
+
+// How buildChainsMode treats a hyphenated line break.
+const (
+	hyphensBreak   = iota // the line break stays a break
+	hyphensDropped        // the lines join, the hyphen left out
+	hyphensKept           // the lines join, the hyphen kept
+)
+
 // buildChainsWith is buildChains; joinHyphens false leaves a hyphenated
 // line break a break.
 func buildChainsWith(runs []*TextRun, joinHyphens bool) []runChain {
+	if joinHyphens {
+		return buildChainsMode(runs, hyphensDropped)
+	}
+	return buildChainsMode(runs, hyphensBreak)
+}
+
+// buildChainsMode is buildChains with a hyphenated line break treated
+// as mode says.
+func buildChainsMode(runs []*TextRun, mode int) []runChain {
 	var out []runChain
 	var cur runChain
 	var b strings.Builder
@@ -92,8 +233,13 @@ func buildChainsWith(runs []*TextRun, joinHyphens bool) []runChain {
 			// word split in two, not two words. The hyphen comes out of
 			// the reading and the chain carries on, so "Bian-" and "chi"
 			// are matched as "Bianchi".
-			if joinHyphens && kind == joinBreak && continuesHyphenated(b.String(), prev, run) {
-				dropped = trimChainHyphen(&b, &cur)
+			if mode != hyphensBreak && kind == joinBreak && continuesHyphenated(b.String(), prev, run) {
+				if mode == hyphensDropped {
+					dropped = trimChainHyphen(&b, &cur)
+				} else {
+					_, size := utf8.DecodeLastRuneInString(b.String())
+					cur.kept = append(cur.kept, b.Len()-size)
+				}
 				kind = joinTight
 			}
 			switch kind {
@@ -101,6 +247,14 @@ func buildChainsWith(runs []*TextRun, joinHyphens bool) []runChain {
 				flush()
 			case joinSpace:
 				b.WriteByte(' ')
+			case joinTight:
+				// A line joined across a hyphen moves down a line: not
+				// a gap on one line, and no soft join.
+				if size := prev.FontSize; size > 0 && math.Abs(run.Y-prev.Y) <= size*0.3 {
+					if gap := run.X - (prev.X + prev.Width); gap > size*softGap {
+						cur.soft = append(cur.soft, b.Len())
+					}
+				}
 			}
 		}
 		_ = dropped
@@ -241,9 +395,18 @@ func (rd *Redactor) matchesInChains(runs []*TextRun) map[*TextRun][][2]int {
 		}
 	}
 	chains := buildChains(runs)
-	for _, chain := range append(append([]runChain(nil), chains...), hyphenSplitChains(runs)...) {
+	for _, chain := range hyphenKeptChains(runs) {
 		for _, lit := range rd.literals {
 			for _, rg := range literalRanges(chain.text, lit, rd.mode()) {
+				if chain.throughKeptHyphen(rg[0], rg[1]) {
+					add(chain.chainRanges(rg[0], rg[1]))
+				}
+			}
+		}
+	}
+	for _, chain := range append(append([]runChain(nil), chains...), hyphenSplitChains(runs)...) {
+		for _, lit := range rd.literals {
+			for _, rg := range chain.matchRanges(lit, rd.mode()) {
 				add(chain.chainRanges(rg[0], rg[1]))
 			}
 		}
