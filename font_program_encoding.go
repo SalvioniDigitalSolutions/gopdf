@@ -90,11 +90,18 @@ func type1EncodingNames(data []byte, clear int) map[int]string {
 	return names
 }
 
-// cffEncodingNames reads a name-keyed CFF program's own encoding: the
-// glyph each code selects (its encoding table, supplements included),
-// named through its charset. A program that uses the predefined
-// Standard or Expert encoding, and a CID-keyed one, give nil.
-func cffEncodingNames(data []byte) map[int]string {
+// cffNaming is what a bare (name-keyed) CFF program says of its glyphs'
+// names: each glyph's name by index, its top DICT, and a string ID's
+// name.
+type cffNaming struct {
+	glyphs  []string
+	top     []cffDictEntry
+	sidName func(uint16) string
+}
+
+// cffNamingOf reads a bare CFF program's glyph names; nil for a
+// CID-keyed program, whose glyphs have numbers, not names.
+func cffNamingOf(data []byte) *cffNaming {
 	if len(data) < 4 {
 		return nil
 	}
@@ -113,10 +120,6 @@ func cffEncodingNames(data []byte) map[int]string {
 	top, err := parseCFFDict(topIdx.items[0])
 	if err != nil || dictEntry(top, 1230) != nil { // ROS: CID-keyed
 		return nil
-	}
-	enc := dictEntry(top, cffOpEncoding)
-	if enc == nil || len(enc.values) != 1 || enc.values[0] <= 1 {
-		return nil // StandardEncoding, ExpertEncoding
 	}
 	cs := dictEntry(top, cffOpCharStrings)
 	if cs == nil || len(cs.values) != 1 {
@@ -151,6 +154,26 @@ func cffEncodingNames(data []byte) map[int]string {
 		}
 		return ""
 	}
+	n := &cffNaming{glyphs: make([]string, nGlyphs), top: top, sidName: name}
+	for gid, sid := range sids {
+		n.glyphs[gid] = name(sid)
+	}
+	return n
+}
+
+// cffEncodingNames returns the glyph names a bare CFF program's own
+// encoding gives its codes, where it has one of its own (not the
+// predefined Standard or Expert encoding); nil otherwise.
+func cffEncodingNames(data []byte) map[int]string {
+	n := cffNamingOf(data)
+	if n == nil {
+		return nil
+	}
+	enc := dictEntry(n.top, cffOpEncoding)
+	if enc == nil || len(enc.values) != 1 || enc.values[0] <= 1 {
+		return nil // StandardEncoding, ExpertEncoding
+	}
+	nGlyphs := len(n.glyphs)
 	out := map[int]string{}
 	p := enc.values[0]
 	if p < 0 || p+2 > len(data) {
@@ -159,49 +182,76 @@ func cffEncodingNames(data []byte) map[int]string {
 	format := data[p]
 	switch format & 0x7f {
 	case 0:
-		n := int(data[p+1])
-		if p+2+n > len(data) {
+		k := int(data[p+1])
+		if p+2+k > len(data) {
 			return nil
 		}
-		for i := 0; i < n; i++ {
+		for i := 0; i < k; i++ {
 			if gid := i + 1; gid < nGlyphs {
-				out[int(data[p+2+i])] = name(sids[gid])
+				out[int(data[p+2+i])] = n.glyphs[gid]
 			}
 		}
-		p += 2 + n
+		p += 2 + k
 	case 1:
-		n := int(data[p+1])
-		if p+2+2*n > len(data) {
+		k := int(data[p+1])
+		if p+2+2*k > len(data) {
 			return nil
 		}
 		gid := 1
-		for i := 0; i < n; i++ {
+		for i := 0; i < k; i++ {
 			first, left := int(data[p+2+2*i]), int(data[p+3+2*i])
-			for k := 0; k <= left && gid < nGlyphs; k++ {
-				if code := first + k; code < 256 {
-					out[code] = name(sids[gid])
+			for j := 0; j <= left && gid < nGlyphs; j++ {
+				if code := first + j; code < 256 {
+					out[code] = n.glyphs[gid]
 				}
 				gid++
 			}
 		}
-		p += 2 + 2*n
+		p += 2 + 2*k
 	default:
 		return nil
 	}
 	if format&0x80 != 0 && p < len(data) {
-		n := int(data[p])
-		for i := 0; i < n && p+1+3*i+3 <= len(data); i++ {
+		k := int(data[p])
+		for i := 0; i < k && p+1+3*i+3 <= len(data); i++ {
 			q := p + 1 + 3*i
-			out[int(data[q])] = name(binary.BigEndian.Uint16(data[q+1:]))
+			out[int(data[q])] = n.sidName(binary.BigEndian.Uint16(data[q+1:]))
 		}
 	}
-	for code, n := range out {
-		if n == "" || n == ".notdef" {
+	for code, name := range out {
+		if name == "" || name == ".notdef" {
 			delete(out, code)
 		}
 	}
 	if len(out) == 0 {
 		return nil
+	}
+	return out
+}
+
+// cffCodeNames returns the glyph name each code of a bare CFF program's
+// own encoding selects: its encoding of its own (cffEncodingNames), or
+// the predefined Standard encoding — the ASCII names at 32 to 126, the
+// standard upper half above. Nil for the Expert encoding and for a
+// CID-keyed program.
+func cffCodeNames(data []byte) map[int]string {
+	n := cffNamingOf(data)
+	if n == nil {
+		return nil
+	}
+	enc := dictEntry(n.top, cffOpEncoding)
+	if enc != nil && len(enc.values) == 1 && enc.values[0] > 1 {
+		return cffEncodingNames(data)
+	}
+	if enc != nil && len(enc.values) == 1 && enc.values[0] == 1 {
+		return nil // ExpertEncoding
+	}
+	out := map[int]string{}
+	for code := 32; code <= 126; code++ {
+		out[code] = cffStandardNames[code-31]
+	}
+	for code, name := range standardEncodingUpper {
+		out[int(code)] = name
 	}
 	return out
 }

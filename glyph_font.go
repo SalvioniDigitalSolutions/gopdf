@@ -20,11 +20,12 @@ import (
 //     by the code itself where the font is a symbol font, whose cmap is
 //     conventionally keyed at F000.
 //
-// Simple fonts with a bare PostScript program are the gap. Reaching their
-// glyphs means resolving glyph names against the built-in encodings,
-// which this package deliberately does not carry. Their text is left
-// undrawn rather than drawn wrong, and RenderPage reports how much was
-// left out.
+// A simple font with a bare CFF program is addressed by glyph name: the
+// name its /Differences gives a code, or else the name the program's own
+// encoding gives it (cffCodeNames), looked up among the program's glyph
+// names. A bare Type 1 program is the gap: its text is drawn by a stand-in
+// where it can be, left undrawn where it cannot, and RenderPage reports
+// how much was left out.
 
 // glyphFont turns character codes into outlines.
 type glyphFont struct {
@@ -44,6 +45,18 @@ type glyphFont struct {
 	// names holds the glyph names a simple font's /Differences gives,
 	// which address a glyph directly where a character map cannot.
 	names map[uint32]string
+
+	// cffGlyphs and cffCodes address a bare CFF program's glyphs by name:
+	// each glyph by its name, and the name the program's own encoding
+	// gives each code.
+	cffGlyphs map[string]uint16
+	cffCodes  map[int]string
+	// cffRunes finds a bare CFF program's glyph by the character its
+	// name stands for, where the font dictionary names a base encoding
+	// that, not the program's own, says what each code is.
+	cffRunes map[rune]uint16
+	// baseNamed: the font dictionary names a base encoding.
+	baseNamed bool
 
 	// substituted marks a font whose shapes come from a stand-in rather
 	// than from the document, in which case codes are resolved through
@@ -86,6 +99,7 @@ func loadGlyphFont(r *Reader, dict Dict, substitute func(FontRequest) []byte) *g
 	} else {
 		g.encoding = fontEncoding(r, dict)
 		g.names = encodingNames(r, dict["Encoding"])
+		g.baseNamed = namesBaseEncoding(r, dict["Encoding"])
 	}
 	if g.addressable() {
 		return g
@@ -120,15 +134,28 @@ func (g *glyphFont) addressable() bool {
 		return true
 	}
 	if g.cff != nil && g.ttf == nil {
-		// A bare CFF is indexed by glyph name through the built-in
-		// encodings, which this package does not carry.
-		return false
+		// A bare CFF is indexed by glyph name, which a name-keyed
+		// program spells out and a broken one may not.
+		return len(g.cffGlyphs) > 0
 	}
 	// A TrueType program can be addressed by its character map, by the
 	// glyph names the document gives, or — where it has no map at all —
 	// by treating the code as the index, which is what a subsetter that
 	// wrote no map expects.
 	return g.ttf != nil
+}
+
+// namesBaseEncoding reports an /Encoding that names a base encoding: a
+// name, or a dictionary with /BaseEncoding.
+func namesBaseEncoding(r *Reader, encoding any) bool {
+	switch e := r.resolve(encoding).(type) {
+	case Name:
+		return true
+	case Dict:
+		_, ok := r.resolve(e["BaseEncoding"]).(Name)
+		return ok
+	}
+	return false
 }
 
 // encodingNames reads the glyph names an /Encoding names per code.
@@ -212,6 +239,21 @@ func (g *glyphFont) loadProgram(r *Reader, fd Dict, key Name) bool {
 		}
 		g.cff = cff
 		g.unitScale = cff.fontMatrix
+		if n := cffNamingOf(data); n != nil {
+			g.cffGlyphs = make(map[string]uint16, len(n.glyphs))
+			g.cffRunes = map[rune]uint16{}
+			for gid, name := range n.glyphs {
+				if _, dup := g.cffGlyphs[name]; name != "" && !dup {
+					g.cffGlyphs[name] = uint16(gid)
+				}
+				if ru := glyphNameToRune(name); ru != 0 {
+					if _, dup := g.cffRunes[ru]; !dup {
+						g.cffRunes[ru] = uint16(gid)
+					}
+				}
+			}
+			g.cffCodes = cffCodeNames(data)
+		}
 		return true
 	}
 	f, err := parseTTF(data)
@@ -372,6 +414,31 @@ func (g *glyphFont) gid(code uint32) (uint16, bool) {
 		return cid, true
 	}
 
+	if g.cffGlyphs != nil && g.ttf == nil {
+		// A bare CFF program: the name /Differences gives the code, or
+		// the name the program's own encoding gives it. A name the
+		// program lacks draws nothing, as in a viewer — never a glyph
+		// guessed by a numbering convention, which in a program with
+		// names of its own picks a glyph at random.
+		// Where the dictionary names a base encoding, a non-symbolic
+		// font's codes are what that encoding says, found by character.
+		name := g.names[code]
+		if name == "" && g.baseNamed && !g.symbolic && g.encoding != nil && code < 256 {
+			if ru := g.encoding[code]; ru != 0 {
+				if gid, ok := g.cffRunes[ru]; ok {
+					return gid, true
+				}
+			}
+			return 0, false
+		}
+		if name == "" && code < 256 {
+			name = g.cffCodes[int(code)]
+		}
+		if gid, ok := g.cffGlyphs[name]; ok && name != "" && name != ".notdef" {
+			return gid, true
+		}
+		return 0, false
+	}
 	// A name the document gave is the most direct answer there is: it
 	// names the glyph rather than describing it.
 	if name := g.names[code]; name != "" {
@@ -416,8 +483,6 @@ func (g *glyphFont) gid(code uint32) (uint16, bool) {
 			return uint16(code), true
 		}
 	}
-	// A bare CFF simple font needs glyph names to be addressed, which is
-	// the case this package does not handle.
 	return 0, false
 }
 
