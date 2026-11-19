@@ -142,7 +142,14 @@ func (rd *Redactor) ocrRegions(img ImageRef, cleared []rect) ([]ocrHit, error) {
 		// left alone here; an Area still covers it.
 		return nil, nil
 	}
-	words, err := rd.ocr.Recognize(pixels)
+	// A picture its placement shows mirrored is read as shown, and the
+	// words are put back where they stand in the picture as stored, which
+	// is what the scrubbing works on (mirror.go).
+	shown := pixels
+	if img.Mirrored() {
+		shown = FlipRows(pixels)
+	}
+	words, err := rd.ocr.Recognize(shown)
 	if err != nil {
 		return nil, fmt.Errorf("gopdf: reading the text in an image: %w", err)
 	}
@@ -150,6 +157,11 @@ func (rd *Redactor) ocrRegions(img ImageRef, cleared []rect) ([]ocrHit, error) {
 	w, h := float64(b.Dx()), float64(b.Dy())
 	if w <= 0 || h <= 0 {
 		return nil, nil
+	}
+	if img.Mirrored() {
+		for i := range words {
+			words[i].Y = FlippedRowsBack(words[i].Y, words[i].H, b.Dy())
+		}
 	}
 	// Words the engine doubts, and boxes with nothing in them, are set
 	// aside before anything is matched.
