@@ -313,6 +313,10 @@ func (fi *fontInfo) contradicts(code uint32, r rune) bool {
 	if !ok {
 		return false // the map is silent, so it disagrees with nothing
 	}
+	if text == "\uFFFD" && code < 256 && fi.decoder.named != nil && fi.decoder.named[code] == r {
+		// The map says it does not know; the encoding names the glyph.
+		return false
+	}
 	runes := []rune(text)
 	return len(runes) != 1 || runes[0] != r
 }

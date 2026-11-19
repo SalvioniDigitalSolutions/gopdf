@@ -402,6 +402,10 @@ type fontDecoder struct {
 	cid       bool // 2-byte character codes (Type0)
 	toUnicode map[uint32]string
 	encoding  *[256]rune // simple fonts only
+	// named holds, of a simple font, the characters its /Differences
+	// name outright (namedEncoding): what a code whose /ToUnicode entry
+	// is U+FFFD reads as instead.
+	named *[256]rune
 	// info carries the font's advance widths, so extraction can tell a
 	// gap that is a space from one that merely continues a word.
 	info *fontInfo
@@ -429,6 +433,7 @@ func (fd *fontDecoders) get(name Name) *fontDecoder {
 		}
 		if !d.cid {
 			d.encoding = textEncoding(fd.r, f)
+			d.named = namedEncoding(fd.r, f, d.encoding)
 		}
 		d.info = newFontInfo(fd.r, name, f, d)
 	}
@@ -481,9 +486,16 @@ func (d *fontDecoder) decodeSpans(s String) (string, []int) {
 			code = code<<8 | uint32(s[i+k])
 		}
 		before := sb.Len()
+		tu := ""
+		if d.toUnicode != nil {
+			tu = d.toUnicode[code]
+		}
+		if tu == "\uFFFD" && d.named != nil && code < 256 && d.named[code] != 0 {
+			tu = string(d.named[code])
+		}
 		switch {
-		case d.toUnicode != nil && d.toUnicode[code] != "":
-			sb.WriteString(d.toUnicode[code])
+		case tu != "":
+			sb.WriteString(tu)
 		case d.encoding != nil:
 			if r := d.encoding[byte(code)]; r != 0 {
 				sb.WriteRune(r)
@@ -656,6 +668,50 @@ func simpleEncoding(r *Reader, encoding any, builtIn func() *[256]rune) *[256]ru
 // simpleEncodingOf is simpleEncoding; numbered says that glyph names
 // nothing knows may be numbered names (numberedNameRunes).
 func simpleEncodingOf(r *Reader, encoding any, builtIn func() *[256]rune, numbered bool) *[256]rune {
+	table, _ := simpleEncodingNamed(r, encoding, builtIn, numbered)
+	return table
+}
+
+// A converter that could not tell what its glyphs were wrote a
+// /ToUnicode map that says so of every code — U+FFFD, "unknown" — while
+// the font's /Differences named each glyph by its Windows code: "G69"
+// for E, "G110" for n. Read by the map alone, a table of diseases and
+// the pathogens that cause them read as a run of U+FFFD, and every
+// value in it was neither found nor checked. Where the map says only
+// that it does not know, a character the encoding names outright is
+// read instead: never a base encoding's guess, which may be anything.
+
+// namedEncoding returns the characters of a simple font's codes that its
+// /Differences name outright — by a glyph name a glyph list knows, or by
+// a numbered name (numberedNameRunes) — and that the font's text reading
+// (text) agrees with: a pictograph font's codes read as its own
+// pictures, never as the letters a name would make of them. Nil when
+// there are none.
+func namedEncoding(r *Reader, font Dict, text *[256]rune) *[256]rune {
+	if text == nil {
+		return nil
+	}
+	_, named := simpleEncodingNamed(r, font["Encoding"], func() *[256]rune { return builtInEncoding(r, font) }, numberedNamesFont(r, font))
+	if named == nil {
+		return nil
+	}
+	some := false
+	for code, ru := range named {
+		if ru != 0 && text[code] != ru {
+			named[code] = 0
+		}
+		some = some || named[code] != 0
+	}
+	if !some {
+		return nil
+	}
+	return named
+}
+
+// simpleEncodingNamed is simpleEncodingOf, with the characters the
+// /Differences name outright beside the table (zero where they name
+// none); nil when the encoding has no /Differences.
+func simpleEncodingNamed(r *Reader, encoding any, builtIn func() *[256]rune, numbered bool) (*[256]rune, *[256]rune) {
 	enc := r.resolve(encoding)
 	encDict, isDict := enc.(Dict)
 
@@ -677,8 +733,10 @@ func simpleEncodingOf(r *Reader, encoding any, builtIn func() *[256]rune, number
 		// WinAnsiEncoding, and MacExpertEncoding, which is not carried.
 		table = winAnsiRunes()
 	}
+	var named *[256]rune
 	if isDict {
 		if diffs, ok := r.resolve(encDict["Differences"]).(Array); ok {
+			named = new([256]rune)
 			code := 0
 			unknown := map[int]string{}
 			for _, e := range diffs {
@@ -696,9 +754,11 @@ func simpleEncodingOf(r *Reader, encoding any, builtIn func() *[256]rune, number
 						// text of the whole document.
 						if r := glyphNameToRune(string(t)); r != 0 {
 							table[code] = r
+							named[code] = r
 							delete(unknown, code)
 						} else {
 							unknown[code] = string(t)
+							named[code] = 0
 						}
 						code++
 					}
@@ -707,11 +767,12 @@ func simpleEncodingOf(r *Reader, encoding any, builtIn func() *[256]rune, number
 			if numbered {
 				for code, ru := range numberedNameRunes(unknown) {
 					table[code] = ru
+					named[code] = ru
 				}
 			}
 		}
 	}
-	return table
+	return table, named
 }
 
 // builtInEncoding is the encoding of a simple font whose dictionary

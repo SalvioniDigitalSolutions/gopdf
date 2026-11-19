@@ -192,3 +192,38 @@ func TestFragmentsTellFontsOfOneNameApart(t *testing.T) {
 		t.Errorf("keys: %q %q %q", frags[0].FontKey, frags[1].FontKey, frags[2].FontKey)
 	}
 }
+
+// A converter that could not tell its glyphs apart wrote a /ToUnicode
+// map of U+FFFD for every code and named the glyphs by their Windows
+// codes: the names are read where the map says only that it does not
+// know. A name nothing knows leaves the map's U+FFFD — never the base
+// encoding's guess.
+func TestAnUnknowingToUnicodeGivesWayToNamedGlyphs(t *testing.T) {
+	var cmap strings.Builder
+	cmap.WriteString("/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n")
+	cmap.WriteString("/CMapName /Unknowing def /CMapType 2 def\n1 begincodespacerange <00> <FF> endcodespacerange\n")
+	cmap.WriteString("256 beginbfrange\n")
+	for c := 0; c < 256; c++ {
+		fmt.Fprintf(&cmap, "<%02X> <%02X> <FFFD>\n", c, c)
+	}
+	cmap.WriteString("endbfrange\nendcmap CMapName currentdict /CMap defineresource pop end end\n")
+	content := strings.Join([]string{
+		`BT /F1 12 Tf 1 0 0 1 72 700 Tm (\001\002\003\004\005\006\007\010\005\011\012\004\012) Tj ET`,
+		`BT /F2 12 Tf 1 0 0 1 72 680 Tm (\001\002\003) Tj ET`,
+		`BT /F3 12 Tf 1 0 0 1 72 660 Tm (ABC) Tj ET`,
+	}, "\n") + "\n"
+	got := extractAll(t, onePage(content, []string{
+		`<< /Type /Font /Subtype /Type1 /BaseFont /Times.New.Roman075 /ToUnicode 30 0 R /Encoding << /Differences [1 /G69 /G110 /G116 /G101 /G114 /G111 /G118 /G105 /G117 /G115] >> >>`,
+		`<< /Type /Font /Subtype /Type1 /BaseFont /Serif /ToUnicode 30 0 R /Encoding << /Differences [1 /Q /u /x] >> >>`,
+		// No names: the map's "unknown" stands, not WinAnsi's "ABC".
+		`<< /Type /Font /Subtype /Type1 /BaseFont /Sans /ToUnicode 30 0 R /Encoding /WinAnsiEncoding >>`,
+	}, map[int]string{30: streamObj("", []byte(cmap.String()))}))
+	for _, want := range []string{"Enteroviruses", "Qux"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("want %q in %q", want, got)
+		}
+	}
+	if strings.Contains(got, "ABC") {
+		t.Errorf("a base encoding's guess was read where the map says it does not know: %q", got)
+	}
+}
