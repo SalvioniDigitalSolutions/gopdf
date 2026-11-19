@@ -46,6 +46,27 @@ type runChain struct {
 	// across a gap wider than a kern (softGap): a word space by some
 	// readers' rule and none by this one's (matchRanges).
 	soft []int
+	// tight holds the offsets, within text, of the gaps inside runs that
+	// some reader takes for a word space and this one does not (TextRun
+	// tightAt).
+	tight []int
+}
+
+// tightWordGap reports a gap inside a show-text operation that some
+// reader takes for a word space although this package's rule (needsSpace)
+// does not: half the font's space or more, and a tenth of the size —
+// where pdftotext breaks words — or more. A kern is a fraction of that.
+func tightWordGap(prev, text string, gap, space, size float64) bool {
+	if gap <= 0 || space <= 0 || size <= 0 {
+		return false
+	}
+	if r, _ := utf8.DecodeRuneInString(text); unicode.IsSpace(r) || r == 0x00A0 {
+		return false
+	}
+	if r, _ := utf8.DecodeLastRuneInString(prev); unicode.IsSpace(r) || r == 0x00A0 {
+		return false
+	}
+	return gap >= space*0.5 && gap >= size*softGap
 }
 
 // softGap is the share of the font size a gap between two runs has to
@@ -67,10 +88,50 @@ const softGap = 0.1
 // only as a word of the chain, as before: "Ann" stays in "Annual".
 func (c runChain) matchRanges(lit string, mode matchMode) [][2]int {
 	out := literalRanges(c.text, lit, mode)
+	added := false
+	if mode == matchWords {
+		// And the chain read with a space at each tight gap inside a run, for
+		// every value: a word kerned against its neighbour closer than this
+		// package's word space and further than any kern is a word to the
+		// readers that break there (TextRun tightAt).
+		if len(c.tight) > 0 {
+			var b strings.Builder
+			back := make([]int, 0, len(c.text)+len(c.tight)+1)
+			k := 0
+			for i := 0; i <= len(c.text); i++ {
+				for k < len(c.tight) && c.tight[k] == i {
+					b.WriteByte(' ')
+					back = append(back, i)
+					k++
+				}
+				if i < len(c.text) {
+					b.WriteByte(c.text[i])
+					back = append(back, i)
+				}
+			}
+			back = append(back, len(c.text))
+			for _, rg := range literalRanges(b.String(), lit, mode) {
+				lo, hi := back[rg[0]], back[rg[1]]
+				taken := lo >= hi
+				for _, o := range out {
+					if lo < o[1] && hi > o[0] {
+						taken = true
+						break
+					}
+				}
+				if !taken {
+					out = append(out, [2]int{lo, hi})
+					added = true
+				}
+			}
+		}
+	}
 	if mode != matchWords || len(c.runs) < 2 {
+		if added {
+			sort.Slice(out, func(i, j int) bool { return out[i][0] < out[j][0] })
+		}
 		return out
 	}
-	added := false
 	// And the chain read with a space at each soft join: two words
 	// drawn apart by a gap a reader takes for a space ("Corporal" and
 	// "Brunson", 0.4 of the size apart in Courier, whose space this
@@ -260,6 +321,19 @@ func buildChainsMode(runs []*TextRun, mode int) []runChain {
 		_ = dropped
 		cur.start = append(cur.start, b.Len())
 		spaced, at := readRun(run)
+		for _, off := range run.tightAt {
+			// An offset in the run's text, moved past the spaces its
+			// reading put in before it.
+			shift := 0
+			for _, sp := range run.spaceAt {
+				if sp < off {
+					shift++
+				}
+			}
+			if off > 0 && off < len(run.Text) && shift <= len(at) {
+				cur.tight = append(cur.tight, b.Len()+off+shift)
+			}
+		}
 		b.WriteString(spaced)
 		cur.end = append(cur.end, b.Len())
 		cur.elided = append(cur.elided, 0)

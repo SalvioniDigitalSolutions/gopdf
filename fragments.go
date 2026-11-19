@@ -116,7 +116,7 @@ func (r *Reader) PageTextFragments(page int) (frags []TextFragment, err error) {
 	out := make([]TextFragment, 0, len(sc.runs))
 	for _, run := range sc.runs {
 		out = append(out, TextFragment{
-			Text:       fragmentText(run),
+			Text:       spacedFragmentText(run),
 			X:          run.X,
 			Y:          run.Y,
 			W:          run.Width,
@@ -127,6 +127,23 @@ func (r *Reader) PageTextFragments(page int) (frags []TextFragment, err error) {
 		})
 	}
 	return out, nil
+}
+
+// spacedFragmentText is fragmentText with a space where the operation
+// moved the pen far enough for a word break (TextRun spaceAt), as the
+// page's text and the redactor read it. A journal that draws no space
+// character, only moves between its words, read "Astocksolutionof
+// D.vulgaris" one string at a time — and every reader built on these
+// fragments with it.
+func spacedFragmentText(run *TextRun) string {
+	text := fragmentText(run)
+	if len(run.spaceAt) == 0 || text != run.Text {
+		// A run with codes mapped to nothing keeps its own offsets: the
+		// replacement characters already moved them.
+		return text
+	}
+	spaced, _ := readRun(run)
+	return spaced
 }
 
 // fragmentText rebuilds a run's text with a replacement character where a

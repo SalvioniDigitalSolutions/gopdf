@@ -6,6 +6,8 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // FitMode controls how a text replacement of a different width is fitted
@@ -88,6 +90,14 @@ type TextRun struct {
 	// left as the document encoded it; anything matching against a run
 	// reads it through these.
 	spaceAt []int
+	// tightAt holds the byte offsets in Text where the operation moved
+	// the pen less than a reader of this package takes for a word break
+	// but more than a kern: a word space by another reader's rule
+	// (redact_match.go, tightGaps). A journal set "40 µM flavodoxin" with
+	// a sixth of an em between the words, two thirds of its font's space:
+	// pdftotext read three words, this package one, and the marked
+	// "flavodoxin" inside it was neither removed nor found by the check.
+	tightAt []int
 	// renderMode is the Tr in force, and baseFont the font's /BaseFont
 	// with its subset prefix, which is what identifies the face rather
 	// than the resource name the page happens to give it.
@@ -485,7 +495,7 @@ func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth
 		// everything reading a run reads the same words the page shows;
 		// without it a search for "Messaggio" finds nothing, because in
 		// the run's own text it follows a digit.
-		var spaceAt []int
+		var spaceAt, tightAt []int
 		var drawn []textPiece
 		pendingGap := 0.0
 		for pi, piece := range pieces {
@@ -498,10 +508,39 @@ func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth
 					space := fi.decoder.spaceWidth(st.fontSize, st.horizScale)
 					if needsSpace(text.String(), part, gap, space) {
 						spaceAt = append(spaceAt, text.Len())
+					} else if tightWordGap(text.String(), part, gap, space, st.fontSize*st.horizScale) {
+						tightAt = append(tightAt, text.Len())
 					}
 				}
 				pendingGap = 0
 				text.WriteString(part)
+				// Word spacing moves the pen after every single-byte code
+				// 32, whatever glyph the font draws there. A subset font
+				// numbered from 32 draws a letter at it — "M" in a
+				// journal's "40 µM flavodoxin" — and the word space the
+				// page shows after it is that move, in no kern a reader
+				// of the array sees.
+				if fi.decoder != nil && !fi.decoder.cid && st.wordSpacing > 0 {
+					off := at
+					for k := 0; k < len(v) && k < len(spans); k++ {
+						off += spans[k]
+						if v[k] != 32 || spans[k] == 0 || off >= text.Len() {
+							continue
+						}
+						if r, _ := utf8.DecodeLastRuneInString(text.String()[:off]); unicode.IsSpace(r) {
+							continue
+						}
+						gap := st.wordSpacing * st.horizScale
+						space := fi.decoder.spaceWidth(st.fontSize, st.horizScale)
+						rest := text.String()[off:]
+						switch {
+						case needsSpace(text.String()[:off], rest, gap, space):
+							spaceAt = append(spaceAt, off)
+						case tightWordGap(text.String()[:off], rest, gap, space, st.fontSize*st.horizScale):
+							tightAt = append(tightAt, off)
+						}
+					}
+				}
 				if pi < len(pieceSpans) {
 					drawn = append(drawn, textPiece{
 						start: pieceSpans[pi][0], end: pieceSpans[pi][1],
@@ -547,6 +586,7 @@ func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth
 			codeStep:    codeStepFor(fi),
 			codeText:    codeText,
 			spaceAt:     spaceAt,
+			tightAt:     tightAt,
 			renderMode:  st.renderMode,
 			baseFont:    fi.baseFont,
 			target:      target,

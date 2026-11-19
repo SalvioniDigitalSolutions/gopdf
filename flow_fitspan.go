@@ -74,6 +74,7 @@ func (p *UpdatablePage) replacePageFitted(subs []Pseudonym, mode matchMode, acro
 			grow += len(h.new) - (h.at[1] - h.at[0])
 		}
 		f.run.spaceAt = shiftHitSpaceAt(f.run.spaceAt, f.hits)
+		f.run.tightAt = shiftHitSpaceAt(f.run.tightAt, f.hits)
 		f.run.Text = f.text
 		f.run.replaced = true
 		_ = ranges
