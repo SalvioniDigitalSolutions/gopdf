@@ -71,20 +71,23 @@ func TestClipMasksHoldWhatAWholePageMaskHeld(t *testing.T) {
 	w, h := 61, 47
 	rn := &renderer{w: w, h: h}
 	paths := map[string]*rasterPath{
-		"page a quarter short":   rectPath(0, 0, 60.75, 46.25),
-		"inside, fractional":     rectPath(3.3, 4.7, 40.2, 30.9),
-		"past the page":          rectPath(-10, -5, 80, 60),
-		"thin":                   rectPath(10.1, 10.2, 10.6, 40.4),
-		"one row":                rectPath(5, 20.1, 50, 20.3),
-		"covers what it clips":   rectPath(-1, -1, 62, 48),
-		"upside down":            rectPath(40.2, 30.9, 3.3, 4.7),
-		"triangle":               polyPath(point{5, 5}, point{55, 9}, point{20, 44}),
-		"turned":                 polyPath(point{30, 2}, point{58, 23}, point{30, 44}, point{2, 23}),
-		"outside the page":       rectPath(70, 50, 90, 60),
-		"rectangle, five points": polyPath(point{8, 8}, point{50, 8}, point{50, 40}, point{8, 40}, point{8, 8}),
+		"page a quarter short":         rectPath(0, 0, 60.75, 46.25),
+		"inside, fractional":           rectPath(3.3, 4.7, 40.2, 30.9),
+		"past the page":                rectPath(-10, -5, 80, 60),
+		"thin":                         rectPath(10.1, 10.2, 10.6, 40.4),
+		"one row":                      rectPath(5, 20.1, 50, 20.3),
+		"covers what it clips":         rectPath(-1, -1, 62, 48),
+		"upside down":                  rectPath(40.2, 30.9, 3.3, 4.7),
+		"triangle":                     polyPath(point{5, 5}, point{55, 9}, point{20, 44}),
+		"turned":                       polyPath(point{30, 2}, point{58, 23}, point{30, 44}, point{2, 23}),
+		"on sub-scanlines":             rectPath(5, 10.125, 50, 20.375),
+		"a quarter short at the right": rectPath(0, -1, 60.75, 48),
+		"outside the page":             rectPath(70, 50, 90, 60),
+		"rectangle, five points":       polyPath(point{8, 8}, point{50, 8}, point{50, 40}, point{8, 40}, point{8, 8}),
 	}
 	names := []string{"page a quarter short", "inside, fractional", "past the page", "thin", "one row",
-		"covers what it clips", "upside down", "triangle", "turned", "outside the page", "rectangle, five points"}
+		"covers what it clips", "upside down", "triangle", "turned", "outside the page", "rectangle, five points",
+		"on sub-scanlines", "a quarter short at the right"}
 	for _, first := range names {
 		for _, second := range names {
 			for _, evenOdd := range []bool{false, true} {
