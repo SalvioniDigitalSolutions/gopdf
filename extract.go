@@ -611,7 +611,19 @@ func utf16BEString(s String) string {
 // its base encoding, with any /Differences applied on top. A font that
 // names no base encoding has its built-in one (builtInEncoding).
 func fontEncoding(r *Reader, font Dict) *[256]rune {
-	return simpleEncoding(r, font["Encoding"], func() *[256]rune { return builtInEncoding(r, font) })
+	return simpleEncodingOf(r, font["Encoding"], func() *[256]rune { return builtInEncoding(r, font) }, typeOneFont(r, font))
+}
+
+// typeOneFont reports a Type 1 font, whose glyph names in /Differences
+// may be numbered ones (numberedNameRunes). A Type 3 font names its
+// glyph procedures as it likes — "a40" is no "(" there — and a TrueType
+// font's numbered names are glyph indices.
+func typeOneFont(r *Reader, font Dict) bool {
+	switch r.resolve(font["Subtype"]) {
+	case Name("Type1"), Name("MMType1"):
+		return true
+	}
+	return false
 }
 
 // textEncoding is fontEncoding as text is read. A pictograph font —
@@ -636,6 +648,12 @@ func textEncoding(r *Reader, font Dict) *[256]rune {
 // a pictograph font, whose codes stand for themselves whatever base it
 // names.
 func simpleEncoding(r *Reader, encoding any, builtIn func() *[256]rune) *[256]rune {
+	return simpleEncodingOf(r, encoding, builtIn, false)
+}
+
+// simpleEncodingOf is simpleEncoding; numbered says that glyph names
+// nothing knows may be numbered names (numberedNameRunes).
+func simpleEncodingOf(r *Reader, encoding any, builtIn func() *[256]rune, numbered bool) *[256]rune {
 	enc := r.resolve(encoding)
 	encDict, isDict := enc.(Dict)
 
@@ -660,6 +678,7 @@ func simpleEncoding(r *Reader, encoding any, builtIn func() *[256]rune) *[256]ru
 	if isDict {
 		if diffs, ok := r.resolve(encDict["Differences"]).(Array); ok {
 			code := 0
+			unknown := map[int]string{}
 			for _, e := range diffs {
 				switch t := r.resolve(e).(type) {
 				case int64:
@@ -675,9 +694,17 @@ func simpleEncoding(r *Reader, encoding any, builtIn func() *[256]rune) *[256]ru
 						// text of the whole document.
 						if r := glyphNameToRune(string(t)); r != 0 {
 							table[code] = r
+							delete(unknown, code)
+						} else {
+							unknown[code] = string(t)
 						}
 						code++
 					}
+				}
+			}
+			if numbered {
+				for code, ru := range numberedNameRunes(unknown) {
+					table[code] = ru
 				}
 			}
 		}
@@ -696,7 +723,21 @@ func simpleEncoding(r *Reader, encoding any, builtIn func() *[256]rune) *[256]ru
 // the check after it. A symbolic font, and a TrueType font, keep the
 // WinAnsi reading this package has always given them: the tables they
 // would need are not carried here.
+//
+// Where the font's embedded program spells out an encoding of its own,
+// the codes it names read as it names them (programEncodingNames); the
+// rest keep the reading above.
 func builtInEncoding(r *Reader, font Dict) *[256]rune {
+	t := guessedBuiltInEncoding(r, font)
+	for code, name := range programEncodingNames(r, font) {
+		if ru := glyphNameToRune(name); ru != 0 {
+			t[code] = ru
+		}
+	}
+	return t
+}
+
+func guessedBuiltInEncoding(r *Reader, font Dict) *[256]rune {
 	switch r.resolve(font["Subtype"]) {
 	case Name("Type1"), Name("MMType1"):
 	default:
