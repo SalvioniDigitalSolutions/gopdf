@@ -611,16 +611,18 @@ func utf16BEString(s String) string {
 // its base encoding, with any /Differences applied on top. A font that
 // names no base encoding has its built-in one (builtInEncoding).
 func fontEncoding(r *Reader, font Dict) *[256]rune {
-	return simpleEncodingOf(r, font["Encoding"], func() *[256]rune { return builtInEncoding(r, font) }, typeOneFont(r, font))
+	return simpleEncodingOf(r, font["Encoding"], func() *[256]rune { return builtInEncoding(r, font) }, numberedNamesFont(r, font))
 }
 
-// typeOneFont reports a Type 1 font, whose glyph names in /Differences
-// may be numbered ones (numberedNameRunes). A Type 3 font names its
-// glyph procedures as it likes — "a40" is no "(" there — and a TrueType
-// font's numbered names are glyph indices.
-func typeOneFont(r *Reader, font Dict) bool {
+// numberedNamesFont reports a font whose glyph names in /Differences
+// may be numbered ones (numberedNameRunes): a Type 1 font, and a Type 3
+// font — whose glyph procedures a chart program names by the codes of
+// the characters they draw, "/70" for F and "/105" for i, with the
+// codes the page uses renumbered from 1. A TrueType font's numbered
+// names are glyph indices.
+func numberedNamesFont(r *Reader, font Dict) bool {
 	switch r.resolve(font["Subtype"]) {
-	case Name("Type1"), Name("MMType1"):
+	case Name("Type1"), Name("MMType1"), Name("Type3"):
 		return true
 	}
 	return false

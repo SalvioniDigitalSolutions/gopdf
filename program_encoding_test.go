@@ -65,6 +65,39 @@ func TestNumberedGlyphNamesReadAsTheCharactersTheyNumber(t *testing.T) {
 	}
 }
 
+// A chart program's Type 3 font names each glyph by its character's
+// code alone and renumbers the codes the page uses from 1: the caption
+// reads as every viewer shows it. A TrueType font's bare numbers are
+// glyph indices and stay unread.
+func TestBareNumberedType3NamesReadAsTheCharactersTheyNumber(t *testing.T) {
+	names := "/70 /105 /103 /117 /114 /101 /32 /50"
+	procs := map[string]string{}
+	for _, n := range strings.Fields(names) {
+		procs[n] = "30 0 R"
+	}
+	var cp strings.Builder
+	cp.WriteString("<< ")
+	for n, ref := range procs {
+		cp.WriteString(n + " " + ref + " ")
+	}
+	cp.WriteString(">>")
+	content := "BT /F1 12 Tf 1 0 0 1 72 700 Tm (\\001\\002\\003\\004\\005\\006\\007\\010) Tj ET\n" +
+		"BT /F2 12 Tf 1 0 0 1 72 680 Tm (\\001\\002\\003\\004\\005\\006) Tj ET\n"
+	got := extractAll(t, onePage(content, []string{
+		`<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs 29 0 R /Encoding << /Type /Encoding /Differences [1 ` + names + `] >> /FirstChar 1 /LastChar 8 /Widths [600 300 600 600 400 600 300 600] >>`,
+		`<< /Type /Font /Subtype /TrueType /BaseFont /EEEEEE+Sans /Encoding << /Differences [1 /70 /105 /103 /117 /114 /101] >> >>`,
+	}, map[int]string{
+		29: cp.String(),
+		30: streamObj("", []byte("600 0 0 0 600 700 d1 0 0 m 600 700 l S")),
+	}))
+	if !strings.Contains(got, "Figure 2") {
+		t.Errorf("want %q in %q", "Figure 2", got)
+	}
+	if n := strings.Count(got, "Figure"); n != 1 {
+		t.Errorf("a TrueType font's numbers were read as codes (%d times \"Figure\"): %q", n, got)
+	}
+}
+
 func TestNumberedNameRunes(t *testing.T) {
 	if got := numberedNameRunes(map[int]string{1: "G84", 2: "G104", 3: "G105"}); len(got) != 3 || got[1] != 'T' || got[3] != 'i' {
 		t.Errorf("one prefix: %q", got)
@@ -74,6 +107,9 @@ func TestNumberedNameRunes(t *testing.T) {
 	}
 	if got := numberedNameRunes(map[int]string{1: "G84", 2: "X104", 3: "G105", 4: "K115"}); got != nil {
 		t.Errorf("mixed prefixes: %q", got)
+	}
+	if got := numberedNameRunes(map[int]string{1: "70", 2: "105", 3: "103"}); len(got) != 3 || got[1] != 'F' || got[3] != 'g' {
+		t.Errorf("bare numbers: %q", got)
 	}
 	// Out of the Windows encoding's printable range: nothing.
 	if got := numberedNameRunes(map[int]string{1: "G07", 2: "G12", 3: "G29"}); len(got) != 0 {

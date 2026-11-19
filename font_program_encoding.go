@@ -216,8 +216,11 @@ func cffEncodingNames(data []byte) map[int]string {
 // www.cdc.gov/eid" as no text at all: the values in it were neither
 // removed nor seen by the check after the removal. Where a font's
 // unknown names are all of one such kind, each is read as the character
-// its number is in the Windows encoding.
-var numberedGlyphName = regexp.MustCompile(`^([A-Za-z]{1,3})(\d{2,3})$`)
+// its number is in the Windows encoding. A chart program names a Type 3
+// font's glyphs by the number alone: a figure's caption, "Figure 2.
+// Isopleth …", read as nothing but unmapped codes, and so did the place
+// names on its map.
+var numberedGlyphName = regexp.MustCompile(`^([A-Za-z]{0,3})(\d{2,3})$`)
 
 // numberedNameRunes returns the characters a font's unknown glyph names
 // stand for when they are numbered names of one prefix — at least three
