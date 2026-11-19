@@ -1370,8 +1370,8 @@ func TestRenderShadingPattern(t *testing.T) {
 }
 
 func TestCombineMasks(t *testing.T) {
-	a := &clipMask{w: 2, h: 1, a: []float32{1, 0.5}}
-	b := &clipMask{w: 2, h: 1, a: []float32{0.5, 0.5}}
+	a := fullMask(2, 1, []float32{1, 0.5})
+	b := fullMask(2, 1, []float32{0.5, 0.5})
 	if got := combineMasks(nil, b); got != b {
 		t.Error("no clip should give back the mask")
 	}

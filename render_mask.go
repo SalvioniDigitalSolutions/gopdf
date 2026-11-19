@@ -69,7 +69,7 @@ func (rn *renderer) renderMaskGroup(group *rawStream, gs *renderState,
 	st.ctm = inner
 	sub.run(content, group.dict["Resources"], inner, st, rn.maskDepth+1)
 
-	out := &clipMask{w: rn.w, h: rn.h, a: make([]float32, rn.w*rn.h)}
+	out := fullMask(rn.w, rn.h, make([]float32, rn.w*rn.h))
 	pix := sub.dst.Pix
 	for i, j := 0, 0; j < len(out.a); i, j = i+4, j+1 {
 		if luminosity {
@@ -95,9 +95,19 @@ func combineMasks(clip, mask *clipMask) *clipMask {
 	if clip == nil {
 		return mask
 	}
-	out := &clipMask{w: clip.w, h: clip.h, a: make([]float32, len(clip.a))}
-	for i := range out.a {
-		out.a[i] = clip.a[i] * mask.a[i]
+	box := clip.box.Intersect(mask.box)
+	out := &clipMask{w: clip.w, h: clip.h, box: box}
+	if clip.one && mask.one {
+		out.one = true
+		return out
+	}
+	out.a = make([]float32, box.Dx()*box.Dy())
+	i := 0
+	for y := box.Min.Y; y < box.Max.Y; y++ {
+		for x := box.Min.X; x < box.Max.X; x++ {
+			out.a[i] = clip.raw(x, y) * mask.raw(x, y)
+			i++
+		}
 	}
 	return out
 }
@@ -202,9 +212,10 @@ func (rn *renderer) fillWithShadingPattern(path *rasterPath, gs *renderState,
 
 // pathMask turns a path into the coverage it covers, for use as a clip.
 func (rn *renderer) pathMask(path *rasterPath, evenOdd bool) *clipMask {
-	m := &clipMask{w: rn.w, h: rn.h, a: make([]float32, rn.w*rn.h)}
+	box := fillBox(path, rn.w, rn.h)
+	m := &clipMask{w: rn.w, h: rn.h, box: box, a: make([]float32, box.Dx()*box.Dy())}
 	fillPath(path, rn.w, rn.h, evenOdd, func(y, x0, x1 int, cov []float64) {
-		row := y * rn.w
+		row := (y-box.Min.Y)*box.Dx() - box.Min.X
 		for x := x0; x < x1; x++ {
 			c := cov[x]
 			if c <= 0 {

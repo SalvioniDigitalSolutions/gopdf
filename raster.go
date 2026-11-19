@@ -1,6 +1,10 @@
 package gopdf
 
-import "math"
+import (
+	"image"
+	"math"
+	"sort"
+)
 
 // Turning paths into coverage.
 //
@@ -179,21 +183,16 @@ type spanFunc func(y, x0, x1 int, cov []float64)
 // Nothing is allocated per row: one buffer is reused and cleared, so a
 // page of many small fills costs no more memory than a page of one.
 func fillPath(p *rasterPath, w, h int, evenOdd bool, fn spanFunc) {
-	minX, minY, maxX, maxY, ok := p.bounds()
-	if !ok {
+	box := fillBox(p, w, h)
+	if box.Empty() {
 		return
 	}
-	y0 := clampInt(int(math.Floor(minY)), 0, h)
-	y1 := clampInt(int(math.Ceil(maxY))+1, 0, h)
-	x0 := clampInt(int(math.Floor(minX)), 0, w)
-	x1 := clampInt(int(math.Ceil(maxX))+1, 0, w)
-	if y0 >= y1 || x0 >= x1 {
-		return
-	}
+	x0, y0, x1, y1 := box.Min.X, box.Min.Y, box.Max.X, box.Max.Y
 	edges := buildEdges(p)
 	if len(edges) == 0 {
 		return
 	}
+	scan := newEdgeScan(edges)
 
 	cov := make([]float64, w)
 	var xs []crossing
@@ -201,8 +200,8 @@ func fillPath(p *rasterPath, w, h int, evenOdd bool, fn spanFunc) {
 	for y := y0; y < y1; y++ {
 		touched := false
 		for s := 0; s < subSamples; s++ {
-			sy := float64(y) + (float64(s)+0.5)/subSamples
-			xs = crossingsAt(edges, sy, xs[:0])
+			sy := subScanline(y, s)
+			xs = scan.crossingsAt(sy, xs[:0])
 			if len(xs) < 2 {
 				continue
 			}
@@ -220,6 +219,137 @@ func fillPath(p *rasterPath, w, h int, evenOdd bool, fn spanFunc) {
 	}
 }
 
+// fillBox is the box of pixels fillPath hands out coverage for: the
+// path's extent, a pixel more below and to the right, inside the page.
+// Outside it a path covers nothing.
+func fillBox(p *rasterPath, w, h int) image.Rectangle {
+	minX, minY, maxX, maxY, ok := p.bounds()
+	if !ok {
+		return image.Rectangle{}
+	}
+	y0 := clampInt(int(math.Floor(minY)), 0, h)
+	y1 := clampInt(int(math.Ceil(maxY))+1, 0, h)
+	x0 := clampInt(int(math.Floor(minX)), 0, w)
+	x1 := clampInt(int(math.Ceil(maxX))+1, 0, w)
+	if y0 >= y1 || x0 >= x1 {
+		return image.Rectangle{}
+	}
+	return image.Rect(x0, y0, x1, y1)
+}
+
+// subScanline is where sub-scanline s of pixel row y lies.
+func subScanline(y, s int) float64 {
+	return float64(y) + (float64(s)+0.5)/subSamples
+}
+
+// axisRect reports a path that is one rectangle with its sides along the
+// pixel grid — its four corners each once, one after the other, the fifth
+// back at the first if given — and its extent. Four points on two
+// columns and two rows that come back on themselves ((10,0), (10,10),
+// (10,0)) enclose nothing, and are no rectangle.
+func (p *rasterPath) axisRect() (r [4]float64, ok bool) {
+	if len(p.subs) != 1 {
+		return r, false
+	}
+	pts := p.subs[0].pts
+	if len(pts) == 5 && pts[4] == pts[0] {
+		pts = pts[:4]
+	}
+	if len(pts) != 4 {
+		return r, false
+	}
+	xs, ys, seen := map[float64]bool{}, map[float64]bool{}, map[point]bool{}
+	for i, a := range pts {
+		if seen[a] {
+			return r, false
+		}
+		seen[a] = true
+		if math.IsNaN(a.x) || math.IsNaN(a.y) || math.IsInf(a.x, 0) || math.IsInf(a.y, 0) {
+			return r, false
+		}
+		b := pts[(i+1)%4]
+		if a.x != b.x && a.y != b.y {
+			return r, false
+		}
+		xs[a.x], ys[a.y] = true, true
+	}
+	if len(xs) != 2 || len(ys) != 2 {
+		return r, false
+	}
+	minX, minY, maxX, maxY, _ := p.bounds()
+	return [4]float64{minX, minY, maxX, maxY}, true
+}
+
+// rectCoversWholly reports a rectangle (minX, minY, maxX, maxY, from
+// axisRect) whose coverage fillPath makes whole at every pixel of box:
+// every sub-scanline of every row of box inside it — its two sides are
+// the only edges that cross them — and every pixel of box from its left
+// side to its right.
+func rectCoversWholly(r [4]float64, box image.Rectangle) bool {
+	if box.Empty() {
+		return true
+	}
+	return r[1] <= subScanline(box.Min.Y, 0) && subScanline(box.Max.Y-1, subSamples-1) < r[3] &&
+		r[0] <= float64(box.Min.X) && r[2] >= float64(box.Max.X)
+}
+
+// edgeScan hands out the crossings of a path's edges with sub-scanlines
+// taken top to bottom, looking at the edges that span each sub-scanline
+// only: a map's path of thousands of edges was searched whole for every
+// sub-scanline of every row it covers. The crossings come out as
+// crossingsAt gives them, in the same order.
+type edgeScan struct {
+	edges  []edge
+	order  []int // the edges by where they begin, ties in their own order
+	next   int   // the first of order not yet begun
+	active []int // the edges begun and not ended, in their own order
+	plain  bool  // an edge that begins or ends at no number: every edge looked at, as before
+}
+
+func newEdgeScan(edges []edge) *edgeScan {
+	s := &edgeScan{edges: edges}
+	for _, e := range edges {
+		if math.IsNaN(e.y0) || math.IsNaN(e.y1) {
+			s.plain = true
+			return s
+		}
+	}
+	s.order = make([]int, len(edges))
+	for i := range s.order {
+		s.order[i] = i
+	}
+	sort.SliceStable(s.order, func(a, b int) bool { return edges[s.order[a]].y0 < edges[s.order[b]].y0 })
+	return s
+}
+
+// crossingsAt is crossingsAt for the next sub-scanline down.
+func (s *edgeScan) crossingsAt(y float64, out []crossing) []crossing {
+	if s.plain {
+		return crossingsAt(s.edges, y, out)
+	}
+	for s.next < len(s.order) && s.edges[s.order[s.next]].y0 <= y {
+		i := s.order[s.next]
+		s.next++
+		k := sort.SearchInts(s.active, i)
+		s.active = append(s.active, 0)
+		copy(s.active[k+1:], s.active[k:])
+		s.active[k] = i
+	}
+	kept := s.active[:0]
+	for _, i := range s.active {
+		if y < s.edges[i].y1 {
+			kept = append(kept, i)
+		}
+	}
+	s.active = kept
+	for _, i := range s.active {
+		e := s.edges[i]
+		out = append(out, crossing{x: e.x0 + (y-e.y0)*e.dxdy, dir: e.dir})
+	}
+	sortCrossings(out)
+	return out
+}
+
 // crossing is where one edge meets a sub-scanline.
 type crossing struct {
 	x   float64
@@ -234,14 +364,19 @@ func crossingsAt(edges []edge, y float64, out []crossing) []crossing {
 		}
 		out = append(out, crossing{x: e.x0 + (y-e.y0)*e.dxdy, dir: e.dir})
 	}
-	// Insertion sort: crossings per scanline are few, and they arrive
-	// nearly ordered on the sort of artwork a page holds.
+	sortCrossings(out)
+	return out
+}
+
+// sortCrossings orders crossings left to right. Insertion sort:
+// crossings per scanline are few, and they arrive nearly ordered on the
+// sort of artwork a page holds; crossings at one x keep their order.
+func sortCrossings(out []crossing) {
 	for i := 1; i < len(out); i++ {
 		for j := i; j > 0 && out[j].x < out[j-1].x; j-- {
 			out[j], out[j-1] = out[j-1], out[j]
 		}
 	}
-	return out
 }
 
 // spansAt walks the crossings and adds the inside runs to the row.

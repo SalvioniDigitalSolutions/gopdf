@@ -224,19 +224,114 @@ func newRenderState() renderState {
 
 // clipMask is the coverage every later paint is multiplied by. A nil mask
 // means nothing is clipped, which costs nothing to carry.
+//
+// A mask holds its coverage over a box of the page only, and outside the
+// box the coverage is nothing: a clip is mostly a block of text, a
+// picture's frame or a cell of a table, and a page of them held one copy
+// of the whole page each, filled pixel by pixel. A mask that is whole all
+// over its box (one) holds no coverage at all.
 type clipMask struct {
-	w, h int
-	a    []float32
+	w, h int             // the page, in pixels
+	box  image.Rectangle // where the coverage may be more than nothing, inside the page
+	a    []float32       // the coverage over box, row by row; nil when one or rect
+	one  bool            // the coverage is whole all over box
+	rect *rectCover      // a rectangle's coverage times the clip it narrowed
+}
+
+// rectCover is the coverage of a rectangle with its sides along the pixel
+// grid, held as what it is: the same along every row and every column. A
+// clip to the page whose sides fall inside its last pixels — 1,257.75
+// pixels of a page 1,258 wide — is such a rectangle, and a page set clips
+// it hundreds of times, each one a page of coverage filled pixel by pixel.
+type rectCover struct {
+	cols  [subSamples + 1][]float64 // the coverage of each column of box after k of a row's sub-scanlines, k from 0
+	rows  []uint8                   // how many sub-scanlines of each row of box the rectangle spans
+	under *clipMask                 // the clip it narrowed; nil for none
+	depth int                       // rectangles behind it, itself among them
+}
+
+// maxRectDepth bounds the rectangles one mask reads through before its
+// coverage is worked out pixel by pixel and held.
+const maxRectDepth = 6
+
+// fullMask is a mask of the whole page with coverage a, row by row.
+func fullMask(w, h int, a []float32) *clipMask {
+	return &clipMask{w: w, h: h, box: image.Rect(0, 0, w, h), a: a}
 }
 
 func (c *clipMask) at(x, y int) float64 {
 	if c == nil {
 		return 1
 	}
-	if x < 0 || y < 0 || x >= c.w || y >= c.h {
+	return float64(c.raw(x, y))
+}
+
+// raw is the coverage at a pixel as the mask holds it.
+func (c *clipMask) raw(x, y int) float32 {
+	if x < c.box.Min.X || y < c.box.Min.Y || x >= c.box.Max.X || y >= c.box.Max.Y {
 		return 0
 	}
-	return float64(c.a[y*c.w+x])
+	if c.one {
+		return 1
+	}
+	if r := c.rect; r != nil {
+		k := r.rows[y-c.box.Min.Y]
+		if k == 0 {
+			return 0
+		}
+		v := r.cols[k][x-c.box.Min.X]
+		if v <= 0 {
+			return 0
+		}
+		if v > 1 {
+			v = 1
+		}
+		return float32(v * r.under.at(x, y))
+	}
+	return c.a[(y-c.box.Min.Y)*c.box.Dx()+x-c.box.Min.X]
+}
+
+// rectMask is intersectClip for a rectangle (minX, minY, maxX, maxY, from
+// axisRect): the same coverage fillPath gives it, sub-scanline by
+// sub-scanline the same span added to a row by addSpan, worked out for one
+// row and held by column, and for each row how many of its sub-scanlines
+// the rectangle spans.
+func (rn *renderer) rectMask(old *clipMask, r [4]float64, box image.Rectangle) *clipMask {
+	rc := &rectCover{under: old, depth: 1, rows: make([]uint8, box.Dy())}
+	if old != nil && old.rect != nil {
+		rc.depth = old.rect.depth + 1
+	}
+	row := make([]float64, rn.w)
+	weight := 1.0 / subSamples
+	rc.cols[0] = make([]float64, box.Dx())
+	for k := 1; k <= subSamples; k++ {
+		addSpan(row, rn.w, r[0], r[2], weight)
+		rc.cols[k] = append([]float64(nil), row[box.Min.X:box.Max.X]...)
+	}
+	for y := box.Min.Y; y < box.Max.Y; y++ {
+		n := uint8(0)
+		for s := 0; s < subSamples; s++ {
+			// The sides are the rectangle's only edges a sub-scanline
+			// crosses: each spans [minY, maxY).
+			if sy := subScanline(y, s); r[1] <= sy && sy < r[3] {
+				n++
+			}
+		}
+		rc.rows[y-box.Min.Y] = n
+	}
+	m := &clipMask{w: rn.w, h: rn.h, box: box, rect: rc}
+	if rc.depth > maxRectDepth {
+		a := make([]float32, box.Dx()*box.Dy())
+		i := 0
+		for y := box.Min.Y; y < box.Max.Y; y++ {
+			for x := box.Min.X; x < box.Max.X; x++ {
+				a[i] = m.raw(x, y)
+				i++
+			}
+		}
+		m = &clipMask{w: rn.w, h: rn.h, box: box, a: a}
+	}
+	return m
 }
 
 // renderer walks a content stream and paints what it says.
@@ -627,11 +722,39 @@ func (rn *renderer) endPath(path *rasterPath, gs *renderState, pending *int) {
 }
 
 // intersectClip narrows a clip by a path.
+//
+// Only the pixels the path can cover and the clip lets through can be
+// anything but nothing, and only those are held. A rectangle that covers
+// every one of those pixels wholly — every sub-scanline of every row
+// inside it, every pixel edge to edge — leaves the clip as it was: the
+// usual clip to the page, to a frame larger than what it frames.
 func (rn *renderer) intersectClip(old *clipMask, path *rasterPath, evenOdd bool) *clipMask {
-	next := &clipMask{w: rn.w, h: rn.h, a: make([]float32, rn.w*rn.h)}
+	page := image.Rect(0, 0, rn.w, rn.h)
+	within := page
+	if old != nil {
+		within = old.box
+	}
+	r, isRect := path.axisRect()
+	if isRect && rectCoversWholly(r, within) {
+		if old != nil {
+			return old
+		}
+		return &clipMask{w: rn.w, h: rn.h, box: page, one: true}
+	}
+	box := fillBox(path, rn.w, rn.h).Intersect(within)
+	if isRect && !box.Empty() {
+		return rn.rectMask(old, r, box)
+	}
+	next := &clipMask{w: rn.w, h: rn.h, box: box, a: make([]float32, box.Dx()*box.Dy())}
+	if box.Empty() {
+		return next
+	}
 	fillPath(path, rn.w, rn.h, evenOdd, func(y, x0, x1 int, cov []float64) {
-		row := y * rn.w
-		for x := x0; x < x1; x++ {
+		if y < box.Min.Y || y >= box.Max.Y {
+			return
+		}
+		row := (y-box.Min.Y)*box.Dx() - box.Min.X
+		for x := max(x0, box.Min.X); x < min(x1, box.Max.X); x++ {
 			c := cov[x]
 			if c <= 0 {
 				continue
