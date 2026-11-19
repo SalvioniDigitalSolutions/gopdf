@@ -48,6 +48,12 @@ type TextFragment struct {
 	// scanned page carries the OCR layer under its picture, and is what a
 	// caller skips to avoid reading the same words twice.
 	RenderMode int
+	// FontKey tells the fonts of one page apart: two fragments of the
+	// page have the same key exactly when they were drawn with the same
+	// font dictionary. FontName does not: a page may name one face twice,
+	// with two encodings, and only one of them may read rightly. The key
+	// means nothing beyond the page it was read from.
+	FontKey string
 }
 
 // Invisible reports whether the fragment is drawn in a mode that paints
@@ -117,6 +123,7 @@ func (r *Reader) PageTextFragments(page int) (frags []TextFragment, err error) {
 			FontName:   run.baseFont,
 			FontSize:   run.FontSize,
 			RenderMode: run.renderMode,
+			FontKey:    fmt.Sprintf("%p", run.font),
 		})
 	}
 	return out, nil

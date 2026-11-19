@@ -133,3 +133,26 @@ func TestAnEmbeddedCFFProgramsOwnEncodingIsRead(t *testing.T) {
 		t.Errorf("want %q in %q", "The – The", got)
 	}
 }
+
+// Two fonts of one name — the same face with two encodings — are told
+// apart by their key; one font drawn twice keeps its key.
+func TestFragmentsTellFontsOfOneNameApart(t *testing.T) {
+	content := "BT /F1 12 Tf 1 0 0 1 72 700 Tm (one) Tj /F2 12 Tf (two) Tj /F1 12 Tf (three) Tj ET\n"
+	r, err := NewReader(onePage(content, []string{
+		`<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>`,
+		`<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /MacRomanEncoding >>`,
+	}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frags, err := r.PageTextFragments(0)
+	if err != nil || len(frags) != 3 {
+		t.Fatalf("fragments: %v %v", frags, err)
+	}
+	if frags[0].FontName != frags[1].FontName {
+		t.Fatalf("fixture: the two fonts should share a name: %q %q", frags[0].FontName, frags[1].FontName)
+	}
+	if frags[0].FontKey == "" || frags[0].FontKey == frags[1].FontKey || frags[0].FontKey != frags[2].FontKey {
+		t.Errorf("keys: %q %q %q", frags[0].FontKey, frags[1].FontKey, frags[2].FontKey)
+	}
+}
