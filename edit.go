@@ -98,6 +98,16 @@ type TextRun struct {
 	// pdftotext read three words, this package one, and the marked
 	// "flavodoxin" inside it was neither removed nor found by the check.
 	tightAt []int
+	// codeAt and codeW place each code of codes along the baseline: where
+	// the pen stood when it was drawn and how far it moved the pen, in
+	// thousandths of an em with spacing applied, the moves of a show-text
+	// array between its strings counted in. emPts turns them into points.
+	// A row of table headers drawn as one array, "First Fourth First" with
+	// a column's width between the words, is one run; only these say
+	// which column each word stands in. nil when the codes could not be
+	// told apart.
+	codeAt, codeW []float64
+	emPts         float64
 	// renderMode is the Tr in force, and baseFont the font's /BaseFont
 	// with its subset prefix, which is what identifies the face rather
 	// than the resource name the page happens to give it.
@@ -488,6 +498,8 @@ func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth
 		var advanceEm float64
 		var encoded []byte
 		var codeText []int
+		var codeAt, codeW []float64
+		placed := true
 		// A show-text operation can carry gaps of its own. An operation
 		// that draws "9.2.1" and then moves the pen before "Messaggio"
 		// reads on the page as two words, and the extractor puts a space
@@ -502,6 +514,26 @@ func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth
 			switch v := piece.(type) {
 			case String:
 				part, spans := fi.decoder.decodeSpans(v)
+				// Each code's place, as stringWidth below measures the
+				// whole string (that sum is left as it is: it moves the
+				// text matrix).
+				if cs := fi.codes(v); placed && len(cs) == len(spans) {
+					pen := advanceEm
+					for _, c := range cs {
+						w := 0.0
+						if st.fontSize != 0 {
+							w = fi.codeWidth(c) + st.charSpacing*1000/st.fontSize
+							if !fi.cid && c == 32 {
+								w += st.wordSpacing * 1000 / st.fontSize
+							}
+						}
+						codeAt = append(codeAt, pen)
+						codeW = append(codeW, w)
+						pen += w
+					}
+				} else {
+					placed = false
+				}
 				at := text.Len()
 				if pendingGap > 0 && text.Len() > 0 && part != "" {
 					gap := pendingGap / 1000 * st.fontSize * st.horizScale
@@ -599,6 +631,10 @@ func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth
 			horizScale:  st.horizScale,
 			fontSizeRaw: st.fontSize,
 			fillOp:      st.fillOp,
+		}
+		if placed {
+			run.codeAt, run.codeW = codeAt, codeW
+			run.emPts = st.fontSize * st.horizScale / 1000 * math.Hypot(full[0], full[1])
 		}
 		if run.Text != "" {
 			sc.runs = append(sc.runs, run)

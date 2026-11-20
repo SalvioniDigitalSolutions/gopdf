@@ -54,6 +54,22 @@ type TextFragment struct {
 	// with two encodings, and only one of them may read rightly. The key
 	// means nothing beyond the page it was read from.
 	FontKey string
+	// Advances places each character of Text along the baseline:
+	// Advances[i] is how far from X, in points, character i (counted in
+	// runes) starts, and the one entry more than Text has characters is
+	// where the text ends. A space Text holds for a gap the operation
+	// moved the pen over starts where the character before it ends. A
+	// show-text array that draws a row of table headers, "First Fourth
+	// First" with a column's width between the words, is one fragment;
+	// these say which column each word stands in. nil when the
+	// characters cannot be placed.
+	Advances []float64
+	// Widths says how far each character of Text moves the pen itself,
+	// in points, a kern drawn after it not counted: a word ends where its
+	// last character's start and width say, wherever the next character
+	// is drawn. A space put in for a gap is as wide as the gap. nil
+	// exactly when Advances is.
+	Widths []float64
 }
 
 // Invisible reports whether the fragment is drawn in a mode that paints
@@ -115,8 +131,12 @@ func (r *Reader) PageTextFragments(page int) (frags []TextFragment, err error) {
 
 	out := make([]TextFragment, 0, len(sc.runs))
 	for _, run := range sc.runs {
+		text := spacedFragmentText(run)
+		advances, widths := fragmentAdvances(run, text)
 		out = append(out, TextFragment{
-			Text:       spacedFragmentText(run),
+			Text:       text,
+			Advances:   advances,
+			Widths:     widths,
 			X:          run.X,
 			Y:          run.Y,
 			W:          run.Width,
@@ -144,6 +164,106 @@ func spacedFragmentText(run *TextRun) string {
 	}
 	spaced, _ := readRun(run)
 	return spaced
+}
+
+// fragmentAdvances places the characters of text, the fragment's reading
+// of run (spacedFragmentText), along the baseline in points from the
+// run's start: each character's start, then where the last one ends; and
+// each character's own width. A code that wrote several characters ("ﬁ"
+// read "fi") shares its width among them evenly. nil when the run's codes
+// were not placed, or text is no reading of them this function knows.
+func fragmentAdvances(run *TextRun, text string) (advances, widths []float64) {
+	if len(run.codeAt) == 0 || len(run.codeAt) != len(run.codeText) || len(run.codeW) != len(run.codeAt) {
+		return nil, nil
+	}
+	n := utf8.RuneCountInString(text)
+	adv := make([]float64, 0, n+1)
+	wid := make([]float64, 0, n)
+	// The characters each code wrote, in order, with its place.
+	type char struct{ start, end float64 }
+	var chars []char // one per rune of run.Text, or of fragmentText's reading
+	missing := false
+	for _, k := range run.codeText {
+		if k == 0 {
+			missing = true
+			break
+		}
+	}
+	off := 0
+	for i, k := range run.codeText {
+		at, w := run.codeAt[i], run.codeW[i]
+		if k == 0 {
+			if missing {
+				chars = append(chars, char{at, at + w})
+			}
+			continue
+		}
+		if off+k > len(run.Text) {
+			return nil, nil
+		}
+		m := utf8.RuneCountInString(run.Text[off : off+k])
+		for j := 0; j < m; j++ {
+			chars = append(chars, char{at + w*float64(j)/float64(m), at + w*float64(j+1)/float64(m)})
+		}
+		off += k
+	}
+	if off != len(run.Text) {
+		return nil, nil
+	}
+	if missing || len(run.spaceAt) == 0 || text == run.Text {
+		// fragmentText: one character for each, a replacement character
+		// where a code wrote none.
+		if len(chars) != n {
+			return nil, nil
+		}
+		for _, c := range chars {
+			adv = append(adv, c.start*run.emPts)
+			wid = append(wid, (c.end-c.start)*run.emPts)
+		}
+	} else {
+		// readRun: the run's characters with a space put in at each gap.
+		spaced, inserted := readRun(run)
+		if spaced != text {
+			return nil, nil
+		}
+		isInserted := make(map[int]bool, len(inserted))
+		for _, p := range inserted {
+			isInserted[p] = true
+		}
+		ci := 0
+		for p := range text {
+			if isInserted[p] {
+				// From the end of the character before to the start of
+				// the one after.
+				from, to := 0.0, 0.0
+				switch {
+				case ci > 0 && ci < len(chars):
+					from, to = chars[ci-1].end, chars[ci].start
+				case ci > 0:
+					from, to = chars[ci-1].end, chars[ci-1].end
+				case ci < len(chars):
+					from, to = chars[ci].start, chars[ci].start
+				}
+				adv = append(adv, from*run.emPts)
+				wid = append(wid, (to-from)*run.emPts)
+				continue
+			}
+			if ci >= len(chars) {
+				return nil, nil
+			}
+			adv = append(adv, chars[ci].start*run.emPts)
+			wid = append(wid, (chars[ci].end-chars[ci].start)*run.emPts)
+			ci++
+		}
+		if ci != len(chars) {
+			return nil, nil
+		}
+	}
+	end := 0.0
+	if len(chars) > 0 {
+		end = chars[len(chars)-1].end
+	}
+	return append(adv, end*run.emPts), wid
 }
 
 // fragmentText rebuilds a run's text with a replacement character where a
