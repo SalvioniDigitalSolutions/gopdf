@@ -289,7 +289,14 @@ func (im ImageRef) decodeBase() (image.Image, error) {
 		if err != nil {
 			return nil, err
 		}
-		return jpeg.Decode(bytes.NewReader(data))
+		m, err := jpeg.Decode(bytes.NewReader(data))
+		if err != nil {
+			return nil, err
+		}
+		if c, ok := m.(*image.CMYK); ok {
+			im.cmykAsStored(c, data)
+		}
+		return m, nil
 	}
 
 	samples, err := r.decodeStream(im.stream.dict, im.stream.data)
@@ -459,6 +466,29 @@ func fitDeclared(m image.Image, w, h int) image.Image {
 	dst := image.NewRGBA(image.Rect(0, 0, cw, ch))
 	draw.Draw(dst, dst.Bounds(), m, b.Min, draw.Src)
 	return dst
+}
+
+// cmykAsStored turns the CMYK picture Go's JPEG decoder made of a
+// four-colour JPEG into the samples a PDF takes from it: as stored, then
+// through the image's /Decode. Go undoes the inversion Adobe's tools write
+// CMYK in (the APP14 marker), as a JPEG viewer does; a PDF does not — its
+// DCTDecode hands on the samples as the JPEG holds them (libjpeg, Poppler)
+// and an inverted picture says so in its /Decode. Taken as Go gave it, a
+// report's Sandia National Laboratories logo, an Adobe YCCK JPEG every
+// viewer shows black on white, was all black: no recogniser read a word
+// of it, and the marked name in it was neither barred nor seen by any
+// check of the copy.
+func (im ImageRef) cmykAsStored(c *image.CMYK, data []byte) {
+	invert := jpegIsAdobe(data)
+	if d := floatArray(im.r, im.r.resolve(im.stream.dict["Decode"])); len(d) >= 2 && d[0] == 1 && d[1] == 0 {
+		invert = !invert
+	}
+	if !invert {
+		return
+	}
+	for i := range c.Pix {
+		c.Pix[i] = 255 - c.Pix[i]
+	}
 }
 
 // fromSamples builds an image from raw component values.
