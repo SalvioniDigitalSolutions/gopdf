@@ -7,9 +7,11 @@ import (
 	"image"
 	"image/color"
 	"io"
+	"math"
 	"os"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // Redaction removes content from a document permanently.
@@ -869,8 +871,12 @@ func (rd *Redactor) redactRun(page int, run *TextRun, areas []rect, matched [][2
 }
 
 // runSpanX returns the horizontal extent of a byte range of a run's text,
-// measured with the run's own font metrics.
+// measured with the run's own font metrics — and, in a run whose own
+// moves part its words, where its codes were drawn (movedCharSpans).
 func runSpanX(run *TextRun, lo, hi int) (float64, float64) {
+	if spans := movedCharSpans(run); spans != nil && lo < hi && hi <= len(spans) {
+		return run.X + spans[lo][0], run.X + spans[hi-1][1]
+	}
 	x0 := run.X + prefixWidth(run, run.Text[:lo])
 	return x0, x0 + prefixWidth(run, run.Text[lo:hi])
 }
@@ -1242,6 +1248,23 @@ func runRangeInArea(run *TextRun, a rect) (int, int, bool) {
 	if len(runes) == 0 || run.Width <= 0 {
 		return 0, 0, false
 	}
+	if spans := movedCharSpans(run); spans != nil {
+		lo, hi := -1, -1
+		for b := 0; b < len(run.Text); {
+			_, size := utf8.DecodeRuneInString(run.Text[b:])
+			if mid := run.X + (spans[b][0]+spans[b][1])/2; mid >= a.x0 && mid <= a.x1 {
+				if lo < 0 {
+					lo = b
+				}
+				hi = b + size
+			}
+			b += size
+		}
+		if lo < 0 {
+			return 0, 0, false
+		}
+		return lo, hi, true
+	}
 	lo, hi := -1, -1
 	x := run.X
 	byteAt := 0
@@ -1265,6 +1288,52 @@ func runRangeInArea(run *TextRun, a rect) (int, int, bool) {
 		return 0, 0, false
 	}
 	return lo, hi, true
+}
+
+// movedCharSpans returns, for each byte of a run's text, where the
+// character it belongs to starts and ends along the baseline, in points
+// from the run's start, as the run's codes were drawn (codeAt, codeW).
+// Only for a run whose own moves part its words (spaceAt, tightAt): there
+// the moves of the show-text array are columns and word spaces, and
+// measuring the characters one after another, as the rest of this file
+// does, put a row of table headers drawn as one array — "First Fourth
+// First" — in one column's width, and a line set with moves for spaces
+// a space short for every word before the one barred: the bar over
+// "world" in "Hello big wide world" stood ten points left of it. nil for
+// any other run, which is measured as it always was.
+func movedCharSpans(run *TextRun) [][2]float64 {
+	if len(run.spaceAt) == 0 && len(run.tightAt) == 0 {
+		return nil
+	}
+	if len(run.codeAt) == 0 || len(run.codeAt) != len(run.codeText) || len(run.codeW) != len(run.codeAt) {
+		return nil
+	}
+	spans := make([][2]float64, 0, len(run.Text))
+	off := 0
+	for i, k := range run.codeText {
+		if k == 0 {
+			continue
+		}
+		if off+k > len(run.Text) {
+			return nil
+		}
+		at, w := run.codeAt[i]*run.emPts, run.codeW[i]*run.emPts
+		piece := run.Text[off : off+k]
+		m := utf8.RuneCountInString(piece)
+		j := 0
+		for _, r := range piece {
+			s, e := at+w*float64(j)/float64(m), at+w*float64(j+1)/float64(m)
+			for n := utf8.RuneLen(r); n > 0; n-- {
+				spans = append(spans, [2]float64{s, e})
+			}
+			j++
+		}
+		off += k
+	}
+	if off != len(run.Text) || len(spans) != len(run.Text) {
+		return nil
+	}
+	return spans
 }
 
 // runeAdvance returns one character's advance in points, in the run's
@@ -1332,6 +1401,11 @@ func redactedOps(run *TextRun, ranges [][2]int) ([]byte, string, error) {
 	if len(run.codes) == 0 || len(run.codeText) == 0 {
 		return nil, run.Text, errNoCodes
 	}
+	if movedCharSpans(run) != nil {
+		if ops, removed, ok := placedRedactedOps(run, ranges); ok {
+			return ops, removed, nil
+		}
+	}
 	var b strings.Builder
 	var removed strings.Builder
 	b.WriteString("[")
@@ -1357,6 +1431,68 @@ func redactedOps(run *TextRun, ranges [][2]int) ([]byte, string, error) {
 	emit(at, len(run.Text))
 	b.WriteString("] TJ")
 	return []byte(b.String()), removed.String(), nil
+}
+
+// placedRedactedOps is redactedOps for a run whose own moves part its
+// words (movedCharSpans): each kept code is written where it was drawn
+// (codeAt), with a move wherever the pen would not otherwise stand there,
+// and the operation ends where it ended. Written as redactedOps writes
+// any other run — the kept codes one after another, a move the width of
+// each removed stretch — every move of the array was lost: "Hello big
+// wide world" set with moves for spaces, "big" taken out, read "Hello
+// wideworld", every word after the cut drawn a space further left for
+// each move before it, and a table's header row taken partly out drew
+// what it kept in the next column. ok is false when the codes do not
+// account for the run.
+func placedRedactedOps(run *TextRun, ranges [][2]int) (ops []byte, removedText string, ok bool) {
+	step := run.codeStep
+	if step < 1 {
+		step = 1
+	}
+	if len(run.codeText)*step != len(run.codes) {
+		return nil, "", false
+	}
+	var b, removed strings.Builder
+	b.WriteString("[")
+	var kept []byte
+	flush := func() {
+		if len(kept) > 0 {
+			fmt.Fprintf(&b, "<%X>", kept)
+			kept = kept[:0]
+		}
+	}
+	move := func(d float64) {
+		// A move of a millionth of an em is the sum of the run's widths
+		// taken another way, not a move.
+		if math.Abs(d) > 1e-6 {
+			flush()
+			fmt.Fprintf(&b, " %s ", fl(-d))
+		}
+	}
+	pen, at := 0.0, 0
+	for i, n := range run.codeText {
+		gone := false
+		for _, r := range ranges {
+			// As codeSlice decides what a range holds.
+			if at >= r[0] && (at+n <= r[1] || (n == 0 && at < r[1])) {
+				gone = true
+				break
+			}
+		}
+		if !gone {
+			move(run.codeAt[i] - pen)
+			kept = append(kept, run.codes[i*step:(i+1)*step]...)
+			pen = run.codeAt[i] + run.codeW[i]
+		}
+		at += n
+	}
+	move(run.advance - pen)
+	flush()
+	b.WriteString("] TJ")
+	for _, r := range ranges {
+		removed.WriteString(run.Text[r[0]:r[1]])
+	}
+	return []byte(b.String()), removed.String(), true
 }
 
 // errNoCodes reports a run whose original character codes were not
