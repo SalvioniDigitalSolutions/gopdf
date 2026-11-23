@@ -5,6 +5,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // Flowing a paragraph whose text changes length.
@@ -500,6 +501,19 @@ func (f *Flow) wrap(spans []FlowSpan) ([][]FlowSpan, error) {
 			push()
 			continue
 		}
+		// The second half of a divided word, on the line its first half
+		// ends: the word is whole again, without the hyphen and the
+		// space. Laid out as "Bian- chi" or "ETA- HAC06" it was two
+		// words to every reader, and a value spelled by it was found by
+		// nothing that came after.
+		if w.continuesDivided && len(line) > 0 {
+			if trimmed, hw, ok := withoutDividingHyphen(line[len(line)-1]); ok && used-hw+w.width <= f.widthTS {
+				line[len(line)-1] = trimmed
+				line = append(line, w.parts...)
+				used += w.width - hw
+				continue
+			}
+		}
 		gap, joiner := 0.0, ""
 		if len(line) > 0 {
 			gap, joiner = w.spaceWidth, w.spaceText
@@ -540,6 +554,22 @@ func (f *Flow) wrap(spans []FlowSpan) ([][]FlowSpan, error) {
 	return lines, nil
 }
 
+// withoutDividingHyphen returns span without the hyphen that ends it,
+// and the hyphen's width; false when it does not end in one or the
+// hyphen cannot be measured.
+func withoutDividingHyphen(span FlowSpan) (FlowSpan, float64, bool) {
+	r, size := utf8.DecodeLastRuneInString(span.Text)
+	if size == 0 || !isHyphen(r) {
+		return span, 0, false
+	}
+	w, ok := span.style.advance(span.Text[len(span.Text)-size:])
+	if !ok {
+		return span, 0, false
+	}
+	span.Text = span.Text[:len(span.Text)-size]
+	return span, w, true
+}
+
 // flowWord is one whitespace-delimited word, which may itself span
 // several styles.
 type flowWord struct {
@@ -553,6 +583,10 @@ type flowWord struct {
 	// fittedHead is set when the word begins with text this package
 	// resized, whose size the preceding space must not inherit.
 	fittedHead bool
+	// continuesDivided is set on the second half of a word the page
+	// divided at a line end ("Bian-", "chi"): set on the same line as
+	// the first half, the two are one word again.
+	continuesDivided bool
 }
 
 // flowWords splits styled spans into words, keeping each word's styling.
@@ -566,7 +600,8 @@ func flowWords(spans []FlowSpan, fallback func(flowStyle) (flowStyle, bool)) ([]
 		cur = flowWord{}
 	}
 	var last flowStyle
-	for _, span := range spans {
+	divided := false
+	for si, span := range spans {
 		// The decision to fall back is made once for the whole span, not
 		// word by word. A token set partly in the document's font and
 		// partly in another is encoded against two different tables, and
@@ -588,6 +623,9 @@ func flowWords(spans []FlowSpan, fallback func(flowStyle) (flowStyle, bool)) ([]
 				out = append(out, flowWord{newline: true})
 			case strings.TrimSpace(chunk) == "":
 				flush()
+				// The space put between two lines where a word was divided:
+				// the word after it is that word's second half.
+				divided = span.lineBreak && endsHyphenated(spans, si)
 			default:
 				style := span.style
 				w, ok := style.advance(chunk)
@@ -608,6 +646,8 @@ func flowWords(spans []FlowSpan, fallback func(flowStyle) (flowStyle, bool)) ([]
 				if len(cur.parts) == 0 {
 					cur.styleOfHead = style
 					cur.fittedHead = span.fitted
+					cur.continuesDivided = divided
+					divided = false
 				}
 				cur.parts = append(cur.parts, FlowSpan{
 					Text: chunk, style: style,
@@ -707,9 +747,12 @@ func replaceInSpans(spans []FlowSpan, old, new string, mode matchMode,
 	reading := readParagraph(spans)
 	text := reading.flat
 
-	// Which bytes of the flattened text belong to which span.
+	// Which bytes of the flattened text belong to which span, and where
+	// each span begins.
 	var owner []int
+	starts := make([]int, len(spans))
 	for i, s := range spans {
+		starts[i] = len(owner)
 		for range []byte(s.Text) {
 			owner = append(owner, i)
 		}
@@ -740,7 +783,12 @@ func replaceInSpans(spans []FlowSpan, old, new string, mode matchMode,
 				FontName: spans[s].FontName, FontSize: spans[s].FontSize,
 				inserted:  spans[s].inserted,
 				fitted:    spans[s].fitted,
-				lineBreak: spans[s].lineBreak && at == 0 && end == len(spans[s].Text),
+				// The space between two lines stays one where it is kept
+				// whole. Measured from the paragraph's start instead of the
+				// span's, it was kept only at the very start: every other
+				// line end of a paragraph with a replacement in it became
+				// an ordinary space, and a word divided there two words.
+				lineBreak: spans[s].lineBreak && at == starts[s] && end == starts[s]+len(spans[s].Text),
 			})
 			at = end
 		}
