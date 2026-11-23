@@ -597,11 +597,22 @@ func shuffledEncodingDoc(t *testing.T, text string) []byte {
 	r := NewReaderOrFail(t, src)
 	u := Update(r)
 	tu := u.AddObject(NewStream(Dict{}, []byte(cmap.String())))
+	// Symbolic: the font draws its glyphs at codes of its own, whatever
+	// an encoding calls them, as a subset font does — and as a font
+	// that sets letters does not: a font that names its encoding and
+	// sets letters draws what the encoding names (shownEncoding).
+	fd := u.AddObject(Dict{
+		"Type": Name("FontDescriptor"), "FontName": Name("Helvetica"),
+		"Flags": int64(4), "FontBBox": Array{int64(0), int64(0), int64(1000), int64(1000)},
+		"ItalicAngle": int64(0), "Ascent": int64(718), "Descent": int64(-207),
+		"CapHeight": int64(718), "StemV": int64(88),
+	})
 	font := u.AddObject(Dict{
 		"Type": Name("Font"), "Subtype": Name("Type1"),
-		"BaseFont":  Name("Helvetica"),
-		"Encoding":  Name("WinAnsiEncoding"),
-		"ToUnicode": tu,
+		"BaseFont":       Name("Helvetica"),
+		"Encoding":       Name("WinAnsiEncoding"),
+		"ToUnicode":      tu,
+		"FontDescriptor": fd,
 	})
 	res, _ := r.InheritedPageValue(0, "Resources").(Dict)
 	merged := res.Clone()

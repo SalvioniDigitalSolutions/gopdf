@@ -406,6 +406,11 @@ type fontDecoder struct {
 	// name outright (namedEncoding): what a code whose /ToUnicode entry
 	// is U+FFFD reads as instead.
 	named *[256]rune
+	// shown holds, of a simple font that names its encoding and sets
+	// letters, the character each code draws (shownEncoding): what a
+	// code reads as where the /ToUnicode map says otherwise in a way
+	// no viewer shows it (shownOverMap).
+	shown *[256]rune
 	// info carries the font's advance widths, so extraction can tell a
 	// gap that is a space from one that merely continues a word.
 	info *fontInfo
@@ -434,6 +439,7 @@ func (fd *fontDecoders) get(name Name) *fontDecoder {
 		if !d.cid {
 			d.encoding = textEncoding(fd.r, f)
 			d.named = namedEncoding(fd.r, f, d.encoding)
+			d.shown = shownEncoding(fd.r, f, d.encoding)
 		}
 		d.info = newFontInfo(fd.r, name, f, d)
 	}
@@ -493,6 +499,9 @@ func (d *fontDecoder) decodeSpans(s String) (string, []int) {
 		if tu == "\uFFFD" && d.named != nil && code < 256 && d.named[code] != 0 {
 			tu = string(d.named[code])
 		}
+		if tu != "" && d.shown != nil && code < 256 {
+			tu = shownOverMap(tu, d.shown[code])
+		}
 		switch {
 		case tu != "":
 			sb.WriteString(tu)
@@ -506,6 +515,59 @@ func (d *fontDecoder) decodeSpans(s String) (string, []int) {
 		spans = append(spans, sb.Len()-before)
 	}
 	return sb.String(), spans
+}
+
+// A font's /ToUnicode map can say a code is another character than the
+// one the font draws there. A newsletter's bold face drew "www.fda.gov"
+// and "IHS HIV", and its map read the dots as spaces, the space as a tab,
+// the "1" as a control character and the capitals H, I, N, O and S as
+// small letters: "www fda gov", "ihs\thiV". Poppler reads the page as it
+// is drawn. Read by the map, a web address was no address and "IHS" no
+// "IHS": a marked "IHS" was neither removed from the line nor seen there
+// by the check after it, and the copy went out with it.
+//
+// Where a font that names its encoding sets letters, what it draws at a
+// code is what the encoding names there: a viewer picks the glyph by
+// that name. Its map is still read for everything else a map is for —
+// ligatures, glyphs no name tells, characters the encoding has no name
+// for — and is overruled only where it cannot be right: a blank or a
+// control character for a glyph the encoding names as a visible
+// character (or a tab for a space), and a letter in the other case.
+
+// shownEncoding returns the characters a simple font draws at its codes
+// as its encoding names them, for a font that names an encoding and is
+// no symbol or pictograph font; nil for any other.
+func shownEncoding(r *Reader, font Dict, text *[256]rune) *[256]rune {
+	if text == nil || r.resolve(font["Encoding"]) == nil || symbolicFont(r, font) {
+		return nil
+	}
+	switch r.resolve(font["Subtype"]) {
+	case Name("Type1"), Name("MMType1"), Name("TrueType"):
+	default:
+		return nil
+	}
+	return text
+}
+
+// shownOverMap returns what a code reads as: the character its map
+// gives (mapped), or the one the font draws (shown) where the map cannot
+// be right about it.
+func shownOverMap(mapped string, shown rune) string {
+	if shown == 0 {
+		return mapped
+	}
+	m, size := utf8.DecodeRuneInString(mapped)
+	if size != len(mapped) || m == shown {
+		return mapped
+	}
+	blank := func(r rune) bool { return r <= ' ' || (r >= 0x7f && r <= 0x9f) || unicode.IsSpace(r) }
+	switch {
+	case blank(m) && (!blank(shown) || shown == ' '):
+		return string(shown)
+	case unicode.IsLetter(m) && unicode.ToLower(m) == unicode.ToLower(shown):
+		return string(shown)
+	}
+	return mapped
 }
 
 // parseToUnicodeCMap extracts bfchar and bfrange mappings from a ToUnicode
