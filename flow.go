@@ -5,7 +5,6 @@ import (
 	"math"
 	"sort"
 	"strings"
-	"unicode/utf8"
 )
 
 // Flowing a paragraph whose text changes length.
@@ -188,6 +187,13 @@ type Flow struct {
 // rejoined across the line breaks that hyphenated them.
 func (f *Flow) joinedText() string { return readParagraph(f.spans).text }
 
+// holds reports whether old stands in the paragraph, read with its
+// divided words joined or as it is drawn (replaceInSpans).
+func (f *Flow) holds(old string) bool {
+	r := readParagraph(f.spans)
+	return containsBounded(r.text, old, f.mode) || (r.flat != r.text && containsBounded(r.flat, old, f.mode))
+}
+
 // flowLine is one baseline's worth of runs.
 type flowLine struct {
 	runs []*TextRun
@@ -229,7 +235,7 @@ func (f *Flow) Replace(old, new string) (int, error) {
 	if old == "" {
 		return 0, fmt.Errorf("gopdf: Flow.Replace called with empty search text")
 	}
-	if !containsBounded(f.joinedText(), old, f.mode) {
+	if !f.holds(old) {
 		return 0, nil
 	}
 	spans, n := replaceInSpans(f.spans, old, new, f.mode, f.fitWidth, f.fitFloor)
@@ -501,19 +507,6 @@ func (f *Flow) wrap(spans []FlowSpan) ([][]FlowSpan, error) {
 			push()
 			continue
 		}
-		// The second half of a divided word, on the line its first half
-		// ends: the word is whole again, without the hyphen and the
-		// space. Laid out as "Bian- chi" or "ETA- HAC06" it was two
-		// words to every reader, and a value spelled by it was found by
-		// nothing that came after.
-		if w.continuesDivided && len(line) > 0 {
-			if trimmed, hw, ok := withoutDividingHyphen(line[len(line)-1]); ok && used-hw+w.width <= f.widthTS {
-				line[len(line)-1] = trimmed
-				line = append(line, w.parts...)
-				used += w.width - hw
-				continue
-			}
-		}
 		gap, joiner := 0.0, ""
 		if len(line) > 0 {
 			gap, joiner = w.spaceWidth, w.spaceText
@@ -554,22 +547,6 @@ func (f *Flow) wrap(spans []FlowSpan) ([][]FlowSpan, error) {
 	return lines, nil
 }
 
-// withoutDividingHyphen returns span without the hyphen that ends it,
-// and the hyphen's width; false when it does not end in one or the
-// hyphen cannot be measured.
-func withoutDividingHyphen(span FlowSpan) (FlowSpan, float64, bool) {
-	r, size := utf8.DecodeLastRuneInString(span.Text)
-	if size == 0 || !isHyphen(r) {
-		return span, 0, false
-	}
-	w, ok := span.style.advance(span.Text[len(span.Text)-size:])
-	if !ok {
-		return span, 0, false
-	}
-	span.Text = span.Text[:len(span.Text)-size]
-	return span, w, true
-}
-
 // flowWord is one whitespace-delimited word, which may itself span
 // several styles.
 type flowWord struct {
@@ -583,10 +560,6 @@ type flowWord struct {
 	// fittedHead is set when the word begins with text this package
 	// resized, whose size the preceding space must not inherit.
 	fittedHead bool
-	// continuesDivided is set on the second half of a word the page
-	// divided at a line end ("Bian-", "chi"): set on the same line as
-	// the first half, the two are one word again.
-	continuesDivided bool
 }
 
 // flowWords splits styled spans into words, keeping each word's styling.
@@ -600,8 +573,7 @@ func flowWords(spans []FlowSpan, fallback func(flowStyle) (flowStyle, bool)) ([]
 		cur = flowWord{}
 	}
 	var last flowStyle
-	divided := false
-	for si, span := range spans {
+	for _, span := range spans {
 		// The decision to fall back is made once for the whole span, not
 		// word by word. A token set partly in the document's font and
 		// partly in another is encoded against two different tables, and
@@ -623,9 +595,6 @@ func flowWords(spans []FlowSpan, fallback func(flowStyle) (flowStyle, bool)) ([]
 				out = append(out, flowWord{newline: true})
 			case strings.TrimSpace(chunk) == "":
 				flush()
-				// The space put between two lines where a word was divided:
-				// the word after it is that word's second half.
-				divided = span.lineBreak && endsHyphenated(spans, si)
 			default:
 				style := span.style
 				w, ok := style.advance(chunk)
@@ -646,8 +615,6 @@ func flowWords(spans []FlowSpan, fallback func(flowStyle) (flowStyle, bool)) ([]
 				if len(cur.parts) == 0 {
 					cur.styleOfHead = style
 					cur.fittedHead = span.fitted
-					cur.continuesDivided = divided
-					divided = false
 				}
 				cur.parts = append(cur.parts, FlowSpan{
 					Text: chunk, style: style,
@@ -758,13 +725,26 @@ func replaceInSpans(spans []FlowSpan, old, new string, mode matchMode,
 		}
 	}
 
-	// Matches are sought in the joined reading and mapped back.
+	// Matches are sought in the joined reading and mapped back, and in
+	// the paragraph as it is drawn, the hyphen that ends a line kept:
+	// "Veltranet-" over "supported" is a compound as often as it is a
+	// divided word, and joined it read "Veltranetsupported", in which
+	// a marked "Veltranet" was no word of its own.
 	var hits [][2]int
 	for _, rg := range literalRanges(reading.text, old, mode) {
 		lo, hi, ok := reading.rangeInOriginal(rg[0], rg[1])
 		if ok {
 			hits = append(hits, [2]int{lo, hi})
 		}
+	}
+	if reading.text != text {
+		hits = append(hits, literalRanges(text, old, mode)...)
+		sort.Slice(hits, func(a, b int) bool {
+			if hits[a][0] != hits[b][0] {
+				return hits[a][0] < hits[b][0]
+			}
+			return hits[a][1] > hits[b][1]
+		})
 	}
 	if len(hits) == 0 {
 		return spans, 0
@@ -781,8 +761,8 @@ func replaceInSpans(spans []FlowSpan, old, new string, mode matchMode,
 			out = append(out, FlowSpan{
 				Text: text[at:end], style: spans[s].style,
 				FontName: spans[s].FontName, FontSize: spans[s].FontSize,
-				inserted:  spans[s].inserted,
-				fitted:    spans[s].fitted,
+				inserted: spans[s].inserted,
+				fitted:   spans[s].fitted,
 				// The space between two lines stays one where it is kept
 				// whole. Measured from the paragraph's start instead of the
 				// span's, it was kept only at the very start: every other
@@ -814,11 +794,12 @@ func replaceInSpans(spans []FlowSpan, old, new string, mode matchMode,
 		return total, true
 	}
 
-	at := 0
+	at, n := 0, 0
 	for _, h := range hits {
 		if h[0] < at {
 			continue // overlaps one already taken
 		}
+		n++
 		emit(at, h[0])
 		host := spans[owner[h[0]]]
 		if new != "" {
@@ -841,7 +822,7 @@ func replaceInSpans(spans []FlowSpan, old, new string, mode matchMode,
 		at = h[1]
 	}
 	emit(at, len(text))
-	return mergeSpans(out), len(hits)
+	return mergeSpans(out), n
 }
 
 // --- building flows from a page ---
@@ -1078,7 +1059,7 @@ func replaceFlows(flows []*Flow, old, new string, pageHeight float64,
 	plans := make([]*flowPlan, len(flows))
 	n := 0
 	for i, f := range flows {
-		if !containsBounded(f.joinedText(), old, f.mode) {
+		if !f.holds(old) {
 			continue
 		}
 		spans, count := replaceInSpans(f.spans, old, new, f.mode,

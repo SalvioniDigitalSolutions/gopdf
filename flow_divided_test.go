@@ -29,19 +29,40 @@ func TestFlowFindsADividedWordAfterAnotherReplacement(t *testing.T) {
 	}
 }
 
-// Where a paragraph laid out again sets both halves of a divided word on
-// one line, the word is whole: "Bianchi", not "Bian- chi".
-func TestFlowSetsADividedWordWholeWhereItsHalvesMeet(t *testing.T) {
-	src := hyphenatedDoc(t, "Contractualisation for Marco Bian-", "chi of this parish.")
+// A hyphen that ends a line stays where a paragraph is laid out again,
+// and so does the word before it: "Veltranet-" over "supported" is a
+// compound, not a divided word. Set whole as "Veltranetsupported" once a
+// replacement before it made the paragraph be laid out again, it hid the
+// marked "Veltranet" from the replacement after it, and the copy was
+// refused.
+func TestFlowKeepsALineEndHyphenWhenLaidOutAgain(t *testing.T) {
+	src := hyphenatedDoc(t, "Contractualisation for the Veltranet-", "supported system.")
 	_, e, flows := editFlows(t, src)
 	if n, err := flows[0].Replace("Contractualisation", "X"); err != nil || n != 1 {
-		t.Fatalf("replacement: %d, %v", n, err)
+		t.Fatalf("first replacement: %d, %v", n, err)
+	}
+	n, err := flows[0].Replace("Veltranet", "[[PII_ORG_1]]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("the value before the line end hyphen was not found after the first replacement: %q", flows[0].joinedText())
 	}
 	got := collapse(extractAll(t, saveDoc(t, e)))
-	if strings.Contains(got, "Bian- chi") || strings.Contains(got, "Bian-chi") {
-		t.Errorf("the divided word was set as two: %q", got)
+	if strings.Contains(got, "Veltranet") {
+		t.Errorf("the value survived: %q", got)
 	}
-	if !strings.Contains(got, "Bianchi") {
-		t.Errorf("the divided word is not whole where its halves meet: %q", got)
+	if !strings.Contains(got, "supported") {
+		t.Errorf("the rest of the compound went with it: %q", got)
+	}
+
+	// And as the first replacement of its paragraph.
+	src = hyphenatedDoc(t, "Contractualisation for the Veltranet-", "supported system.")
+	_, e, flows = editFlows(t, src)
+	if n, err := flows[0].Replace("Veltranet", "[[PII_ORG_1]]"); err != nil || n != 1 {
+		t.Fatalf("the value before the line end hyphen: %d, %v", n, err)
+	}
+	if got := collapse(extractAll(t, saveDoc(t, e))); strings.Contains(got, "Veltranet") {
+		t.Errorf("the value survived as the first replacement: %q", got)
 	}
 }
