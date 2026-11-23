@@ -1401,7 +1401,11 @@ func redactedOps(run *TextRun, ranges [][2]int) ([]byte, string, error) {
 	if len(run.codes) == 0 || len(run.codeText) == 0 {
 		return nil, run.Text, errNoCodes
 	}
-	if movedCharSpans(run) != nil {
+	// Every kept code where it was drawn (placedRedactedOps), in any run
+	// whose codes are placed: a run that only kerns its letters lost its
+	// kerns when the kept codes were written one after another, and the
+	// rest of the line stood a little left of where it was.
+	if placed := len(run.codeAt) > 0 && len(run.codeAt) == len(run.codeText) && len(run.codeW) == len(run.codeAt); placed {
 		if ops, removed, ok := placedRedactedOps(run, ranges); ok {
 			return ops, removed, nil
 		}
