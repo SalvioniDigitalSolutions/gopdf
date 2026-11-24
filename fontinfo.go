@@ -2,6 +2,7 @@ package gopdf
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -213,8 +214,25 @@ func (fi *fontInfo) buildEncoder() {
 		return
 	}
 	fi.built = true
-	// A font's ToUnicode map is authoritative where it exists.
-	for code, text := range fi.decoder.toUnicode {
+	// A font's ToUnicode map is authoritative where it exists. Its codes
+	// are taken in order, and where several read as one character the
+	// code wins that the font's encoding gives that character as well,
+	// then the lowest. Taken in the order of the map itself — Go's,
+	// another at every run — a scanner's text layer whose map reads
+	// both <00> and <20> as a space measured its spaces with either
+	// code, so the place of a value on the page, and of the bar over
+	// it, came out different every time the document was saved.
+	codes := make([]uint32, 0, len(fi.decoder.toUnicode))
+	for code := range fi.decoder.toUnicode {
+		codes = append(codes, code)
+	}
+	sort.Slice(codes, func(i, j int) bool { return codes[i] < codes[j] })
+	agrees := func(code uint32, r rune) bool {
+		return fi.decoder.encoding != nil && code < 256 && fi.decoder.encoding[code] == r
+	}
+	chosen := map[rune]uint32{}
+	for _, code := range codes {
+		text := fi.decoder.toUnicode[code]
 		runes := []rune(text)
 		if len(runes) != 1 {
 			// A ligature is not invertible one rune at a time, but it is
@@ -226,12 +244,17 @@ func (fi *fontInfo) buildEncoder() {
 			fi.addLigature(code, text, runes)
 			continue
 		}
-		if _, taken := fi.encode[runes[0]]; taken || !fi.canUse(code) {
+		r := runes[0]
+		if _, taken := fi.encode[r]; taken || !fi.canUse(code) || fi.codeBytes(code) == nil {
 			continue
 		}
-		if b := fi.codeBytes(code); b != nil {
-			fi.encode[runes[0]] = b
+		if prev, ok := chosen[r]; ok && (agrees(prev, r) || !agrees(code, r)) {
+			continue // the earlier code stands: lower, and as agreeing
 		}
+		chosen[r] = code
+	}
+	for r, code := range chosen {
+		fi.encode[r] = fi.codeBytes(code)
 	}
 	if fi.decoder.encoding != nil {
 		for code, r := range fi.decoder.encoding {
