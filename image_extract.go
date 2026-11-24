@@ -558,6 +558,7 @@ func (im ImageRef) fromSamples(samples []byte) (image.Image, error) {
 
 	for y := 0; y < h; y++ {
 		rd.startRow(y)
+		row := out.Pix[y*out.Stride : y*out.Stride+4*w]
 		for x := 0; x < w; x++ {
 			for c := 0; c < comps; c++ {
 				px[c] = rd.next()
@@ -590,7 +591,8 @@ func (im ImageRef) fromSamples(samples []byte) (image.Image, error) {
 					255,
 				}
 			}
-			out.SetNRGBA(x, y, col)
+			// out.SetNRGBA(x, y, col), without its bounds check per pixel.
+			row[4*x], row[4*x+1], row[4*x+2], row[4*x+3] = col.R, col.G, col.B, col.A
 		}
 	}
 	return out, nil
@@ -705,15 +707,52 @@ func (im ImageRef) softMask() (*image.Gray, error) {
 	if err != nil {
 		return nil, nil // a mask we cannot read simply leaves the image opaque
 	}
+	return maskGray(m), nil
+}
+
+// maskGray is a decoded soft mask as grey, pixel by pixel through
+// GrayModel, at the origin.
+func maskGray(m image.Image) *image.Gray {
 	b := m.Bounds()
 	out := image.NewGray(image.Rect(0, 0, b.Dx(), b.Dy()))
+	switch src := m.(type) {
+	case *image.Gray:
+		// GrayModel hands a grey on as it is: the rows are copied.
+		for y := 0; y < b.Dy(); y++ {
+			i := src.PixOffset(b.Min.X, b.Min.Y+y)
+			copy(out.Pix[y*out.Stride:y*out.Stride+b.Dx()], src.Pix[i:i+b.Dx()])
+		}
+		return out
+	case *image.NRGBA:
+		// The mask's own samples, read as grey (fromSamples): an opaque
+		// grey pixel's value through GrayModel is worked out once for
+		// each of the 256, any other pixel's as before.
+		var grey [256]uint8
+		for v := range grey {
+			grey[v] = color.GrayModel.Convert(color.NRGBA{uint8(v), uint8(v), uint8(v), 255}).(color.Gray).Y
+		}
+		for y := 0; y < b.Dy(); y++ {
+			i := src.PixOffset(b.Min.X, b.Min.Y+y)
+			srow := src.Pix[i : i+4*b.Dx()]
+			orow := out.Pix[y*out.Stride : y*out.Stride+b.Dx()]
+			for x := range orow {
+				p := srow[4*x : 4*x+4]
+				if p[0] == p[1] && p[1] == p[2] && p[3] == 255 {
+					orow[x] = grey[p[0]]
+				} else {
+					orow[x] = color.GrayModel.Convert(color.NRGBA{p[0], p[1], p[2], p[3]}).(color.Gray).Y
+				}
+			}
+		}
+		return out
+	}
 	for y := 0; y < b.Dy(); y++ {
 		for x := 0; x < b.Dx(); x++ {
 			c := color.GrayModel.Convert(m.At(b.Min.X+x, b.Min.Y+y)).(color.Gray)
 			out.SetGray(x, y, c)
 		}
 	}
-	return out, nil
+	return out
 }
 
 // applySoftMask combines an image with a separately sized alpha
@@ -738,13 +777,23 @@ func applySoftMask(base image.Image, mask *image.Gray) image.Image {
 		h = mb.Dy()
 	}
 	out := image.NewNRGBA(image.Rect(0, 0, w, h))
+	// NRGBAModel hands an NRGBA colour on as it is: from an NRGBA
+	// picture (fromSamples) the pixel is read straight from its bytes.
+	nb, _ := base.(*image.NRGBA)
 	for y := 0; y < h; y++ {
 		by := y * b.Dy() / h
 		my := y * mb.Dy() / h
+		row := out.Pix[y*out.Stride : y*out.Stride+4*w]
 		for x := 0; x < w; x++ {
-			c := color.NRGBAModel.Convert(base.At(b.Min.X+x*b.Dx()/w, b.Min.Y+by)).(color.NRGBA)
+			var c color.NRGBA
+			if nb != nil {
+				i := nb.PixOffset(b.Min.X+x*b.Dx()/w, b.Min.Y+by)
+				c = color.NRGBA{nb.Pix[i], nb.Pix[i+1], nb.Pix[i+2], nb.Pix[i+3]}
+			} else {
+				c = color.NRGBAModel.Convert(base.At(b.Min.X+x*b.Dx()/w, b.Min.Y+by)).(color.NRGBA)
+			}
 			c.A = mask.GrayAt(mb.Min.X+x*mb.Dx()/w, mb.Min.Y+my).Y
-			out.SetNRGBA(x, y, c)
+			row[4*x], row[4*x+1], row[4*x+2], row[4*x+3] = c.R, c.G, c.B, c.A
 		}
 	}
 	return out
@@ -774,6 +823,16 @@ func (b *bitReader) startRow(y int) {
 }
 
 func (b *bitReader) next() uint32 {
+	if b.bpc == 8 {
+		// A sample is a whole byte: the byte, read at once rather than
+		// bit by bit as below; past the data, 0 (as below).
+		i := b.rowStart + b.pos>>3
+		if i >= len(b.data) {
+			return 0
+		}
+		b.pos += 8
+		return uint32(b.data[i])
+	}
 	var v uint32
 	for i := 0; i < b.bpc; i++ {
 		byteIdx := b.rowStart + (b.pos >> 3)
