@@ -42,8 +42,20 @@ type FontRequest struct {
 // differs from machine to machine. Passing it is a decision, and the
 // decision is the caller's.
 func SystemFonts() func(FontRequest) []byte {
-	dirs := systemFontDirs()
-	cache := map[string][]byte{}
+	return fontsIn(systemFontDirs())
+}
+
+// fontsIn is SystemFonts over the font files under dirs.
+//
+// A choice is remembered by the whole request, not by the name alone:
+// the choice is made from the name and from what the document says of
+// the face, and two documents that name "TimesNewRoman" and say
+// different things of it (one "serif", one not) are two requests.
+// Remembered by name, the second was given the font chosen for the
+// first, and a page was drawn one way or another by what the process
+// had drawn before it.
+func fontsIn(dirs []string) func(FontRequest) []byte {
+	cache := map[FontRequest][]byte{}
 	var index []string
 	// The returned function is the obvious thing to share between
 	// goroutines rendering different pages, so it holds a lock rather
@@ -58,8 +70,7 @@ func SystemFonts() func(FontRequest) []byte {
 				index = []string{} // scanned and found nothing
 			}
 		}
-		key := req.BaseFont
-		if data, ok := cache[key]; ok {
+		if data, ok := cache[req]; ok {
 			return data
 		}
 		var chosen []byte
@@ -76,7 +87,7 @@ func SystemFonts() func(FontRequest) []byte {
 			chosen = data
 			break
 		}
-		cache[key] = chosen
+		cache[req] = chosen
 		return chosen
 	}
 }
