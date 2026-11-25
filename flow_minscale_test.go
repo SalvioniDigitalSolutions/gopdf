@@ -20,15 +20,29 @@ const marker = "[[PII_LOCATION_001]]"
 func TestMinScaleLetsAMarkerFit(t *testing.T) {
 	src := leaderPage(t, "Locarno")
 
-	// At the default floor the token cannot be brought down far enough,
-	// so the paragraph engine takes it and rewrites the page.
+	// At the default floor the token cannot be brought down to the
+	// width of its value: it is set at the floor, wider than the name
+	// it stands for, and the line is the wider for it.
 	def := fitExact(t, src, []Pseudonym{
 		{From: "Locarno", To: marker, FitWidth: true},
 	})
 	const untouched = "(Davanti a me notaio, oggi.) Tj"
-	if bytesHas(pageContent(t, def), untouched) {
-		t.Fatal("the default floor took this token, so the fixture cannot " +
-			"show what MinScale changes")
+	width := func(data []byte, text string) float64 {
+		for _, f := range fragsOf(t, data) {
+			if i := strings.Index(f.Text, text); i >= 0 && len(f.Advances) > 0 {
+				lo := len([]rune(f.Text[:i]))
+				hi := lo + len([]rune(text))
+				if hi < len(f.Advances) {
+					return f.Advances[hi] - f.Advances[lo]
+				}
+			}
+		}
+		t.Fatalf("no fragment places %q: %q", text, joinFrags(fragsOf(t, data)))
+		return 0
+	}
+	if had, has := width(src, "Locarno"), width(def, marker); has <= had+0.5 {
+		t.Fatalf("the default floor took this token (%.1f wide where the name was %.1f), "+
+			"so the fixture cannot show what MinScale changes", has, had)
 	}
 
 	// With room to shrink, the same substitution is spliced in place.

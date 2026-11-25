@@ -295,6 +295,18 @@ func (run *TextRun) spliceRaw(s string) {
 	})
 }
 
+// unsplice takes back a replacement of the run's operation, which the
+// stream then holds as the document wrote it.
+func (run *TextRun) unsplice() {
+	sp := run.target.splices
+	for i := range sp {
+		if sp[i].start == run.start && sp[i].end == run.end {
+			run.target.splices = append(sp[:i], sp[i+1:]...)
+			return
+		}
+	}
+}
+
 // ReplaceTextReflow replaces occurrences of old with new across the page's
 // paragraphs, re-wrapping each affected paragraph so the change flows
 // across its lines instead of stretching one of them. It returns the

@@ -40,6 +40,13 @@ type Pseudonym struct {
 	// paragraph re-wraps as it otherwise would, because a token nobody
 	// can read is the worse of the two failures.
 	//
+	// On a page that is laid out again, the paragraph's lines are kept
+	// wherever their words still fit: a line a shorter token left short
+	// does not take the first words of the next, an empty line stays
+	// one, and a line nothing was replaced in is not written again.
+	// What a line can no longer hold goes to the line under it. A page
+	// with no room for the line that may cost is wrapped anew.
+	//
 	// Reverse drops it: restoring the original text has no width to fit.
 	FitWidth bool
 	// MinScale is how far FitWidth may shrink this token, as a fraction
@@ -62,9 +69,10 @@ type Pseudonym struct {
 	// page it merges the form's lines. A caller who would rather keep
 	// the page exactly as it was can name the shorter marker to fall
 	// back to. The paragraph engine takes it too, on a page that came
-	// to it for another reason: set at the floor, the long token was a
-	// little wider than every short value it stood for, and the
-	// paragraphs grew. Empty means no fallback.
+	// to it for another reason and has no room for the lines To costs
+	// there: set at the floor, To is a little wider than every short
+	// value it stands for, and the paragraphs grow. Empty means no
+	// fallback.
 	FitFallback string
 }
 

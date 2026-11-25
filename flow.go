@@ -49,6 +49,13 @@ type FlowSpan struct {
 	// the same paragraph. It is not a character the document drew, and a
 	// word hyphenated across the break is joined at it.
 	lineBreak bool
+	// line, on a lineBreak, is the index of the paragraph's line that
+	// begins after it, and hard says the document ended the line before
+	// it with room to spare for the next word: a heading over its text,
+	// one line of an address, a line set off by an empty one — a break
+	// the document made, not one its column did (wrapKept).
+	line int
+	hard bool
 }
 
 // flowStyle is everything needed to draw a span the way the source did.
@@ -184,6 +191,20 @@ type Flow struct {
 	// fitFloor is how far such a replacement may be shrunk, as a
 	// fraction of the run's size. Zero means the default.
 	fitFloor float64
+	// kept is what a rewrite that keeps the paragraph's lines needs to
+	// know of each of them (wrapKept). Nil where a line could not be
+	// measured.
+	kept []keptLine
+}
+
+// keptLine is a line of a paragraph as the document set it.
+type keptLine struct {
+	// text is its words, one space between them.
+	text string
+	// indent is how far from the line's start its first word begins,
+	// and natural how far its last word ends when its words are set one
+	// after the other, both in text space.
+	indent, natural float64
 }
 
 // joinedText returns the paragraph as a person reads it, with words
@@ -277,6 +298,12 @@ func (f *Flow) SetSpans(spans []FlowSpan) error {
 // planSpans works out a rewrite without applying it, so a page can total
 // up how far each paragraph moves before anything is written.
 func (f *Flow) planSpans(spans []FlowSpan) (*flowPlan, error) {
+	return f.planSpansAs(spans, false)
+}
+
+// planSpansAs is planSpans; with keep, the paragraph's lines are kept
+// as the document set them wherever they still hold (wrapKept).
+func (f *Flow) planSpansAs(spans []FlowSpan, keep bool) (*flowPlan, error) {
 	clean := make([]FlowSpan, 0, len(spans))
 	for _, s := range spans {
 		if s.Text == "" {
@@ -293,17 +320,35 @@ func (f *Flow) planSpans(spans []FlowSpan) (*flowPlan, error) {
 	if shrunk, did := f.shrinkInserted(clean); did {
 		clean = shrunk
 	}
-	lines, err := f.wrap(clean)
-	if err != nil {
-		return nil, err
-	}
-	// A paragraph that would come out longer than it stood is first
-	// tried a little tighter (wrapTight): the page may have set its
-	// lines tighter than its font's own widths add up to, and set again
-	// without that a line is a hair wider than itself.
-	if len(lines) > len(f.lines) {
-		if tight, ok := f.wrapTight(clean); ok && len(tight) < len(lines) {
-			lines = tight
+	var lines [][]FlowSpan
+	var indents []float64
+	var same []bool
+	if keep && f.kept != nil {
+		// A line a hair over what it may measure stays a line and is
+		// drawn that much narrower (kernSlack, as wrapTight has it for
+		// a paragraph that would grow): a token set at the floor is a
+		// point or two wider than its value, and the line's last word
+		// is not sent to the next line for that.
+		kw, err := f.wrapKept(clean, kernSlack)
+		if err != nil {
+			return nil, err
+		}
+		kw.narrow()
+		lines, indents, same = kw.lines, kw.indents, kw.same
+	} else {
+		var err error
+		lines, err = f.wrap(clean)
+		if err != nil {
+			return nil, err
+		}
+		// A paragraph that would come out longer than it stood is first
+		// tried a little tighter (wrapTight): the page may have set its
+		// lines tighter than its font's own widths add up to, and set again
+		// without that a line is a hair wider than itself.
+		if len(lines) > len(f.lines) {
+			if tight, ok := f.wrapTight(clean); ok && len(tight) < len(lines) {
+				lines = tight
+			}
 		}
 	}
 	if f.maxExtra >= 0 {
@@ -312,7 +357,8 @@ func (f *Flow) planSpans(spans []FlowSpan) (*flowPlan, error) {
 				"occupies; allow them with SetMaxExtraLines or shorten the text", extra)
 		}
 	}
-	plan := &flowPlan{spans: clean, delta: len(lines) - f.curLines, lines: len(lines)}
+	plan := &flowPlan{spans: clean, delta: len(lines) - f.curLines, lines: len(lines),
+		indents: indents, same: same}
 	plan.ops = make([]string, len(lines))
 	plan.ends = make([]*flowStyle, len(lines))
 	for i, line := range lines {
@@ -366,6 +412,25 @@ type flowPlan struct {
 	ends  []*flowStyle
 	delta int
 	lines int
+	// indents is how far from its line's start each line begins, in
+	// text space, and same marks the lines that are the document's own
+	// line of that index, unchanged: they are not written again. Both
+	// are nil for a paragraph wrapped anew (wrapKept sets them).
+	indents []float64
+	same    []bool
+}
+
+// indent is how far from its line's start line i begins.
+func (p *flowPlan) indent(i int) float64 {
+	if i < len(p.indents) {
+		return p.indents[i]
+	}
+	return 0
+}
+
+// keeps reports whether line i is left as the document drew it.
+func (p *flowPlan) keeps(i int) bool {
+	return i < len(p.same) && p.same[i]
 }
 
 // applyPlan writes a planned rewrite, moved further down the page by
@@ -408,25 +473,43 @@ func (f *Flow) place(extraShift float64) {
 // carry their own positioning that a relative move would not survive.
 func (f *Flow) shiftOriginals(shiftTS float64) {
 	for _, line := range f.lines {
-		for _, run := range line.runs {
-			if run.start >= run.end || run.end > len(run.target.content) {
-				continue
-			}
-			orig := string(run.target.content[run.start:run.end])
-			var b strings.Builder
-			writeTm(&b, matrix{1, 0, 0, 1, 0, shiftTS}.mul(run.tm))
-			b.WriteByte(' ')
-			b.WriteString(orig)
-			// What the stream draws next by a move of its own (Td,
-			// T*) starts from the line the document had here, not
-			// from where this paragraph now stands: a paragraph that
-			// keeps its place is not rewritten, and took the move of
-			// the one drawn before it.
-			b.WriteByte(' ')
-			writeTm(&b, run.lm)
-			run.spliceRaw(b.String())
-			run.replaced = true
+		shiftLine(line, shiftTS)
+	}
+}
+
+// leaveLine leaves a line as the document drew it, moved down the page
+// by shiftTS: its own operators, whatever an earlier rewrite of the
+// paragraph put in their place.
+func leaveLine(line flowLine, shiftTS float64) {
+	if shiftTS != 0 {
+		shiftLine(line, shiftTS)
+		return
+	}
+	for _, run := range line.runs {
+		run.unsplice()
+	}
+}
+
+// shiftLine moves one line that is not rewritten (shiftOriginals).
+func shiftLine(line flowLine, shiftTS float64) {
+	for _, run := range line.runs {
+		if run.start >= run.end || run.end > len(run.target.content) {
+			continue
 		}
+		orig := string(run.target.content[run.start:run.end])
+		var b strings.Builder
+		writeTm(&b, matrix{1, 0, 0, 1, 0, shiftTS}.mul(run.tm))
+		b.WriteByte(' ')
+		b.WriteString(orig)
+		// What the stream draws next by a move of its own (Td, T*)
+		// starts from the line the document had here, not from where
+		// this paragraph now stands: a paragraph that keeps its place
+		// is not rewritten, and took the move of the one drawn before
+		// it.
+		b.WriteByte(' ')
+		writeTm(&b, run.lm)
+		run.spliceRaw(b.String())
+		run.replaced = true
 	}
 }
 
@@ -445,8 +528,22 @@ func (f *Flow) emit(p *flowPlan, shiftTS float64) {
 	shift := func(m matrix) matrix {
 		return matrix{1, 0, 0, 1, 0, shiftTS}.mul(m)
 	}
+	// in sets a line in from where it starts, by what the plan says.
+	in := func(m matrix, i int) matrix {
+		if d := p.indent(i); d != 0 {
+			return matrix{1, 0, 0, 1, d, 0}.mul(m)
+		}
+		return m
+	}
 	last := len(f.lines) - 1
 	for i, line := range f.lines {
+		// A line the rewrite did not change keeps the operators the
+		// document drew it with (wrapKept): set again from its words,
+		// a line loses whatever its producer did between them.
+		if p.keeps(i) && !(i == last && len(ops) > len(f.lines)) {
+			leaveLine(line, shiftTS)
+			continue
+		}
 		first := line.runs[0]
 		var sb strings.Builder
 		var have *flowStyle
@@ -454,7 +551,7 @@ func (f *Flow) emit(p *flowPlan, shiftTS float64) {
 			// Each surviving line is placed from its own matrix. Stepping
 			// them all from the first would misplace any line the
 			// document positions under a different transform.
-			writeTm(&sb, shift(line.tm))
+			writeTm(&sb, shift(in(line.tm, i)))
 			sb.WriteString(ops[i])
 			if p.ends[i] != nil {
 				have = p.ends[i]
@@ -464,7 +561,7 @@ func (f *Flow) emit(p *flowPlan, shiftTS float64) {
 			// The last original line carries any lines beyond it.
 			for k := len(f.lines); k < len(ops); k++ {
 				sb.WriteByte(' ')
-				writeTm(&sb, shift(lineMatrix(f.lines[last].tm, f.leadingTS, k-last)))
+				writeTm(&sb, shift(in(lineMatrix(f.lines[last].tm, f.leadingTS, k-last), k)))
 				sb.WriteString(ops[k])
 				if p.ends[k] != nil {
 					have = p.ends[k]
@@ -677,6 +774,214 @@ func (f *Flow) wrapWithin(spans []FlowSpan, widthTS float64) ([][]FlowSpan, []fl
 	return lines, widths, nil
 }
 
+// keptWrap is a paragraph wrapped with its lines kept (wrapKept).
+type keptWrap struct {
+	lines [][]FlowSpan
+	// widths is how far each line's last word ends, limits how far it
+	// is drawn to (narrow), and indents how far in its first word
+	// begins, all from the line's start and in text space.
+	widths, limits, indents []float64
+	// same marks the lines that are the document's own line of that
+	// index, unchanged.
+	same []bool
+}
+
+// narrow draws each line that is written again and is over its limit
+// narrower by as much, as wrapTight does.
+func (kw *keptWrap) narrow() {
+	for i, w := range kw.widths {
+		set := w - kw.indents[i]
+		if kw.same[i] || w <= kw.limits[i]+1e-6 || set <= 0 {
+			continue
+		}
+		by := (kw.limits[i] - kw.indents[i]) / set
+		if by <= 0 || by >= 1 {
+			continue
+		}
+		narrowed := make([]FlowSpan, len(kw.lines[i]))
+		copy(narrowed, kw.lines[i])
+		for k := range narrowed {
+			narrowed[k].style.horizScale *= by
+			narrowed[k].gap *= by
+		}
+		kw.lines[i] = narrowed
+	}
+}
+
+// wrapKept breaks the paragraph into lines as wrap does, and keeps the
+// lines the document set wherever they still hold: the page a reader
+// had, with a phrase replaced.
+//
+// A line whose words still fit ends where it ended, however short a
+// replacement left it: the first words of the next line are not pulled
+// up to fill it. Wrapped anew, a heading whose value became a shorter
+// token took the first words of the text under it, the lines of an
+// address ran into one another, and a centred title became one line
+// with the lines around it. An empty line stays an empty line, and a
+// line begins as far in as the document began it (lineIndent).
+//
+// What a line can no longer hold goes to a line of its own under it,
+// and from there into the line that follows where the column ended the
+// line (the paragraph runs on, as wrap has it) — not where the document
+// did (FlowSpan.hard): a heading that needs a second line takes one,
+// and its text begins under it.
+//
+// A line may measure what it measured as the document set it, where
+// that is more than the column (slack times that: wrapTight's
+// allowance), so a line nothing was replaced in is never broken.
+func (f *Flow) wrapKept(spans []FlowSpan, slack float64) (*keptWrap, error) {
+	words, err := flowWords(spans, f.fallback)
+	if err != nil {
+		return nil, err
+	}
+	kw := &keptWrap{}
+	var line []FlowSpan
+	var texts []string
+	var used, indent, limit float64
+	open, carried, changed := false, false, false
+	origin, cur := -1, 0
+
+	measure := func(k int) (in, lim float64) {
+		lim = f.widthTS
+		if k >= 0 && k < len(f.kept) {
+			in = f.kept[k].indent
+			lim = math.Max(lim, f.kept[k].natural)
+		}
+		return in, lim
+	}
+	// begin opens a line for the words of the document's line k; from
+	// is k where the line begins as that line did, and -1 where it
+	// begins with what the line before could not hold.
+	begin := func(k, from int) {
+		open, line, texts, changed = true, nil, nil, false
+		origin = from
+		indent, limit = measure(k)
+		used = indent
+	}
+	end := func() {
+		if !open {
+			return
+		}
+		j := len(kw.lines)
+		kw.lines = append(kw.lines, mergeSpans(line))
+		kw.widths = append(kw.widths, used)
+		// A line a hair over the column is drawn to the column: set
+		// from its font's own widths it measures what the kerns
+		// between its letters had taken out of it. One further over
+		// stood so in the document, and is drawn to what it measured
+		// there.
+		to := limit
+		if used <= f.widthTS*kernSlack {
+			to = f.widthTS
+		}
+		kw.limits = append(kw.limits, to)
+		kw.indents = append(kw.indents, indent)
+		kw.same = append(kw.same, origin == j && !changed && j < len(f.kept) &&
+			strings.Join(texts, " ") == f.kept[j].text)
+		open = false
+	}
+	blank := func() {
+		j := len(kw.lines)
+		kw.lines = append(kw.lines, nil)
+		kw.widths = append(kw.widths, 0)
+		kw.limits = append(kw.limits, f.widthTS)
+		kw.indents = append(kw.indents, 0)
+		kw.same = append(kw.same, j < len(f.kept) && f.kept[j].text == "")
+	}
+	for i, w := range words {
+		if w.newline {
+			end()
+			carried = false
+			continue
+		}
+		switch {
+		case i == 0:
+			// The lines before the first word are empty ones.
+			for len(kw.lines) < w.line {
+				blank()
+			}
+			cur = w.line
+			begin(cur, cur)
+		case w.breaks > 0 && (w.hard || !carried):
+			end()
+			// The document's own empty lines, and the place of a line
+			// that went into the one before it with a value that ran
+			// over both.
+			for n := 1; n < w.breaks; n++ {
+				blank()
+			}
+			for len(kw.lines) < w.line {
+				blank()
+			}
+			cur, carried = w.line, false
+			begin(cur, cur)
+		case w.breaks > 0:
+			// What the line before could not hold runs on into this
+			// one, which begins where the document began it.
+			cur, carried = w.line, false
+			in, lim := measure(cur)
+			used += in - indent
+			indent, limit = in, lim
+		}
+		if !open {
+			begin(cur, -1) // after a line break in the text itself
+		}
+		gap, joiner := 0.0, ""
+		if len(line) > 0 {
+			gap, joiner = w.spaceWidth, w.spaceText
+			if joiner == "" && gap <= 0 {
+				return nil, fmt.Errorf("gopdf: font /%s can neither draw a space "+
+					"nor say how wide one is, so the words in this paragraph "+
+					"cannot be separated", w.spaceStyle.fontName)
+			}
+			if used+gap+w.width > limit*slack {
+				end()
+				begin(cur, -1)
+				carried = true
+				gap, joiner = 0, ""
+			}
+		}
+		switch {
+		case joiner != "":
+			line = append(line, FlowSpan{Text: joiner, style: w.spaceStyle,
+				FontName: string(w.spaceStyle.fontName)})
+		case gap > 0:
+			line = append(line, FlowSpan{gap: gap, style: w.spaceStyle,
+				FontName: string(w.spaceStyle.fontName)})
+		}
+		for _, part := range w.parts {
+			changed = changed || part.inserted
+		}
+		line = append(line, w.parts...)
+		texts = append(texts, w.text())
+		used += gap + w.width
+	}
+	end()
+	// The empty lines the paragraph ends on.
+	for n := trailingBreaks(spans); n > 0; n-- {
+		blank()
+	}
+	if len(kw.lines) == 0 {
+		kw.lines, kw.widths, kw.limits = [][]FlowSpan{{spans[0]}}, []float64{0}, []float64{f.widthTS}
+		kw.indents, kw.same = []float64{0}, []bool{false}
+	}
+	return kw, nil
+}
+
+// trailingBreaks counts the line ends after the paragraph's last word.
+func trailingBreaks(spans []FlowSpan) int {
+	n := 0
+	for i := len(spans) - 1; i >= 0; i-- {
+		switch {
+		case spans[i].lineBreak:
+			n++
+		case strings.TrimSpace(spans[i].Text) != "":
+			return n
+		}
+	}
+	return n
+}
+
 // flowWord is one whitespace-delimited word, which may itself span
 // several styles.
 type flowWord struct {
@@ -690,6 +995,14 @@ type flowWord struct {
 	// fittedHead is set when the word begins with text this package
 	// resized, whose size the preceding space must not inherit.
 	fittedHead bool
+	// breaks is how many line ends of the paragraph, as the document
+	// set it, stand between the word before this one and this one; hard
+	// says one of them is a break the document made (FlowSpan.hard), or
+	// that an empty line stands between; and line is the index of the
+	// document's line the word begins, where breaks is not zero.
+	breaks int
+	hard   bool
+	line   int
 }
 
 // flowWords splits styled spans into words, keeping each word's styling.
@@ -703,7 +1016,16 @@ func flowWords(spans []FlowSpan, fallback func(flowStyle) (flowStyle, bool)) ([]
 		cur = flowWord{}
 	}
 	var last flowStyle
+	breaks, hard, at := 0, false, 0
 	for _, span := range spans {
+		if span.lineBreak {
+			flush()
+			breaks++
+			hard = hard || span.hard || breaks > 1
+			at = span.line
+			last = span.style
+			continue
+		}
 		// The decision to fall back is made once for the whole span, not
 		// word by word. A token set partly in the document's font and
 		// partly in another is encoded against two different tables, and
@@ -723,6 +1045,7 @@ func flowWords(spans []FlowSpan, fallback func(flowStyle) (flowStyle, bool)) ([]
 			case chunk == "\n":
 				flush()
 				out = append(out, flowWord{newline: true})
+				breaks, hard = 0, false
 			case strings.TrimSpace(chunk) == "":
 				flush()
 			default:
@@ -745,6 +1068,8 @@ func flowWords(spans []FlowSpan, fallback func(flowStyle) (flowStyle, bool)) ([]
 				if len(cur.parts) == 0 {
 					cur.styleOfHead = style
 					cur.fittedHead = span.fitted
+					cur.breaks, cur.hard, cur.line = breaks, hard, at
+					breaks, hard = 0, false
 				}
 				cur.parts = append(cur.parts, FlowSpan{
 					Text: chunk, style: style,
@@ -919,6 +1244,8 @@ func replaceInSpans(spans []FlowSpan, old, new string, mode matchMode,
 				// line end of a paragraph with a replacement in it became
 				// an ordinary space, and a word divided there two words.
 				lineBreak: spans[s].lineBreak && at == starts[s] && end == starts[s]+len(spans[s].Text),
+				line:      spans[s].line,
+				hard:      spans[s].hard,
 			})
 			at = end
 		}
@@ -1066,12 +1393,14 @@ func newFlow(lines []flowLine, onChange func()) *Flow {
 	head := lines[0].runs[0]
 	f.X, f.Y = head.X, head.Y
 
-	for _, line := range lines {
+	drawn := make([]float64, len(lines))
+	for k, line := range lines {
 		var lineTS, linePt float64
 		for _, run := range line.runs {
 			lineTS += run.advance / 1000 * run.fontSizeRaw * run.horizScale
 			linePt += run.Width
 		}
+		drawn[k] = lineTS
 		if lineTS > f.widthTS {
 			f.widthTS = lineTS
 		}
@@ -1098,7 +1427,7 @@ func newFlow(lines []flowLine, onChange func()) *Flow {
 	// explicit so a re-wrap can put the break somewhere else.
 	for i, line := range lines {
 		if i > 0 {
-			f.spans = append(f.spans, FlowSpan{Text: " ", lineBreak: true,
+			f.spans = append(f.spans, FlowSpan{Text: " ", lineBreak: true, line: i,
 				style: styleOf(line.runs[0]), FontName: line.runs[0].FontName})
 		}
 		var prev *TextRun
@@ -1138,11 +1467,133 @@ func newFlow(lines []flowLine, onChange func()) *Flow {
 			prev = run
 		}
 	}
+	f.describeLines(lines, drawn)
 	f.spans = mergeSpans(f.spans)
 	if len(f.spans) == 0 {
 		return nil
 	}
 	return f
+}
+
+// hardBreakRoom is how much of its column a line and the first word of
+// the next may take, set one after the other, for the break between
+// them to be one the document made: the word had room on the line, and
+// stands on the next.
+const hardBreakRoom = 0.985
+
+// describeLines notes what a rewrite that keeps the paragraph's lines
+// has to know of them (keptLine), and which of its line ends the
+// document made (FlowSpan.hard). drawn is the width each line was
+// drawn in, in text space.
+func (f *Flow) describeLines(lines []flowLine, drawn []float64) {
+	per := make([][]FlowSpan, 0, len(lines))
+	var cur []FlowSpan
+	for _, s := range f.spans {
+		if s.lineBreak {
+			per = append(per, cur)
+			cur = nil
+			continue
+		}
+		cur = append(cur, s)
+	}
+	per = append(per, cur)
+	if len(per) != len(lines) {
+		return
+	}
+	kept := make([]keptLine, len(lines))
+	// head is what each line's first word takes at the end of the line
+	// before it, the space included; end where each line ends.
+	head := make([]float64, len(lines))
+	end := make([]float64, len(lines))
+	col := f.widthTS
+	for k, spans := range per {
+		words, err := flowWords(spans, nil)
+		if err != nil {
+			return
+		}
+		var texts []string
+		set := 0.0
+		for i, w := range words {
+			if w.newline {
+				return
+			}
+			if i == 0 {
+				head[k] = w.spaceWidth + w.width
+			} else {
+				set += w.spaceWidth
+			}
+			set += w.width
+			texts = append(texts, w.text())
+		}
+		indent := lineIndent(lines[k])
+		kept[k] = keptLine{text: strings.Join(texts, " "), indent: indent, natural: indent + set}
+		end[k] = math.Max(drawn[k], kept[k].natural)
+		col = math.Max(col, end[k])
+	}
+	for i := range f.spans {
+		b := &f.spans[i]
+		if !b.lineBreak || b.line < 1 || b.line >= len(kept) {
+			continue
+		}
+		before, after := kept[b.line-1], kept[b.line]
+		b.hard = before.text == "" || after.text == "" ||
+			end[b.line-1]+head[b.line] <= col*hardBreakRoom
+	}
+	f.kept = kept
+}
+
+// lineIndent is how far from where a line starts its first word begins,
+// in text space: the space a document leaves there by a move or by wide
+// spaces, to centre a line or to set in the first of a paragraph.
+func lineIndent(line flowLine) float64 {
+	head := line.runs[0]
+	scale := textScale(head)
+	if scale <= 0 {
+		return 0
+	}
+	for _, run := range line.runs {
+		body := strings.TrimLeft(run.Text, " \t\u00a0")
+		if body == "" {
+			continue
+		}
+		at := len(run.Text) - len(body)
+		x, ok := drawnAt(run, at)
+		if !ok {
+			x = prefixWidth(run, run.Text[:at])
+		}
+		return math.Max(0, (run.X+x-head.X)/scale)
+	}
+	return 0
+}
+
+// drawnAt says how far from the run's start the character at byte off
+// of its text was drawn, in points, the moves of its show-text array
+// counted: a first line is set in by a move after the space it begins
+// with as often as by the space.
+func drawnAt(run *TextRun, off int) (float64, bool) {
+	if len(run.codeAt) == 0 || len(run.codeAt) != len(run.codeText) || len(run.codeW) != len(run.codeAt) {
+		return 0, false
+	}
+	at := 0
+	for i, k := range run.codeText {
+		if k == 0 {
+			continue
+		}
+		if off < at+k {
+			return (run.codeAt[i] + run.codeW[i]*float64(off-at)/float64(k)) * run.emPts, true
+		}
+		at += k
+	}
+	return 0, false
+}
+
+// text is the word as it reads.
+func (w flowWord) text() string {
+	var b strings.Builder
+	for _, p := range w.parts {
+		b.WriteString(p.Text)
+	}
+	return b.String()
 }
 
 // styleOf captures how a run is drawn.
@@ -1242,49 +1693,79 @@ func replaceFlows(flows []*Flow, old, new string, pageHeight float64,
 	if old == "" {
 		return 0, fmt.Errorf("gopdf: ReplaceTextFlow called with empty search text")
 	}
-	planAll := func(short bool) ([]*flowPlan, int, error) {
+	// plan works the replacement out for every paragraph that holds
+	// old: with keep, the lines kept as the document set them where the
+	// replacement is fitted to its value's width (wrapKept); with
+	// short, the caller's shorter stand-in wherever the token is the
+	// wider (replaceInSpans). With anew, the paragraphs an earlier
+	// replacement left with their lines kept are wrapped anew as well:
+	// the lines they then give back are room on the page.
+	plan := func(keep, short, anew bool) ([]*flowPlan, int, error) {
 		plans := make([]*flowPlan, len(flows))
 		n := 0
 		for i, f := range flows {
 			if !f.holds(old) {
+				if anew && f.lastPlan != nil && f.lastPlan.same != nil {
+					if p, err := f.planSpansAs(f.spans, false); err == nil {
+						plans[i] = p
+					}
+				}
 				continue
 			}
+			fitted := fit || f.fitWidth
 			spans, count := replaceInSpans(f.spans, old, new, f.mode,
-				fit || f.fitWidth, floorOr(floor, f.fitFloor), alt, short, f.fallback)
+				fitted, floorOr(floor, f.fitFloor), alt, short, f.fallback)
 			if count == 0 {
 				continue
 			}
-			plan, err := f.planSpans(spans)
+			p, err := f.planSpansAs(spans, keep && fitted)
 			if err != nil {
 				return nil, 0, err
 			}
-			plans[i] = plan
+			plans[i] = p
 			n++
 		}
 		return plans, n, nil
 	}
-	// The token asked for is planned first, set at the floor where the
-	// floor leaves it a little wider than its value: on a page with
-	// room for the lines that costs, it is what the page gets, as it
-	// always did. Each paragraph stands where the ones above it in its
-	// column then leave it room (columnShifts).
-	plans, n, err := planAll(false)
-	if err != nil {
-		return 0, err
+	// The page is planned in the order of what a reader would rather
+	// have, and the first plan the page has room for is written: its
+	// lines kept and the token asked for; the paragraphs that hold the
+	// value wrapped anew around that token; then every paragraph of
+	// the page wrapped anew, which is what a page was always given and
+	// takes the fewest lines; then the same three with the shorter
+	// stand-in, where the caller named one. Room is the two checks
+	// below, asked before anything is written (roomFor). Where no plan
+	// has room the last is written, and the checks refuse it.
+	type attempt struct{ keep, short, anew bool }
+	tries := []attempt{{true, false, false}, {false, false, false}, {false, false, true}}
+	if alt != "" {
+		tries = append(tries, attempt{true, true, false}, attempt{false, true, false}, attempt{false, true, true})
 	}
-	if n == 0 {
-		return 0, nil
-	}
-	down := columnShifts(flows, plans)
-	// A page that has no room for it — a paragraph off the sheet, or
-	// into a picture — takes the caller's shorter stand-in wherever
-	// the token was the wider: every value keeps its width, and no
-	// paragraph grows for this replacement. A page that worked with
-	// the token never comes here, and is written as it was.
-	if alt != "" && !roomFor(flows, plans, down, pageHeight, pictures) {
-		if less, m, err := planAll(true); err == nil && m > 0 {
-			plans, n, down = less, m, columnShifts(flows, less)
+	var plans []*flowPlan
+	var down []float64
+	var n int
+	var firstErr error
+	for _, t := range tries {
+		p, m, err := plan(t.keep, t.short, t.anew)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
 		}
+		if m == 0 {
+			return 0, nil
+		}
+		// Each paragraph stands where the ones above it in its column
+		// then leave it room (columnShifts).
+		d := columnShifts(flows, p)
+		plans, n, down = p, m, d
+		if roomFor(flows, p, d, pageHeight, pictures) {
+			break
+		}
+	}
+	if plans == nil {
+		return 0, firstErr
 	}
 	for i, f := range flows {
 		extra := 0.0
