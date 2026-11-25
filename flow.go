@@ -241,7 +241,7 @@ func (f *Flow) Replace(old, new string) (int, error) {
 	if !f.holds(old) {
 		return 0, nil
 	}
-	spans, n := replaceInSpans(f.spans, old, new, f.mode, f.fitWidth, f.fitFloor, "", f.fallback)
+	spans, n := replaceInSpans(f.spans, old, new, f.mode, f.fitWidth, f.fitFloor, "", false, f.fallback)
 	if n == 0 {
 		return 0, nil
 	}
@@ -791,11 +791,15 @@ func mergeSpans(in []FlowSpan) []FlowSpan {
 // value, the paragraphs grew, and a page filled to its foot was
 // refused.
 //
-// alt, with fit, is a shorter stand-in for new: it is set where even
-// the floor leaves new wider than the words it replaces (holdsAt), as
-// that editor has taken it all along (resolveFitTokens).
+// alt, with fit, is a shorter stand-in for new. It is set where no face
+// at hand writes new; and, with short, where even the floor leaves new
+// wider than the words it replaces (holdsAt), as that editor has taken
+// it all along (resolveFitTokens). Without short, new is set at the
+// floor there and the paragraph is a little longer for it: what a page
+// with room to spare has always been given, and still is (replaceFlows
+// asks for short only on a page that has none).
 func replaceInSpans(spans []FlowSpan, old, new string, mode matchMode,
-	fit bool, floor float64, alt string,
+	fit bool, floor float64, alt string, short bool,
 	fallback func(flowStyle) (flowStyle, bool)) ([]FlowSpan, int) {
 	reading := readParagraph(spans)
 	text := reading.flat
@@ -897,9 +901,9 @@ func replaceInSpans(spans []FlowSpan, old, new string, mode matchMode,
 			if fit {
 				if want, ok := widthOf(h[0], h[1]); ok {
 					set, _, can := tokenStyle(host.style, new, fallback)
-					if alt != "" && (!can || !holdsAt(set, new, want, floor)) {
-						if short, _, ok := tokenStyle(host.style, alt, fallback); ok {
-							ins.Text, set, can = alt, short, true
+					if alt != "" && (!can || (short && !holdsAt(set, new, want, floor))) {
+						if less, _, ok := tokenStyle(host.style, alt, fallback); ok {
+							ins.Text, set, can = alt, less, true
 						}
 					}
 					if !can {
@@ -1178,30 +1182,50 @@ func replaceFlows(flows []*Flow, old, new string, pageHeight float64,
 	if old == "" {
 		return 0, fmt.Errorf("gopdf: ReplaceTextFlow called with empty search text")
 	}
-	plans := make([]*flowPlan, len(flows))
-	n := 0
-	for i, f := range flows {
-		if !f.holds(old) {
-			continue
+	planAll := func(short bool) ([]*flowPlan, int, error) {
+		plans := make([]*flowPlan, len(flows))
+		n := 0
+		for i, f := range flows {
+			if !f.holds(old) {
+				continue
+			}
+			spans, count := replaceInSpans(f.spans, old, new, f.mode,
+				fit || f.fitWidth, floorOr(floor, f.fitFloor), alt, short, f.fallback)
+			if count == 0 {
+				continue
+			}
+			plan, err := f.planSpans(spans)
+			if err != nil {
+				return nil, 0, err
+			}
+			plans[i] = plan
+			n++
 		}
-		spans, count := replaceInSpans(f.spans, old, new, f.mode,
-			fit || f.fitWidth, floorOr(floor, f.fitFloor), alt, f.fallback)
-		if count == 0 {
-			continue
-		}
-		plan, err := f.planSpans(spans)
-		if err != nil {
-			return 0, err
-		}
-		plans[i] = plan
-		n++
+		return plans, n, nil
+	}
+	// The token asked for is planned first, set at the floor where the
+	// floor leaves it a little wider than its value: on a page with
+	// room for the lines that costs, it is what the page gets, as it
+	// always did. Each paragraph stands where the ones above it in its
+	// column then leave it room (columnShifts).
+	plans, n, err := planAll(false)
+	if err != nil {
+		return 0, err
 	}
 	if n == 0 {
 		return 0, nil
 	}
-	// Each paragraph stands where the ones above it in its column now
-	// leave it room (columnShifts).
 	down := columnShifts(flows, plans)
+	// A page that has no room for it — a paragraph off the sheet, or
+	// into a picture — takes the caller's shorter stand-in wherever
+	// the token was the wider: every value keeps its width, and no
+	// paragraph grows for this replacement. A page that worked with
+	// the token never comes here, and is written as it was.
+	if alt != "" && !roomFor(flows, plans, down, pageHeight, pictures) {
+		if less, m, err := planAll(true); err == nil && m > 0 {
+			plans, n, down = less, m, columnShifts(flows, less)
+		}
+	}
 	for i, f := range flows {
 		extra := 0.0
 		if f.LineHeight > 0 {

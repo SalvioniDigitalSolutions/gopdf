@@ -194,22 +194,43 @@ func TestFlowTokenASubsetCannotWriteIsFitted(t *testing.T) {
 	}
 }
 
-// Where even the floor leaves a token wider than its value, the shorter
-// stand-in the caller named is set, as the editor that keeps a page as
-// it was sets it; where the token holds, the token stands.
-func TestFlowTakesTheShorterStandInWhereTheTokenCannotHold(t *testing.T) {
-	src := flowDoc(t,
-		"Der Vertrag wurde von Li und von Massimo Bernasconi",
-		"am folgenden Morgen unterzeichnet.")
+// shortValuesDoc is a paragraph of two full lines that names a value
+// of two letters eight times, over a picture where under says so: the
+// token asked for, set at the floor, is wider than each of them, and
+// the paragraph needs a third line for it.
+func shortValuesDoc(t *testing.T, under bool) []byte {
+	t.Helper()
+	doc := New()
+	doc.Compress = false
+	page := doc.AddPage()
+	page.SetFont(Helvetica, 11)
+	page.Text(60, 100, "Li und Li und Li und Li und Li und Li und Li und Li")
+	page.Text(60, 114, "kamen am folgenden Morgen zur Unterschrift her.")
+	if under {
+		img := image.NewGray(image.Rect(0, 0, 40, 40))
+		for i := range img.Pix {
+			img.Pix[i] = uint8(40 + i%160)
+		}
+		pic, err := doc.AddImage(img)
+		if err != nil {
+			t.Fatal(err)
+		}
+		page.DrawImage(pic, 60, 122, 300, 120)
+	}
+	return docBytes(t, doc)
+}
+
+// fitShortValues replaces the two-letter value of shortValuesDoc, the
+// shorter stand-in "[R]" named, and gives the page's text and lines.
+func fitShortValues(t *testing.T, src []byte) (string, int) {
+	t.Helper()
 	u := Update(NewReaderOrFail(t, src))
 	page, err := u.Page(0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, v := range []string{"Li", "Massimo Bernasconi"} {
-		if n, err := page.replaceTextFlowFit(v, fitTo, true, 0, "[R]"); err != nil || n != 1 {
-			t.Fatalf("%q: replaced %d, %v", v, n, err)
-		}
+	if n, err := page.replaceTextFlowFit("Li", fitTo, true, 0, "[R]"); err != nil || n != 1 {
+		t.Fatalf("replaced in %d paragraph(s), %v", n, err)
 	}
 	var buf bytes.Buffer
 	if _, err := u.WriteTo(&buf); err != nil {
@@ -219,12 +240,52 @@ func TestFlowTakesTheShorterStandInWhereTheTokenCannotHold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := collapse(text)
-	if !strings.Contains(got, "von [R] und von "+fitTo) {
-		t.Errorf("want the short stand-in for the short value and the token for the long one: %q", got)
+	return collapse(text), len(lineYs(t, buf.Bytes()))
+}
+
+// A page with room for the lines it costs is given the token that was
+// asked for, set at the floor where the floor leaves it wider than its
+// value: the paragraph is a line longer, as it always was on such a
+// page, and the shorter stand-in is not taken.
+func TestFlowKeepsTheTokenWhereThePageHasRoom(t *testing.T) {
+	text, lines := fitShortValues(t, shortValuesDoc(t, false))
+	if n := strings.Count(text, fitTo); n != 8 {
+		t.Errorf("the token stands %d times, the value stood 8 times: %q", n, text)
 	}
-	if lines := lineYs(t, buf.Bytes()); len(lines) != 2 {
-		t.Errorf("the paragraph has %d lines, it had 2", len(lines))
+	if strings.Contains(text, "[R]") {
+		t.Errorf("the shorter stand-in was taken on a page with room: %q", text)
+	}
+	if lines <= 2 {
+		t.Fatalf("the paragraph has %d lines: the token did not make it longer, "+
+			"and the page tests nothing", lines)
+	}
+}
+
+// A page with no room for them — here a picture under the paragraph —
+// takes the shorter stand-in the caller named wherever the token was
+// the wider, as the editor that keeps a page as it was takes it: every
+// value keeps its width and the paragraph its lines. The page was
+// refused, and its values went under bars.
+func TestFlowTakesTheShorterStandInWhereThePageHasNoRoom(t *testing.T) {
+	text, lines := fitShortValues(t, shortValuesDoc(t, true))
+	if n := strings.Count(text, "[R]"); n != 8 {
+		t.Errorf("the shorter stand-in stands %d times, the value stood 8 times: %q", n, text)
+	}
+	if strings.Contains(text, fitTo) {
+		t.Errorf("the token was set where it has no room: %q", text)
+	}
+	if lines != 2 {
+		t.Errorf("the paragraph has %d lines, it had 2", lines)
+	}
+	// Without a stand-in to take, such a page is refused as before.
+	u := Update(NewReaderOrFail(t, shortValuesDoc(t, true)))
+	page, err := u.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := page.replaceTextFlowFit("Li", fitTo, true, 0, ""); err == nil ||
+		!strings.Contains(err.Error(), "no longer fits the page") {
+		t.Errorf("no stand-in named, a line more into the picture: %v", err)
 	}
 }
 

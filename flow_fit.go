@@ -86,15 +86,8 @@ func (f *Flow) shrinkInserted(spans []FlowSpan) ([]FlowSpan, bool) {
 // own — a caller may well be happy for a footer to move — but the
 // question is worth being able to ask before writing.
 func (f *Flow) OverflowsPage(pageHeight float64) bool {
-	if pageHeight <= 0 || f.LineHeight <= 0 {
-		return false
-	}
-	lines := f.curLines
-	if lines == 0 {
-		lines = len(f.lines)
-	}
-	bottom := f.Y + f.shiftPoints() + float64(lines-1)*f.LineHeight
-	return bottom > pageHeight
+	_, off := f.below(f.stands(), pageHeight)
+	return off
 }
 
 // shiftPoints converts the paragraph's accumulated displacement from text
@@ -108,46 +101,108 @@ func (f *Flow) shiftPoints() float64 {
 	return -f.shiftTS / -f.leadingTS * f.LineHeight
 }
 
+// standing is where a paragraph stands: how far down the page from
+// where the document set it, in points, and in how many lines.
+type standing struct {
+	shift float64
+	lines int
+}
+
+// stands says where the paragraph stands now.
+func (f *Flow) stands() standing {
+	return standing{f.shiftPoints(), f.curLines}
+}
+
+// below says how far under the bottom of the page a paragraph standing
+// at s ends, in points; nothing, where it ends on the page.
+func (f *Flow) below(s standing, pageHeight float64) (float64, bool) {
+	if pageHeight <= 0 || f.LineHeight <= 0 {
+		return 0, false
+	}
+	lines := s.lines
+	if lines == 0 {
+		lines = len(f.lines)
+	}
+	if f.Y+s.shift+float64(lines-1)*f.LineHeight <= pageHeight {
+		return 0, false
+	}
+	return f.Y + s.shift + float64(s.lines-1)*f.LineHeight - pageHeight, true
+}
+
+// intoPicture says how far a paragraph standing at s runs into a
+// picture it stood above: its last baseline, which the document set
+// over the picture's upper edge, has come to stand below that edge, in
+// the column the picture is drawn in.
+func (f *Flow) intoPicture(s standing, pictures []pictureBox) (float64, bool) {
+	if f.LineHeight <= 0 || (s.lines <= len(f.lines) && s.shift <= 0) {
+		return 0, false
+	}
+	was := f.Y + float64(len(f.lines)-1)*f.LineHeight
+	now := f.Y + s.shift + float64(s.lines-1)*f.LineHeight
+	for _, pic := range pictures {
+		if pic.x >= f.X+f.Width-1 || pic.x+pic.w <= f.X+1 {
+			continue // another column
+		}
+		if was <= pic.y && now > pic.y+0.1 {
+			return now - pic.y, true
+		}
+	}
+	return 0, false
+}
+
 // checkPageOverflow reports the first paragraph pushed off the page.
 func checkPageOverflow(flows []*Flow, pageHeight float64) error {
 	for _, f := range flows {
-		if f.OverflowsPage(pageHeight) {
+		if by, off := f.below(f.stands(), pageHeight); off {
 			return fmt.Errorf("gopdf: the text no longer fits the page: a paragraph "+
 				"now ends %.0f points below the bottom; shorten the replacement, "+
-				"or cap the growth with SetMaxExtraLines",
-				f.Y+f.shiftPoints()+float64(f.curLines-1)*f.LineHeight-pageHeight)
+				"or cap the growth with SetMaxExtraLines", by)
 		}
 	}
 	return nil
 }
 
 // checkPictures reports the first paragraph that now ends inside a
-// picture it stood above: its last baseline, which the document set
-// over the picture's upper edge, has come to stand below that edge, in
-// the column the picture is drawn in. A picture moves for no text, and
-// the lines that reach it are drawn over it or lie hidden under it —
-// in the file, read by every program, and seen by no one. The words are
-// those of checkPageOverflow: for the caller it is the same thing, a
-// replacement that has no room where its value stood.
+// picture it stood above (intoPicture). A picture moves for no text,
+// and the lines that reach it are drawn over it or lie hidden under it
+// — in the file, read by every program, and seen by no one. The words
+// are those of checkPageOverflow: for the caller it is the same thing,
+// a replacement that has no room where its value stood.
 func checkPictures(flows []*Flow, pictures []pictureBox) error {
 	for _, f := range flows {
-		if f.LineHeight <= 0 || (f.curLines <= len(f.lines) && f.shiftPoints() <= 0) {
-			continue
-		}
-		was := f.Y + float64(len(f.lines)-1)*f.LineHeight
-		now := f.Y + f.shiftPoints() + float64(f.curLines-1)*f.LineHeight
-		for _, pic := range pictures {
-			if pic.x >= f.X+f.Width-1 || pic.x+pic.w <= f.X+1 {
-				continue // another column
-			}
-			if was <= pic.y && now > pic.y+0.1 {
-				return fmt.Errorf("gopdf: the text no longer fits the page: a paragraph "+
-					"now runs %.0f points into the picture below it; shorten the replacement, "+
-					"or cap the growth with SetMaxExtraLines", now-pic.y)
-			}
+		if by, in := f.intoPicture(f.stands(), pictures); in {
+			return fmt.Errorf("gopdf: the text no longer fits the page: a paragraph "+
+				"now runs %.0f points into the picture below it; shorten the replacement, "+
+				"or cap the growth with SetMaxExtraLines", by)
 		}
 	}
 	return nil
+}
+
+// roomFor says whether the page holds the paragraphs as plans would
+// write them, each moved down by what down gives it: the two checks
+// above, asked before anything is written. A paragraph with no plan
+// stands in the lines it has.
+func roomFor(flows []*Flow, plans []*flowPlan, down []float64,
+	pageHeight float64, pictures []pictureBox) bool {
+	for i, f := range flows {
+		s := standing{lines: f.curLines}
+		if plans[i] != nil {
+			s.lines = plans[i].lines
+		}
+		// What replaceFlows makes of down: the paragraph's whole
+		// displacement, where it has a line height to move by.
+		if f.LineHeight > 0 && f.leadingTS != 0 {
+			s.shift = down[i]
+		}
+		if _, off := f.below(s, pageHeight); off {
+			return false
+		}
+		if _, in := f.intoPicture(s, pictures); in {
+			return false
+		}
+	}
+	return true
 }
 
 // --- fitting a token to the width it replaces ---
