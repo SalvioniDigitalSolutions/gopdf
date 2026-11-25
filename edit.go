@@ -53,10 +53,13 @@ type TextRun struct {
 	// Width is the run's advance width in points.
 	Width float64
 
-	target      *editTarget
-	start, end  int // byte span of the whole operation in the content stream
-	font        *fontInfo
-	tm          matrix  // text matrix at the start of the run
+	target     *editTarget
+	start, end int // byte span of the whole operation in the content stream
+	font       *fontInfo
+	tm         matrix // text matrix at the start of the run
+	// lm is the text line matrix in force when the run was drawn: what
+	// the moves that follow it in the stream (Td, T*) start from.
+	lm          matrix
 	advance     float64 // original advance in 1/1000 em
 	charSpacing float64
 	wordSpacing float64
@@ -611,6 +614,7 @@ func (sc *runScanner) scan(target *editTarget, resources any, base matrix, depth
 			X:           x,
 			Y:           y,
 			tm:          tm,
+			lm:          tlm,
 			FontSize:    st.fontSize * scale,
 			FontName:    string(st.fontName),
 			Width:       widthText * math.Hypot(full[0], full[1]),

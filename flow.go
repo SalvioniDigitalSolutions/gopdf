@@ -314,20 +314,56 @@ func (f *Flow) planSpans(spans []FlowSpan) (*flowPlan, error) {
 	}
 	plan := &flowPlan{spans: clean, delta: len(lines) - f.curLines, lines: len(lines)}
 	plan.ops = make([]string, len(lines))
+	plan.ends = make([]*flowStyle, len(lines))
 	for i, line := range lines {
 		s, err := f.lineOps(line)
 		if err != nil {
 			return nil, err
 		}
 		plan.ops[i] = s
+		plan.ends[i] = endStyle(line)
 	}
 	return plan, nil
+}
+
+// endStyle is the style a line's operations leave in force: that of the
+// last text they draw. Nil where they draw none.
+func endStyle(line []FlowSpan) *flowStyle {
+	for i := len(line) - 1; i >= 0; i-- {
+		if line[i].gap == 0 && line[i].Text != "" {
+			st := line[i].style
+			return &st
+		}
+	}
+	return nil
+}
+
+// restoreState writes what brings the text state from have back to want.
+func restoreState(b *strings.Builder, have, want flowStyle) {
+	if have.fontName != want.fontName || have.fontSizeRaw != want.fontSizeRaw {
+		fmt.Fprintf(b, " /%s %s Tf", want.fontName, fl(want.fontSizeRaw))
+	}
+	if want.fillOp != "" && have.fillOp != want.fillOp {
+		fmt.Fprintf(b, " %s", want.fillOp)
+	}
+	if have.charSpacing != want.charSpacing {
+		fmt.Fprintf(b, " %s Tc", fl(want.charSpacing))
+	}
+	if have.wordSpacing != want.wordSpacing {
+		fmt.Fprintf(b, " %s Tw", fl(want.wordSpacing))
+	}
+	if have.horizScale != want.horizScale {
+		fmt.Fprintf(b, " %s Tz", fl(want.horizScale*100))
+	}
 }
 
 // flowPlan is a rewrite worked out but not yet written.
 type flowPlan struct {
 	spans []FlowSpan
 	ops   []string
+	// ends is the style each line's operations leave in force, nil
+	// where a line draws nothing.
+	ends  []*flowStyle
 	delta int
 	lines int
 }
@@ -351,7 +387,7 @@ func (f *Flow) place(extraShift float64) {
 	}
 	switch {
 	case f.lastPlan != nil:
-		f.emit(f.lastPlan.ops, f.shiftTS)
+		f.emit(f.lastPlan, f.shiftTS)
 	case f.shiftTS != 0 || f.moved:
 		// Moved once, it is written again even where it now belongs
 		// where the document set it: what made room above it may have
@@ -381,15 +417,31 @@ func (f *Flow) shiftOriginals(shiftTS float64) {
 			writeTm(&b, matrix{1, 0, 0, 1, 0, shiftTS}.mul(run.tm))
 			b.WriteByte(' ')
 			b.WriteString(orig)
+			// What the stream draws next by a move of its own (Td,
+			// T*) starts from the line the document had here, not
+			// from where this paragraph now stands: a paragraph that
+			// keeps its place is not rewritten, and took the move of
+			// the one drawn before it.
+			b.WriteByte(' ')
+			writeTm(&b, run.lm)
 			run.spliceRaw(b.String())
 			run.replaced = true
 		}
 	}
 }
 
-// emit splices the new line operations over the paragraph's own, moved
-// down the page by shiftTS.
-func (f *Flow) emit(ops []string, shiftTS float64) {
+// emit splices the planned line operations over the paragraph's own,
+// moved down the page by shiftTS.
+//
+// After each line the stream is given back what the document had at
+// that point: the text state of the line's first run, and its line
+// matrix. What follows in the stream — the rest of the page — sets
+// only what it changes and moves from where it stood. A paragraph that
+// ended on a token set smaller left the text after it at the token's
+// size; a paragraph moved down the page took with it everything drawn
+// after it by a move of its own, whether it had to move or not.
+func (f *Flow) emit(p *flowPlan, shiftTS float64) {
+	ops := p.ops
 	shift := func(m matrix) matrix {
 		return matrix{1, 0, 0, 1, 0, shiftTS}.mul(m)
 	}
@@ -397,25 +449,33 @@ func (f *Flow) emit(ops []string, shiftTS float64) {
 	for i, line := range f.lines {
 		first := line.runs[0]
 		var sb strings.Builder
+		var have *flowStyle
 		if i < len(ops) {
 			// Each surviving line is placed from its own matrix. Stepping
 			// them all from the first would misplace any line the
 			// document positions under a different transform.
 			writeTm(&sb, shift(line.tm))
 			sb.WriteString(ops[i])
+			if p.ends[i] != nil {
+				have = p.ends[i]
+			}
 		}
 		if i == last {
-			// The last original line carries any lines beyond it, then
-			// restores the text matrix so positioning that follows still
-			// lands where it did.
+			// The last original line carries any lines beyond it.
 			for k := len(f.lines); k < len(ops); k++ {
 				sb.WriteByte(' ')
 				writeTm(&sb, shift(lineMatrix(f.lines[last].tm, f.leadingTS, k-last)))
 				sb.WriteString(ops[k])
+				if p.ends[k] != nil {
+					have = p.ends[k]
+				}
 			}
-			sb.WriteByte(' ')
-			writeTm(&sb, shift(first.tm))
 		}
+		if have != nil {
+			restoreState(&sb, *have, styleOf(first))
+		}
+		sb.WriteByte(' ')
+		writeTm(&sb, first.lm)
 		first.spliceRaw(strings.TrimSpace(sb.String()))
 		first.replaced = true
 		// Every other run on the line is now accounted for by the ops
