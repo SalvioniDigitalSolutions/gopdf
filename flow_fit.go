@@ -121,6 +121,35 @@ func checkPageOverflow(flows []*Flow, pageHeight float64) error {
 	return nil
 }
 
+// checkPictures reports the first paragraph that now ends inside a
+// picture it stood above: its last baseline, which the document set
+// over the picture's upper edge, has come to stand below that edge, in
+// the column the picture is drawn in. A picture moves for no text, and
+// the lines that reach it are drawn over it or lie hidden under it —
+// in the file, read by every program, and seen by no one. The words are
+// those of checkPageOverflow: for the caller it is the same thing, a
+// replacement that has no room where its value stood.
+func checkPictures(flows []*Flow, pictures []pictureBox) error {
+	for _, f := range flows {
+		if f.LineHeight <= 0 || (f.curLines <= len(f.lines) && f.shiftPoints() <= 0) {
+			continue
+		}
+		was := f.Y + float64(len(f.lines)-1)*f.LineHeight
+		now := f.Y + f.shiftPoints() + float64(f.curLines-1)*f.LineHeight
+		for _, pic := range pictures {
+			if pic.x >= f.X+f.Width-1 || pic.x+pic.w <= f.X+1 {
+				continue // another column
+			}
+			if was <= pic.y && now > pic.y+0.1 {
+				return fmt.Errorf("gopdf: the text no longer fits the page: a paragraph "+
+					"now runs %.0f points into the picture below it; shorten the replacement, "+
+					"or cap the growth with SetMaxExtraLines", now-pic.y)
+			}
+		}
+	}
+	return nil
+}
+
 // --- fitting a token to the width it replaces ---
 
 // A different answer to the same problem shrinkInserted solves. That one
@@ -210,4 +239,25 @@ func fitSize(style flowStyle, text string, want float64, floor float64) (float64
 		return 0, false
 	}
 	return fitted, true
+}
+
+// holdsAt reports whether text, set in style at the floor's size or
+// larger, is no wider than want: whether fitting can bring it to the
+// width of what it replaces, or stops at the floor with the text still
+// wider.
+func holdsAt(style flowStyle, text string, want, floor float64) bool {
+	size := style.fontSizeRaw
+	if size <= 0 || want <= 0 || text == "" {
+		return true // nothing to measure: the caller's text stands
+	}
+	if floor <= 0 {
+		floor = fitWidthFloor
+	}
+	if floor > 1 {
+		floor = 1
+	}
+	small := style
+	small.fontSizeRaw = size * floor
+	w, ok := small.advance(text)
+	return !ok || w <= want+0.001
 }

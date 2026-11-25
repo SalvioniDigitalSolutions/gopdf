@@ -161,6 +161,8 @@ type UpdatablePage struct {
 	removed map[int]bool
 	// flows caches the page's paragraphs so repeated edits accumulate.
 	flows []*Flow
+	// pictures caches where the page's pictures stand (pictureBoxes).
+	pictures []pictureBox
 }
 
 // Page prepares a page for text editing. The page's content stream and

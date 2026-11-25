@@ -160,6 +160,9 @@ type Flow struct {
 	// curLines is how many lines the paragraph occupies now, which after
 	// a rewrite is no longer how many it started with.
 	curLines int
+	// moved is set once the paragraph's own operators were rewritten to
+	// move it (shiftOriginals).
+	moved bool
 	// shiftTS is how far the paragraph has been moved down the page, in
 	// text space, accumulated over every edit so far.
 	shiftTS float64
@@ -238,7 +241,7 @@ func (f *Flow) Replace(old, new string) (int, error) {
 	if !f.holds(old) {
 		return 0, nil
 	}
-	spans, n := replaceInSpans(f.spans, old, new, f.mode, f.fitWidth, f.fitFloor)
+	spans, n := replaceInSpans(f.spans, old, new, f.mode, f.fitWidth, f.fitFloor, "", f.fallback)
 	if n == 0 {
 		return 0, nil
 	}
@@ -294,6 +297,15 @@ func (f *Flow) planSpans(spans []FlowSpan) (*flowPlan, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A paragraph that would come out longer than it stood is first
+	// tried a little tighter (wrapTight): the page may have set its
+	// lines tighter than its font's own widths add up to, and set again
+	// without that a line is a hair wider than itself.
+	if len(lines) > len(f.lines) {
+		if tight, ok := f.wrapTight(clean); ok && len(tight) < len(lines) {
+			lines = tight
+		}
+	}
 	if f.maxExtra >= 0 {
 		if extra := len(lines) - len(f.lines); extra > f.maxExtra {
 			return nil, fmt.Errorf("gopdf: the text needs %d more line(s) than the paragraph "+
@@ -334,11 +346,18 @@ func (f *Flow) applyPlan(p *flowPlan, extraShift float64) {
 // lands it in one place rather than two.
 func (f *Flow) place(extraShift float64) {
 	f.shiftTS += extraShift
+	if math.Abs(f.shiftTS) < 1e-9 {
+		f.shiftTS = 0
+	}
 	switch {
 	case f.lastPlan != nil:
 		f.emit(f.lastPlan.ops, f.shiftTS)
-	case f.shiftTS != 0:
+	case f.shiftTS != 0 || f.moved:
+		// Moved once, it is written again even where it now belongs
+		// where the document set it: what made room above it may have
+		// been given back by a later replacement.
 		f.shiftOriginals(f.shiftTS)
+		f.moved = true
 	default:
 		return
 	}
@@ -487,17 +506,68 @@ func (f *Flow) lineOps(line []FlowSpan) (string, error) {
 // wrap breaks styled spans into lines no wider than the column, measuring
 // each piece in its own font.
 func (f *Flow) wrap(spans []FlowSpan) ([][]FlowSpan, error) {
+	lines, _, err := f.wrapWithin(spans, f.widthTS)
+	return lines, err
+}
+
+// kernSlack is how much wider than its column a line may measure in its
+// font's own widths and still be set on one line, drawn that much
+// narrower (wrapTight): what the kerns between pairs of letters, or the
+// spaces of a justified line set close, take out of a line — not what
+// tracking a heading by a fifth does.
+const kernSlack = 1.03
+
+// wrapTight wraps the paragraph with lines allowed kernSlack over the
+// column, and draws each line that is over it narrower by as much, so
+// that none stands out of the column.
+//
+// A page sets a line as wide as it likes: with kerns between pairs of
+// letters, a heading of one line is a hair narrower than the sum of its
+// font's widths, and so is the fullest line of a caption. Set again
+// without the kerns, such a line did not fit the width it had stood in:
+// its last word went to a line of its own, the paragraph was a line
+// longer for a replacement no wider than what it replaced, and what
+// stood under it had to move.
+func (f *Flow) wrapTight(spans []FlowSpan) ([][]FlowSpan, bool) {
+	if f.widthTS <= 0 {
+		return nil, false
+	}
+	lines, widths, err := f.wrapWithin(spans, f.widthTS*kernSlack)
+	if err != nil {
+		return nil, false
+	}
+	for i, w := range widths {
+		if w <= f.widthTS {
+			continue
+		}
+		by := f.widthTS / w
+		narrowed := make([]FlowSpan, len(lines[i]))
+		copy(narrowed, lines[i])
+		for k := range narrowed {
+			narrowed[k].style.horizScale *= by
+			narrowed[k].gap *= by
+		}
+		lines[i] = narrowed
+	}
+	return lines, true
+}
+
+// wrapWithin is wrap for a column of the given width, and says how wide
+// each line it made measures.
+func (f *Flow) wrapWithin(spans []FlowSpan, widthTS float64) ([][]FlowSpan, []float64, error) {
 	words, err := flowWords(spans, f.fallback)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var lines [][]FlowSpan
+	var widths []float64
 	var line []FlowSpan
 	var used float64
 
 	push := func() {
 		if len(line) > 0 {
 			lines = append(lines, mergeSpans(line))
+			widths = append(widths, used)
 			line = nil
 			used = 0
 		}
@@ -514,11 +584,11 @@ func (f *Flow) wrap(spans []FlowSpan) ([][]FlowSpan, error) {
 				// No glyph to draw the space with and no width to move by
 				// either. Setting the words flush against each other is
 				// worse than declining.
-				return nil, fmt.Errorf("gopdf: font /%s can neither draw a space "+
+				return nil, nil, fmt.Errorf("gopdf: font /%s can neither draw a space "+
 					"nor say how wide one is, so the words in this paragraph "+
 					"cannot be separated", w.spaceStyle.fontName)
 			}
-			if used+gap+w.width > f.widthTS {
+			if used+gap+w.width > widthTS {
 				push()
 				gap, joiner = 0, ""
 			}
@@ -542,9 +612,9 @@ func (f *Flow) wrap(spans []FlowSpan) ([][]FlowSpan, error) {
 	}
 	push()
 	if len(lines) == 0 {
-		lines = [][]FlowSpan{{spans[0]}}
+		lines, widths = [][]FlowSpan{{spans[0]}}, []float64{0}
 	}
-	return lines, nil
+	return lines, widths, nil
 }
 
 // flowWord is one whitespace-delimited word, which may itself span
@@ -709,8 +779,24 @@ func mergeSpans(in []FlowSpan) []FlowSpan {
 // stands on its own. A replacement covers the whole of what it matched,
 // so a split word takes its dangling hyphen and the break with it and the
 // paragraph re-wraps without either.
+//
+// With fit, a replacement is set at the size that gives it the width of
+// what it replaces, measured in the face it will be set in: the run's
+// own, or the stand-in face fallback names where the document's subset
+// has no glyph for it (tokenStyle, as the editor that keeps a page as
+// it was measures it). Measured in the run's own font alone, a token a
+// subset could not write — a bracket, a capital the page never drew —
+// had no width, was not fitted at all, and went in at the run's full
+// size: on a page laid out again every such token was wider than its
+// value, the paragraphs grew, and a page filled to its foot was
+// refused.
+//
+// alt, with fit, is a shorter stand-in for new: it is set where even
+// the floor leaves new wider than the words it replaces (holdsAt), as
+// that editor has taken it all along (resolveFitTokens).
 func replaceInSpans(spans []FlowSpan, old, new string, mode matchMode,
-	fit bool, floor float64) ([]FlowSpan, int) {
+	fit bool, floor float64, alt string,
+	fallback func(flowStyle) (flowStyle, bool)) ([]FlowSpan, int) {
 	reading := readParagraph(spans)
 	text := reading.flat
 
@@ -810,7 +896,16 @@ func replaceInSpans(spans []FlowSpan, old, new string, mode matchMode,
 			// this one may be in a different font or size from the last.
 			if fit {
 				if want, ok := widthOf(h[0], h[1]); ok {
-					if size, did := fitSize(host.style, new, want, floor); did {
+					set, _, can := tokenStyle(host.style, new, fallback)
+					if alt != "" && (!can || !holdsAt(set, new, want, floor)) {
+						if short, _, ok := tokenStyle(host.style, alt, fallback); ok {
+							ins.Text, set, can = alt, short, true
+						}
+					}
+					if !can {
+						set = host.style // no face writes it: planSpans says so
+					}
+					if size, did := fitSize(set, ins.Text, want, floor); did {
 						ins.FontSize *= size / ins.style.fontSizeRaw
 						ins.style.fontSizeRaw = size
 						ins.fitted = true
@@ -1027,21 +1122,48 @@ func (p *UpdatablePage) Flows() []*Flow {
 // styling of the text it replaces, and lets a paragraph grow or shrink by
 // whole lines. It returns the number of paragraphs rewritten.
 func (e *EditablePage) ReplaceTextFlow(old, new string) (int, error) {
-	return replaceFlows(e.Flows(), old, new, e.Page.h, false, 0)
+	return replaceFlows(e.Flows(), old, new, e.Page.h, false, 0, "", nil)
 }
 
 // ReplaceTextFlow replaces occurrences of old across the page's
 // paragraphs, re-wrapping each one it changes and keeping its styling.
 func (p *UpdatablePage) ReplaceTextFlow(old, new string) (int, error) {
-	return p.replaceTextFlowFit(old, new, false, 0)
+	return p.replaceTextFlowFit(old, new, false, 0, "")
 }
 
 // replaceTextFlowFit is ReplaceTextFlow with the option of setting each
-// replacement to the width of the text it replaces.
+// replacement to the width of the text it replaces, and alt where even
+// the floor cannot bring new to that width (replaceInSpans).
 func (p *UpdatablePage) replaceTextFlowFit(old, new string, fit bool,
-	floor float64) (int, error) {
+	floor float64, alt string) (int, error) {
 	pi := p.u.r.pages[p.index]
-	return replaceFlows(p.Flows(), old, new, pi.mediaBox[3]-pi.mediaBox[1], fit, floor)
+	return replaceFlows(p.Flows(), old, new, pi.mediaBox[3]-pi.mediaBox[1], fit, floor, alt, p.pictureBoxes())
+}
+
+// pictureBox is where a page draws a picture, in points from the
+// top-left of the page.
+type pictureBox struct{ x, y, w, h float64 }
+
+// pictureBoxes lists where the page's pictures stand, for the check that
+// no paragraph grows into one (checkPictures). Read once: a text edit
+// moves no picture.
+func (p *UpdatablePage) pictureBoxes() []pictureBox {
+	if p.pictures != nil {
+		return p.pictures
+	}
+	p.pictures = []pictureBox{}
+	imgs, err := p.u.r.PageImages(p.index)
+	if err != nil {
+		return p.pictures
+	}
+	for _, im := range imgs {
+		// A rule or a dot drawn as a picture hides no line of text.
+		if im.W < 8 || im.H < 8 {
+			continue
+		}
+		p.pictures = append(p.pictures, pictureBox{im.X, im.Y, im.W, im.H})
+	}
+	return p.pictures
 }
 
 // replaceFlows rewrites every paragraph containing old and moves the ones
@@ -1052,7 +1174,7 @@ func (p *UpdatablePage) replaceTextFlowFit(old, new string, fit bool,
 // text then fails before anything has been written, rather than half way
 // down the page.
 func replaceFlows(flows []*Flow, old, new string, pageHeight float64,
-	fit bool, floor float64) (int, error) {
+	fit bool, floor float64, alt string, pictures []pictureBox) (int, error) {
 	if old == "" {
 		return 0, fmt.Errorf("gopdf: ReplaceTextFlow called with empty search text")
 	}
@@ -1063,7 +1185,7 @@ func replaceFlows(flows []*Flow, old, new string, pageHeight float64,
 			continue
 		}
 		spans, count := replaceInSpans(f.spans, old, new, f.mode,
-			fit || f.fitWidth, floorOr(floor, f.fitFloor))
+			fit || f.fitWidth, floorOr(floor, f.fitFloor), alt, f.fallback)
 		if count == 0 {
 			continue
 		}
@@ -1077,16 +1199,19 @@ func replaceFlows(flows []*Flow, old, new string, pageHeight float64,
 	if n == 0 {
 		return 0, nil
 	}
-	// Paragraphs come in reading order, so a running total of the lines
-	// added above each one is all the displacement it needs.
-	shift := 0.0
+	// Each paragraph stands where the ones above it in its column now
+	// leave it room (columnShifts).
+	down := columnShifts(flows, plans)
 	for i, f := range flows {
+		extra := 0.0
+		if f.LineHeight > 0 {
+			extra = down[i]*f.leadingTS/f.LineHeight - f.shiftTS
+		}
 		if plans[i] != nil {
-			f.applyPlan(plans[i], shift)
-			shift += f.leadingTS * float64(plans[i].delta)
+			f.applyPlan(plans[i], extra)
 			continue
 		}
-		f.place(shift)
+		f.place(extra)
 	}
 	// A paragraph that grew past the bottom of the page has put its text
 	// where the file holds it and no reader sees it: it extracts, it
@@ -1096,7 +1221,89 @@ func replaceFlows(flows []*Flow, old, new string, pageHeight float64,
 	if err := checkPageOverflow(flows, pageHeight); err != nil {
 		return 0, err
 	}
+	// And one that grew into a picture has put its last lines under it,
+	// or over it: the same answer.
+	if err := checkPictures(flows, pictures); err != nil {
+		return 0, err
+	}
 	return n, nil
+}
+
+// attachedWithin is how far under a paragraph, in lines, the next one of
+// its column may begin and still be set off from it by the page: the
+// distance between two paragraphs, a heading and its text. Further down
+// stands something of its own — the caption of a picture between the
+// two, a footer.
+const attachedWithin = 2.5
+
+// columnShifts says how far down the page each paragraph has to stand
+// from where the document set it, in points, now that the paragraphs
+// are as long as plans (or their last rewrite) make them.
+//
+// A paragraph that grew needs room below it, and only below it: the
+// paragraphs of its own column. What the page set off from it by the
+// distance between two paragraphs keeps that distance; what stands
+// further down moves only as far as it must to keep a line of its own.
+// Nothing moves up: a paragraph that lost a line leaves the line empty,
+// and everything else where the reader knows it.
+//
+// The displacement used to be a running total over the paragraphs in
+// the order the file draws them, added to every paragraph drawn later.
+// A file draws its page in any order: a line more in the first column
+// of a newsletter pushed down its second column, the titles at the top
+// of the page (drawn last) into the heading under them, and the footer
+// off the sheet, for which the copy was refused; a line less pulled a
+// caption up into its picture.
+func columnShifts(flows []*Flow, plans []*flowPlan) []float64 {
+	lines := func(i int) int {
+		if plans[i] != nil {
+			return plans[i].lines
+		}
+		return flows[i].curLines
+	}
+	order := make([]int, len(flows))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool { return flows[order[a]].Y < flows[order[b]].Y })
+	down := make([]float64, len(flows))
+	for at, b := range order {
+		lower := flows[b]
+		// The paragraph that ends nearest above this one in its column,
+		// as the document set them.
+		above, foot := -1, 0.0
+		for _, a := range order[:at] {
+			upper := flows[a]
+			end := upper.Y + float64(len(upper.lines)-1)*upper.LineHeight
+			if end >= lower.Y || !sharesColumn(upper, lower) {
+				continue
+			}
+			if above < 0 || end > foot {
+				above, foot = a, end
+			}
+		}
+		if above < 0 {
+			continue
+		}
+		upper := flows[above]
+		now := upper.Y + down[above] + float64(lines(above)-1)*upper.LineHeight
+		need := now + lower.LineHeight - lower.Y
+		if gap := lower.Y - foot; gap <= attachedWithin*math.Max(upper.LineHeight, lower.LineHeight) {
+			need = now + gap - lower.Y
+		}
+		if need > 0 {
+			down[b] = need
+		}
+	}
+	return down
+}
+
+// sharesColumn reports whether two paragraphs stand one above the other:
+// whether the widths they are set in overlap.
+func sharesColumn(a, b *Flow) bool {
+	left := math.Max(a.X, b.X)
+	right := math.Min(a.X+a.Width, b.X+b.Width)
+	return right-left > 1
 }
 
 // coalesceForOutput joins neighbouring spans that share a style,

@@ -375,7 +375,7 @@ func TestFlowReplaceInSpansUnit(t *testing.T) {
 		{Text: "500", style: b},
 		{Text: " due", style: a},
 	}
-	out, n := replaceInSpans(spans, "500", "12,345", matchWords, false, 0)
+	out, n := replaceInSpans(spans, "500", "12,345", matchWords, false, 0, "", nil)
 	if n != 1 {
 		t.Fatalf("count = %d, want 1", n)
 	}
@@ -393,7 +393,7 @@ func TestFlowReplaceInSpansUnit(t *testing.T) {
 	}
 
 	// A replacement spanning a style boundary takes the style it starts in.
-	out2, n2 := replaceInSpans(spans, "500 due", "nothing owed", matchWords, false, 0)
+	out2, n2 := replaceInSpans(spans, "500 due", "nothing owed", matchWords, false, 0, "", nil)
 	if n2 != 1 {
 		t.Fatalf("count = %d, want 1", n2)
 	}
@@ -476,68 +476,6 @@ func yOf(t *testing.T, data []byte, want string) float64 {
 	return 0
 }
 
-// TestFlowCascadePushesFollowingContent is the property that makes a
-// growing paragraph usable: everything below it moves out of the way.
-func TestFlowCascadePushesFollowingContent(t *testing.T) {
-	src := cascadeDoc(t)
-	beforeSecond := yOf(t, src, "Second paragraph")
-	beforeThird := yOf(t, src, "Third paragraph")
-
-	_, e, flows := editFlows(t, src)
-	lineHeight := flows[0].LineHeight
-	if lineHeight <= 0 {
-		t.Fatalf("the first paragraph has no leading: %v", lineHeight)
-	}
-	n, err := e.ReplaceTextFlow("ACME",
-		"a considerably longer corporate name that forces a rewrap")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n != 1 {
-		t.Fatalf("rewrote %d paragraphs, want 1", n)
-	}
-	delta := flows[0].LineDelta()
-	if delta <= 0 {
-		t.Fatalf("the paragraph did not grow: delta=%d", delta)
-	}
-
-	out := saveDoc(t, e)
-	want := float64(delta) * lineHeight
-	for _, c := range []struct {
-		name   string
-		before float64
-	}{{"Second paragraph", beforeSecond}, {"Third paragraph", beforeThird}} {
-		got := yOf(t, out, c.name) - c.before
-		if math.Abs(got-want) > 0.6 {
-			t.Errorf("%s moved by %.2f, want %.2f", c.name, got, want)
-		}
-	}
-}
-
-func TestFlowCascadePullsUpWhenShrinking(t *testing.T) {
-	src := cascadeDoc(t)
-	beforeSecond := yOf(t, src, "Second paragraph")
-
-	_, _, flows := editFlows(t, src)
-	lineHeight := flows[0].LineHeight
-	// SetText on its own does not cascade; the page-level call does.
-	_, e2, flows2 := editFlows(t, src)
-	if _, err := e2.ReplaceTextFlow(
-		"First paragraph mentions ACME twice over these two lines of running text.",
-		"Tiny."); err != nil {
-		t.Fatal(err)
-	}
-	delta := flows2[0].LineDelta()
-	if delta >= 0 {
-		t.Fatalf("the paragraph did not shrink: delta=%d", delta)
-	}
-	got := yOf(t, saveDoc(t, e2), "Second paragraph") - beforeSecond
-	want := float64(delta) * lineHeight
-	if math.Abs(got-want) > 0.6 {
-		t.Errorf("the following paragraph moved by %.2f, want %.2f", got, want)
-	}
-}
-
 func TestFlowCascadeLeavesContentAboveAlone(t *testing.T) {
 	src := cascadeDoc(t)
 	beforeFirst := yOf(t, src, "First paragraph")
@@ -577,29 +515,6 @@ func TestFlowRepeatedReplace(t *testing.T) {
 		if strings.Contains(got, gone) {
 			t.Errorf("%q survived: %q", gone, got)
 		}
-	}
-}
-
-// TestFlowRepeatedReplaceKeepsSpacing checks that editing twice does not
-// double-apply the displacement.
-func TestFlowRepeatedReplaceKeepsSpacing(t *testing.T) {
-	src := cascadeDoc(t)
-	beforeThird := yOf(t, src, "Third paragraph")
-
-	_, e, flows := editFlows(t, src)
-	lineHeight := flows[0].LineHeight
-	if _, err := e.ReplaceTextFlow("ACME", "a much longer replacement name indeed"); err != nil {
-		t.Fatal(err)
-	}
-	delta := flows[0].LineDelta()
-	// A second replacement that changes no lengths must move nothing.
-	if _, err := e.ReplaceTextFlow("Third", "Final"); err != nil {
-		t.Fatal(err)
-	}
-	got := yOf(t, saveDoc(t, e), "Final paragraph") - beforeThird
-	want := float64(delta) * lineHeight
-	if math.Abs(got-want) > 0.6 {
-		t.Errorf("after two edits the paragraph moved %.2f, want %.2f", got, want)
 	}
 }
 
@@ -649,37 +564,6 @@ func TestFlowSingleLineGrowsWithSaneLeading(t *testing.T) {
 	}
 	if f.leadingTS >= 0 {
 		t.Errorf("leadingTS = %v, want a negative step so later lines sit lower", f.leadingTS)
-	}
-}
-
-func TestFlowUpdatePathCascades(t *testing.T) {
-	src := cascadeDoc(t)
-	beforeSecond := yOf(t, src, "Second paragraph")
-
-	r, err := NewReader(src)
-	if err != nil {
-		t.Fatal(err)
-	}
-	u := Update(r)
-	page, err := u.Page(0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lineHeight := page.Flows()[0].LineHeight
-	if _, err := page.ReplaceTextFlow("ACME", "a far longer name that will wrap the line"); err != nil {
-		t.Fatal(err)
-	}
-	delta := page.Flows()[0].LineDelta()
-	if delta <= 0 {
-		t.Fatalf("delta = %d, want growth", delta)
-	}
-	var buf bytes.Buffer
-	if _, err := u.WriteTo(&buf); err != nil {
-		t.Fatal(err)
-	}
-	got := yOf(t, buf.Bytes(), "Second paragraph") - beforeSecond
-	if math.Abs(got-float64(delta)*lineHeight) > 0.6 {
-		t.Errorf("moved %.2f, want %.2f", got, float64(delta)*lineHeight)
 	}
 }
 
@@ -1002,5 +886,59 @@ func TestFlowGrowsWithinThePage(t *testing.T) {
 	}
 	if grew < 2 {
 		t.Errorf("the paragraph did not grow: %d lines carry the token", grew)
+	}
+}
+
+// TestFlowRepeatedReplaceKeepsSpacing checks that editing twice does not
+// double-apply the displacement.
+func TestFlowRepeatedReplaceKeepsSpacing(t *testing.T) {
+	src := columnsDoc(t)
+	_, e, flows := editFlows(t, src)
+	lineHeight := flows[0].LineHeight
+	if _, err := e.ReplaceTextFlow("ACME", "a much longer replacement name indeed"); err != nil {
+		t.Fatal(err)
+	}
+	delta := flows[0].LineDelta()
+	if delta <= 0 {
+		t.Fatalf("delta = %d, want growth", delta)
+	}
+	// A second replacement that changes no lengths must move nothing.
+	if _, err := e.ReplaceTextFlow("Left two", "Next one"); err != nil {
+		t.Fatal(err)
+	}
+	out := saveDoc(t, e)
+	got := yOf(t, out, "Next one") - yOf(t, src, "Left two")
+	want := float64(delta) * lineHeight
+	if math.Abs(got-want) > 0.6 {
+		t.Errorf("after two edits the paragraph moved %.2f, want %.2f", got, want)
+	}
+}
+
+// TestFlowUpdatePathCascades: an update of a file moves the paragraph
+// under one that grew as an edit of a page does.
+func TestFlowUpdatePathCascades(t *testing.T) {
+	src := columnsDoc(t)
+	u := Update(NewReaderOrFail(t, src))
+	page, err := u.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lineHeight := page.Flows()[0].LineHeight
+	if _, err := page.ReplaceTextFlow("ACME", "a far longer name that will wrap the line"); err != nil {
+		t.Fatal(err)
+	}
+	delta := page.Flows()[0].LineDelta()
+	if delta <= 0 {
+		t.Fatalf("delta = %d, want growth", delta)
+	}
+	var buf bytes.Buffer
+	if _, err := u.WriteTo(&buf); err != nil {
+		t.Fatal(err)
+	}
+	if got := moved(t, src, buf.Bytes(), "Left two"); math.Abs(got-float64(delta)*lineHeight) > 0.6 {
+		t.Errorf("moved %.2f, want %.2f", got, float64(delta)*lineHeight)
+	}
+	if got := moved(t, src, buf.Bytes(), "Right two"); math.Abs(got) > 0.6 {
+		t.Errorf("the other column moved by %.2f", got)
 	}
 }

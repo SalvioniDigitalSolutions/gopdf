@@ -55,14 +55,16 @@ type Pseudonym struct {
 	// and exactly what the key file holds.
 	MinScale float64
 	// FitFallback, with FitWidth, is a shorter stand-in for To, used
-	// by the exact in-place editor when even the floor cannot hold To
-	// in the room the occurrence occupies — "[RED]" where "[REDACTED]"
-	// was asked. Without one, a token the floor cannot hold sends the
-	// whole page to the paragraph engine, whose re-wrap moves text; on
-	// a form-shaped page it merges the form's lines. A caller who
-	// would rather keep the page exactly as it was can name the
-	// shorter marker to fall back to. Empty means no fallback, and
-	// the paragraph engine takes over as before.
+	// when even the floor cannot hold To in the room the occurrence
+	// occupies — "[RED]" where "[REDACTED]" was asked. Without one, a
+	// token the floor cannot hold sends the whole page to the
+	// paragraph engine, whose re-wrap moves text; on a form-shaped
+	// page it merges the form's lines. A caller who would rather keep
+	// the page exactly as it was can name the shorter marker to fall
+	// back to. The paragraph engine takes it too, on a page that came
+	// to it for another reason: set at the floor, the long token was a
+	// little wider than every short value it stood for, and the
+	// paragraphs grew. Empty means no fallback.
 	FitFallback string
 }
 
@@ -206,7 +208,7 @@ func pseudonymize(r *Reader, w io.Writer, subs []Pseudonym, acrossLines bool) (P
 			flow = append(joined, clean...)
 		}
 		for _, s := range flow {
-			n, err := page.replaceTextFlowFit(s.From, s.To, s.FitWidth, s.floor())
+			n, err := page.replaceTextFlowFit(s.From, s.To, s.FitWidth, s.floor(), s.FitFallback)
 			if err != nil {
 				return PseudonymizeResult{}, fmt.Errorf(
 					"gopdf: replacing %q on page %d: %w", s.From, i, err)
